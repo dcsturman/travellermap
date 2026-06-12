@@ -1,0 +1,30 @@
+# Rust rewrite of Traveller Map — see CLAUDE.md "Mission".
+# Three members: a pure shared domain crate, a native streaming backend,
+# and a Leptos/WASM client-side-rendering frontend.
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/backend", "crates/frontend"]
+# The frontend is wasm-only (built with Trunk), so keep it out of bare
+# root-level `cargo build`/`test`, which target the native host. Build it
+# explicitly: `trunk build` (or `cargo check -p tmap-frontend --target wasm32-unknown-unknown`).
+default-members = ["crates/core", "crates/backend"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/inexorabletash/travellermap"
+
+# Shared dependency versions. `tmap-core` must stay I/O-free so its deps
+# unify cleanly across native + wasm builds (resolver = "2" above).
+[workspace.dependencies]
+tmap-core = { path = "crates/core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Optimized profile for both the native backend and the wasm frontend (Trunk's
+# `--release` build uses it before running wasm-opt). Tuned for *speed* — this
+# is the build we profile and ship, not the unoptimized `trunk serve` dev build.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

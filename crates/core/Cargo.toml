@@ -1,0 +1,13 @@
+[package]
+name = "tmap-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared Traveller Map domain model and wire types (no I/O — native + wasm)."
+
+[dependencies]
+base64 = "0.22.1"
+regex = "1"
+roxmltree = "0.21.1"
+serde.workspace = true

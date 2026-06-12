@@ -1,0 +1,12 @@
+[build]
+target = "index.html"
+
+[serve]
+port = 8080
+open = false
+
+# Dev convenience: proxy /api to the backend so the wasm app and its data
+# share an origin (no CORS needed locally). Run `cargo run -p tmap-backend`
+# (listens on :3000) alongside `trunk serve`.
+[[proxy]]
+backend = "http://127.0.0.1:3000/api"

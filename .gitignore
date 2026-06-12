@@ -40,3 +40,8 @@ Thumbs.db
 
 #node modules
 node_modules/
+
+# Rust rewrite (crates/*)
+/target/
+# Trunk frontend build output
+crates/frontend/dist/
