@@ -483,14 +483,22 @@ struct SectorGroup {
     key: String,
     color: String,
     fill: Path2d,
-    region: Vec<(i32, i32)>,
     /// Boundary edges to **same-sector** non-region neighbors — determined by
     /// this sector's region alone, so cached once (the bulk of the stroke).
     interior_stroke: Path2d,
-    /// Region hexes that have a neighbor in an **adjacent sector**; their
-    /// cross-sector ("seam") edges are the only part recomputed per combine,
-    /// against the merged region.
-    edge_hexes: Vec<(i32, i32)>,
+    /// This sector's region as a set, for neighbor seam lookups.
+    rset: std::collections::HashSet<(i32, i32)>,
+    /// Candidate edges to neighbors in an **adjacent sector**, with vertices
+    /// precomputed. Each is stroked at combine only if that neighbor isn't in
+    /// the same group's region in its sector (resolved without a merged set).
+    seams: Vec<SeamEdge>,
+}
+/// A precomputed cross-sector border-edge candidate (world-space vertices).
+struct SeamEdge {
+    nb_cell: (i32, i32),
+    nb: (i32, i32),
+    a: (f64, f64),
+    b: (f64, f64),
 }
 
 /// The sector grid cell a world hex belongs to.
@@ -526,7 +534,7 @@ fn build_sector_geom(sector: &SectorData) -> SectorGeom {
             let rset: HashSet<(i32, i32)> = region.iter().copied().collect();
             let fill = Path2d::new().ok()?;
             let interior_stroke = Path2d::new().ok()?;
-            let mut edge_hexes = Vec::new();
+            let mut seams = Vec::new();
             for &(wc, wr) in &region {
                 // Inflate fill hexagons ~3% so neighbors overlap (no AA seam).
                 let v0 = hex_vertex_r(wc, wr, 0, HEX_VR * 1.03);
@@ -536,27 +544,29 @@ fn build_sector_geom(sector: &SectorData) -> SectorGeom {
                     fill.line_to(v.0, v.1);
                 }
                 fill.close_path();
-                // Classify each edge: same-sector edges resolve against this
-                // sector's region now (cached); cross-sector ones wait for the
-                // merged region at combine time.
+                // Same-sector edges resolve against this sector's region now
+                // (cached interior stroke); cross-sector ones become seam
+                // candidates resolved at combine against the neighbor's region.
                 let hsec = hex_sector(wc, wr);
-                let mut has_cross = false;
                 for (nb, (va, vb)) in hex_neighbors(wc, wr) {
-                    if hex_sector(nb.0, nb.1) == hsec {
+                    let nbsec = hex_sector(nb.0, nb.1);
+                    if nbsec == hsec {
                         if !rset.contains(&nb) {
                             let (a, b) = (hex_vertex(wc, wr, va), hex_vertex(wc, wr, vb));
                             interior_stroke.move_to(a.0, a.1);
                             interior_stroke.line_to(b.0, b.1);
                         }
                     } else {
-                        has_cross = true;
+                        seams.push(SeamEdge {
+                            nb_cell: nbsec,
+                            nb,
+                            a: hex_vertex(wc, wr, va),
+                            b: hex_vertex(wc, wr, vb),
+                        });
                     }
                 }
-                if has_cross {
-                    edge_hexes.push((wc, wr));
-                }
             }
-            Some(SectorGroup { key: key.to_owned(), color, fill, region, interior_stroke, edge_hexes })
+            Some(SectorGroup { key: key.to_owned(), color, fill, interior_stroke, rset, seams })
         })
         .collect();
     SectorGeom { groups }
@@ -564,46 +574,49 @@ fn build_sector_geom(sector: &SectorData) -> SectorGeom {
 
 /// Combine the (cached) per-sector geometry of the on-screen sectors into one
 /// fill + stroke `Path2d` per polity group. Cheap: `add_path` for fills, and a
-/// boundary-stroke pass over the merged region (the only cross-sector part).
+/// per-group combine: cached fills + interior strokes, with cross-sector seam
+/// edges resolved against each neighbor sector's own region (no merged set).
 fn build_border_geometry(sectors: &[&SectorData]) -> Vec<(String, Path2d, Path2d)> {
-    use std::collections::HashSet;
-    SECTOR_GEOM.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        // group key → (color, combined fill, merged region, combined stroke, seam-candidate hexes)
-        type Acc = (String, Path2d, HashSet<(i32, i32)>, Path2d, Vec<(i32, i32)>);
-        let mut acc: HashMap<String, Acc> = HashMap::new();
-        for sector in sectors {
-            let Some(loc) = sector.info.location else { continue };
-            let geom = cache.entry((loc.x, loc.y)).or_insert_with(|| build_sector_geom(sector));
-            for g in &geom.groups {
-                let entry = acc.entry(g.key.clone()).or_insert_with(|| {
-                    (g.color.clone(), Path2d::new().unwrap(), HashSet::new(), Path2d::new().unwrap(), Vec::new())
-                });
-                entry.1.add_path(&g.fill);
-                entry.2.extend(g.region.iter().copied());
-                entry.3.add_path(&g.interior_stroke); // cached same-sector edges
-                entry.4.extend(g.edge_hexes.iter().copied());
+    SECTOR_GEOM.with(|cell| {
+        // Phase 1: ensure each visible sector's geometry is built (cached once).
+        {
+            let mut cache = cell.borrow_mut();
+            for sector in sectors {
+                if let Some(loc) = sector.info.location {
+                    cache.entry((loc.x, loc.y)).or_insert_with(|| build_sector_geom(sector));
+                }
             }
         }
-        acc.into_values()
-            .map(|(color, fill, region, stroke, edge_hexes)| {
-                // Interior edges are already in `stroke` (cached). Recompute only
-                // the seam edges: a hex's neighbor in an ADJACENT sector that the
-                // merged region doesn't cover — boundary-correct across seams,
-                // but iterating only the thin sector-edge ring, not every hex.
-                for (wc, wr) in edge_hexes {
-                    let hsec = hex_sector(wc, wr);
-                    for (nb, (va, vb)) in hex_neighbors(wc, wr) {
-                        if hex_sector(nb.0, nb.1) != hsec && !region.contains(&nb) {
-                            let (a, b) = (hex_vertex(wc, wr, va), hex_vertex(wc, wr, vb));
-                            stroke.move_to(a.0, a.1);
-                            stroke.line_to(b.0, b.1);
-                        }
+        // Phase 2 (read-only): combine cached fills + interior strokes per group,
+        // and resolve each seam candidate against the neighbor sector's region —
+        // no giant merged set, no per-hex rescan.
+        let cache = cell.borrow();
+        let in_region = |key: &str, co: (i32, i32), hex: (i32, i32)| -> bool {
+            cache
+                .get(&co)
+                .is_some_and(|geom| geom.groups.iter().any(|g| g.key == key && g.rset.contains(&hex)))
+        };
+        let mut acc: HashMap<&str, (String, Path2d, Path2d)> = HashMap::new();
+        for sector in sectors {
+            let Some(loc) = sector.info.location else { continue };
+            let Some(geom) = cache.get(&(loc.x, loc.y)) else { continue };
+            for g in &geom.groups {
+                let entry = acc
+                    .entry(g.key.as_str())
+                    .or_insert_with(|| (g.color.clone(), Path2d::new().unwrap(), Path2d::new().unwrap()));
+                entry.1.add_path(&g.fill);
+                entry.2.add_path(&g.interior_stroke); // cached same-sector edges
+                // Seam edges: stroke only where the neighbor isn't in this
+                // group's region in its sector (border ends at the seam).
+                for seam in &g.seams {
+                    if !in_region(&g.key, seam.nb_cell, seam.nb) {
+                        entry.2.move_to(seam.a.0, seam.a.1);
+                        entry.2.line_to(seam.b.0, seam.b.1);
                     }
                 }
-                (color, fill, stroke)
-            })
-            .collect()
+            }
+        }
+        acc.into_values().collect()
     })
 }
 
