@@ -25,14 +25,6 @@ pub trait Canvas {
     /// any CSS color (name or hex); `alpha` is applied via globalAlpha so no
     /// name→rgb table is needed.
     fn fill_polygons(&self, polys: &[Vec<(f64, f64)>], color: &str, alpha: f64);
-    /// Stroke an unfilled circle outline (e.g. a travel-zone ring).
-    fn stroke_circle(&self, x: f64, y: f64, radius: f64, color: &str, width: f64);
-    /// Stroke an arc from `start` to `end` radians, clockwise (for the
-    /// open-bottom travel-zone arc).
-    fn stroke_arc(&self, x: f64, y: f64, radius: f64, start: f64, end: f64, color: &str, width: f64);
-    /// Stroke a rotated ellipse outline (the gas-giant Saturn ring).
-    #[allow(clippy::too_many_arguments)]
-    fn stroke_ellipse(&self, x: f64, y: f64, rx: f64, ry: f64, rot: f64, color: &str, width: f64);
     /// Stroke a polyline through `points`; `close` joins the last point to the
     /// first; a non-empty `dash` makes it dashed (canvas dash pattern).
     fn stroke_polyline(
@@ -95,32 +87,6 @@ impl Canvas for Canvas2d {
         }
         self.ctx.fill();
         self.ctx.set_global_alpha(1.0);
-    }
-
-    fn stroke_circle(&self, x: f64, y: f64, radius: f64, color: &str, width: f64) {
-        self.ctx.set_stroke_style_str(color);
-        self.ctx.set_line_width(width);
-        self.ctx.begin_path();
-        let _ = self.ctx.arc(x, y, radius, 0.0, std::f64::consts::TAU);
-        self.ctx.stroke();
-    }
-
-    fn stroke_arc(&self, x: f64, y: f64, radius: f64, start: f64, end: f64, color: &str, width: f64) {
-        self.ctx.set_stroke_style_str(color);
-        self.ctx.set_line_width(width);
-        self.ctx.begin_path();
-        let _ = self.ctx.arc(x, y, radius, start, end);
-        self.ctx.stroke();
-    }
-
-    fn stroke_ellipse(&self, x: f64, y: f64, rx: f64, ry: f64, rot: f64, color: &str, width: f64) {
-        self.ctx.set_stroke_style_str(color);
-        self.ctx.set_line_width(width);
-        self.ctx.begin_path();
-        let _ = self
-            .ctx
-            .ellipse(x, y, rx.max(0.1), ry.max(0.1), rot, 0.0, std::f64::consts::TAU);
-        self.ctx.stroke();
     }
 
     fn stroke_polyline(

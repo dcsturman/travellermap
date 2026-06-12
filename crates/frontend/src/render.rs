@@ -285,14 +285,15 @@ pub fn draw(
             draw_hex_grid(&c, &view, w, h, dpr, sector_index);
         }
         mark("routes+hexgrid", &mut marks);
-        if view.scale < WORLD_BASIC_SCALE {
-            // Dot tier (no text): batched discs + zone rings from the per-sector
-            // cache — a few fills instead of a draw call per world.
-            draw_world_dots(&c, &view, w, h, dpr, sectors, opts.more_world_colors);
-        } else {
-            for sector in sectors {
-                draw_sector_worlds(&c, &view, w, h, sector, opts.more_world_colors);
-            }
+        // Disc / zone-ring / vacuum-outline layer: identical geometry at every
+        // detail scale (the reference's in-hex disc), so always drawn from the
+        // batched, cached per-sector dot paths — a few fills, not a call/world.
+        draw_world_dots(&c, &view, w, h, dpr, sectors, opts.more_world_colors);
+        // At basic scale and up, add the per-world text + small glyphs (hex#,
+        // starport, gas giant, bases, UWP, allegiance, name) in state-batched
+        // passes: canvas font/fill/align set once per pass, not once per glyph.
+        if view.scale >= WORLD_BASIC_SCALE {
+            draw_world_glyphs(&c, &view, w, h, sectors);
         }
         mark("worlds", &mut marks);
         // Border labels ("Third Imperium") once names are legible.
@@ -1203,29 +1204,26 @@ fn draw_world_dots(canvas: &Canvas2d, view: &ViewState, w: f64, h: f64, dpr: f64
     ctx.restore();
 }
 
-/// Faithful port of the reference `DrawWorld` layout. All offsets and font
-/// sizes are in parsec units (× scale → pixels); the world is centered and the
-/// classic 1980 layout stacks: hex# (top), starport, disc + zone arc, UWP, name.
-fn draw_sector_worlds(c: &impl Canvas, view: &ViewState, w: f64, h: f64, sector: &SectorData, more_colors: bool) {
-    let Some(loc) = sector.info.location else {
-        return;
-    };
+/// Faithful port of the reference `DrawWorld` text layout, drawn in
+/// **state-batched passes**: the disc/zone/outline geometry comes from the
+/// cached dot paths (`draw_world_dots`), and here every glyph kind (hex#,
+/// starport, gas giant, bases, UWP, allegiance, name) is drawn as one pass that
+/// sets the canvas font/fill/align **once** then loops `fillText` over all
+/// on-screen worlds — instead of re-setting that state per glyph per world.
+/// Offsets and font sizes are in parsec units (× scale → px); `cs = s ·
+/// CONTENT_SCALE` sizes glyphs to fill the hex while layout offsets use true `s`.
+fn draw_world_glyphs(canvas: &Canvas2d, view: &ViewState, w: f64, h: f64, sectors: &[&SectorData]) {
+    let ctx = &canvas.ctx;
     let s = view.scale;
-    let detail = s >= WORLD_BASIC_SCALE; // starport / name / hex
     let poster = s >= WORLD_FULL_SCALE; // poster vs atlas positions
     let show_uwp = s >= WORLD_UWP_SCALE;
-    // In-hex glyph *sizes* (disc, fonts, icons) are drawn at
-    // `cs = s * CONTENT_SCALE` so they fill the hex like the reference; the
-    // layout *offsets* stay at the true `s` so nothing is pushed past the hex
-    // edge. LOD thresholds also key off the true `s`.
     let cs = s * CONTENT_SCALE;
 
     // Layout offsets (parsec), poster vs atlas (RenderContext / Stylesheet).
     let (sp_y, uwp_y, name_y) = if poster { (-0.225, 0.225, 0.37) } else { (-0.24, 0.24, 0.40) };
     let (gg_x, gg_y) = if poster { (0.25, -0.18) } else { (0.225, -0.125) };
     let base_x = if poster { -0.25 } else { -0.225 };
-    let disc_r = 0.1 * cs;
-    let zone_r = 0.4 * s; // radius hugs the hex edge — keep at true scale
+    let zone_r = 0.4 * s; // (only used to size the off-screen cull margin)
 
     // Font sizes (parsec → px), porting Stylesheet's fontScale.
     let font_scale = if s <= 96.0 { 1.0 } else { 96.0 / s.min(192.0) };
@@ -1235,7 +1233,6 @@ fn draw_sector_worlds(c: &impl Canvas, view: &ViewState, w: f64, h: f64, sector:
     let name_font = format!("700 {}px {DEFAULT_FONT}", name_pt.max(7.0) as i32);
     let uwp_font = format!("500 {}px {DEFAULT_FONT}", uwp_pt.max(7.0) as i32);
     let hex_font = format!("{}px {DEFAULT_FONT}", hex_pt.max(6.0) as i32);
-    let sp_font = format!("700 {}px {DEFAULT_FONT}", name_pt.max(7.0) as i32);
     let glyph_pt = (if poster { 0.15 * font_scale } else { 0.175 }) * cs;
     let glyph_font = format!("{}px {DEFAULT_FONT}", glyph_pt.max(7.0) as i32);
     // Base slots (left side); bottom slot rises when the UWP needs the room.
@@ -1244,78 +1241,147 @@ fn draw_sector_worlds(c: &impl Canvas, view: &ViewState, w: f64, h: f64, sector:
 
     let pad = zone_r + name_pt * 3.0 + 12.0;
 
-    for world in &sector.worlds {
-        let Some((col, row)) = parse_hex(&world.hex) else {
-            continue;
-        };
-        let (wc, wr) = world_hex(loc.x, loc.y, col, row);
-        let (x, y) = view.to_screen(w, h, hex_parsec(wc, wr));
-        if !on_screen(x, y, w, h, pad) {
-            continue;
-        }
-
-        // Zone: open-bottom arc (radius 0.4) behind everything, like the
-        // reference's clipped ellipse.
-        let zone_color = match world.zone.as_str() {
-            "A" => Some(C_AMBER),
-            "R" => Some(C_RED),
-            _ => None,
-        };
-        if let Some(zc) = zone_color {
-            use std::f64::consts::PI;
-            c.stroke_arc(x, y, zone_r, PI - 0.384, 2.0 * PI + 0.384, zc, (0.03 * cs).max(1.5));
-        }
-
-        // Hex number — top-aligned just inside the top edge (reference TopCenter).
-        if detail {
-            c.fill_text(&world.hex, x, y - 0.5 * s + hex_pt * 0.55, "#9aa3b8", &hex_font, TextAlign::Center);
-        }
-
-        // Disc, colored by trade classification (with vacuum outline).
-        let (fill, outline) = world_colors(world, more_colors);
-        c.fill_circle(x, y, disc_r.max(1.0), fill);
-        if let Some(oc) = outline {
-            c.stroke_circle(x, y, disc_r.max(1.0), oc, (0.02 * cs).max(1.0));
-        }
-
-        if detail {
-            // Starport class (above the disc).
-            if let Some(sp) = world.uwp.chars().next() {
-                if sp != '?' {
-                    c.fill_text(&sp.to_string(), x, y + sp_y * s, "#e9eef9", &sp_font, TextAlign::Center);
-                }
+    // Collect on-screen worlds once (screen coords), shared by every pass.
+    let mut vis: Vec<(&World, f64, f64)> = Vec::new();
+    for sector in sectors {
+        let Some(loc) = sector.info.location else { continue };
+        for world in &sector.worlds {
+            let Some((col, row)) = parse_hex(&world.hex) else { continue };
+            let (wc, wr) = world_hex(loc.x, loc.y, col, row);
+            let (x, y) = view.to_screen(w, h, hex_parsec(wc, wr));
+            if !on_screen(x, y, w, h, pad) {
+                continue;
             }
-            // Gas giant (upper-right): filled disc + Saturn ring when zoomed in.
-            if world.pbg.as_bytes().get(2).is_some_and(|&b| b > b'0' && b != b'?') {
-                let (gx, gy) = (x + gg_x * s, y + gg_y * s);
-                let r = (0.05 * cs).max(1.0);
-                c.fill_circle(gx, gy, r, "#cfd6e6");
-                if show_uwp {
-                    // showGasGiantRing = scale >= WorldUwpMinScale
-                    c.stroke_ellipse(gx, gy, r * 1.75, r * 0.4, -0.5236, "#cfd6e6", (r / 4.0).max(0.6));
-                }
+            vis.push((world, x, y));
+        }
+    }
+    if vis.is_empty() {
+        return;
+    }
+
+    // Text is centered vertically at its y; set once for every pass below.
+    ctx.set_text_baseline("middle");
+
+    // ── Hex number (top, just inside the top edge — reference TopCenter).
+    ctx.set_font(&hex_font);
+    ctx.set_text_align("center");
+    ctx.set_fill_style_str("#9aa3b8");
+    let hex_dy = -0.5 * s + hex_pt * 0.55;
+    for (world, x, y) in &vis {
+        let _ = ctx.fill_text(&world.hex, *x, *y + hex_dy);
+    }
+
+    // ── Starport class (above the disc). Same font as names (700, name_pt).
+    ctx.set_font(&name_font);
+    ctx.set_fill_style_str("#e9eef9");
+    for (world, x, y) in &vis {
+        if let Some(sp) = world.uwp.chars().next() {
+            if sp != '?' {
+                let _ = ctx.fill_text(sp.encode_utf8(&mut [0u8; 4]), *x, *y + sp_y * s);
             }
-            // Bases (left side) as classic glyphs.
-            draw_bases(c, world, x + base_x * s, y + base_top_y * s, y + base_bottom_y * s, &glyph_font);
-            // UWP (above name) then name (bottom).
+        }
+    }
+
+    // ── Gas giant (upper-right): filled discs batched into one path; Saturn
+    // ring (only when zoomed past the UWP threshold) stroked per giant.
+    {
+        let r = (0.05 * cs).max(1.0);
+        let disc = Path2d::new().unwrap();
+        let mut any = false;
+        let has_gg = |wld: &World| wld.pbg.as_bytes().get(2).is_some_and(|&b| b > b'0' && b != b'?');
+        for (world, x, y) in &vis {
+            if has_gg(world) {
+                let (gx, gy) = (*x + gg_x * s, *y + gg_y * s);
+                disc.move_to(gx + r, gy);
+                let _ = disc.arc(gx, gy, r, 0.0, std::f64::consts::TAU);
+                any = true;
+            }
+        }
+        if any {
+            ctx.set_fill_style_str("#cfd6e6");
+            ctx.fill_with_path_2d(&disc);
             if show_uwp {
-                c.fill_text(&world.uwp, x, y + uwp_y * s, "#c9d2e4", &uwp_font, TextAlign::Center);
+                ctx.set_stroke_style_str("#cfd6e6");
+                ctx.set_line_width((r / 4.0).max(0.6));
+                for (world, x, y) in &vis {
+                    if has_gg(world) {
+                        let (gx, gy) = (*x + gg_x * s, *y + gg_y * s);
+                        ctx.begin_path();
+                        let _ = ctx.ellipse(gx, gy, r * 1.75, r * 0.4, -0.5236, 0.0, std::f64::consts::TAU);
+                        ctx.stroke();
+                    }
+                }
             }
-            // Allegiance code (e.g. NaHu) to the right of the disc.
-            if s >= ALLEGIANCE_MIN_SCALE && !world.allegiance.is_empty() && world.allegiance != "--" {
-                c.fill_text(&world.allegiance, x + 0.20 * s, y + 0.08 * s, "#aab3c8", &uwp_font, TextAlign::Left);
+        }
+    }
+
+    // ── Bases (left side) as classic glyphs. Font/align set once; fill toggles
+    // only between white and red (red is sparse), so track the last color.
+    ctx.set_font(&glyph_font);
+    ctx.set_text_align("center");
+    let mut last = "";
+    let bx = base_x * s;
+    for (world, x, y) in &vis {
+        let mut chars = world.bases.chars();
+        let mut bottom_used = false;
+        if let Some(c0) = chars.next() {
+            if let Some(g) = glyph::base_glyph(&world.allegiance, c0) {
+                bottom_used = g.bias == glyph::Bias::Bottom;
+                let col = if g.highlight { C_RED } else { "#e9eef9" };
+                if col != last { ctx.set_fill_style_str(col); last = col; }
+                let gy = if bottom_used { base_bottom_y } else { base_top_y } * s;
+                let _ = ctx.fill_text(g.chars, *x + bx, *y + gy);
             }
-            // High-population worlds (pop exponent ≥ 9 = ≥1 billion) are drawn
-            // in ALL CAPS; subsector/sector capitals (Cp/Cs/Cx) in red — the
-            // reference's `IsHi` uppercase + capital highlight.
-            let hi_pop = world.uwp.as_bytes().get(4).copied().and_then(ehex).is_some_and(|p| p >= 9);
-            let is_capital = world.codes().any(|c| matches!(c, "Cp" | "Cs" | "Cx" | "Capital"));
-            let name_color = if is_capital { "#e8636f" } else { "#e9eef9" };
-            if hi_pop {
-                c.fill_text(&world.name.to_uppercase(), x, y + name_y * s, name_color, &name_font, TextAlign::Center);
-            } else {
-                c.fill_text(&world.name, x, y + name_y * s, name_color, &name_font, TextAlign::Center);
+        }
+        if let Some(c1) = chars.next() {
+            if let Some(g) = glyph::base_glyph(&world.allegiance, c1) {
+                let bottom = !bottom_used;
+                let col = if g.highlight { C_RED } else { "#e9eef9" };
+                if col != last { ctx.set_fill_style_str(col); last = col; }
+                let gy = if bottom { base_bottom_y } else { base_top_y } * s;
+                let _ = ctx.fill_text(g.chars, *x + bx, *y + gy);
             }
+        }
+    }
+
+    // ── UWP (above name), only past the UWP scale threshold.
+    if show_uwp {
+        ctx.set_font(&uwp_font);
+        ctx.set_text_align("center");
+        ctx.set_fill_style_str("#c9d2e4");
+        for (world, x, y) in &vis {
+            let _ = ctx.fill_text(&world.uwp, *x, *y + uwp_y * s);
+        }
+    }
+
+    // ── Allegiance code (e.g. NaHu) to the right of the disc, when zoomed in.
+    if s >= ALLEGIANCE_MIN_SCALE {
+        ctx.set_font(&uwp_font);
+        ctx.set_text_align("left");
+        ctx.set_fill_style_str("#aab3c8");
+        for (world, x, y) in &vis {
+            if !world.allegiance.is_empty() && world.allegiance != "--" {
+                let _ = ctx.fill_text(&world.allegiance, *x + 0.20 * s, *y + 0.08 * s);
+            }
+        }
+    }
+
+    // ── World name (bottom). High-pop (≥1e9) in ALL CAPS, capitals in red —
+    // the reference's `IsHi` uppercase + capital highlight. Fill toggles only
+    // for the sparse capitals, so track the last color rather than re-setting.
+    ctx.set_font(&name_font);
+    ctx.set_text_align("center");
+    let mut last = "";
+    let name_dy = name_y * s;
+    for (world, x, y) in &vis {
+        let hi_pop = world.uwp.as_bytes().get(4).copied().and_then(ehex).is_some_and(|p| p >= 9);
+        let is_capital = world.codes().any(|c| matches!(c, "Cp" | "Cs" | "Cx" | "Capital"));
+        let col = if is_capital { "#e8636f" } else { "#e9eef9" };
+        if col != last { ctx.set_fill_style_str(col); last = col; }
+        if hi_pop {
+            let _ = ctx.fill_text(&world.name.to_uppercase(), *x, *y + name_dy);
+        } else {
+            let _ = ctx.fill_text(&world.name, *x, *y + name_dy);
         }
     }
 }
@@ -1324,29 +1390,6 @@ fn draw_sector_worlds(c: &impl Canvas, view: &ViewState, w: f64, h: f64, sector:
 /// keeps text the same width/weight — `system-ui` (San Francisco on macOS) is
 /// narrower and reads smaller at the same px size.
 const DEFAULT_FONT: &str = "Arial, 'Helvetica Neue', Helvetica, sans-serif";
-
-/// Draw a world's base glyphs in the top/bottom-left slots (porting the
-/// reference's two-base bias logic: a bottom-biased first base pushes the
-/// second to the top slot, and vice-versa). Highlighted glyphs are red.
-fn draw_bases(c: &impl Canvas, world: &World, bx: f64, top_y: f64, bottom_y: f64, font: &str) {
-    let mut chars = world.bases.chars();
-    let mut bottom_used = false;
-    if let Some(c0) = chars.next() {
-        if let Some(g) = glyph::base_glyph(&world.allegiance, c0) {
-            let bottom = g.bias == glyph::Bias::Bottom;
-            bottom_used = bottom;
-            let col = if g.highlight { C_RED } else { "#e9eef9" };
-            c.fill_text(g.chars, bx, if bottom { bottom_y } else { top_y }, col, font, TextAlign::Center);
-        }
-    }
-    if let Some(c1) = chars.next() {
-        if let Some(g) = glyph::base_glyph(&world.allegiance, c1) {
-            let bottom = !bottom_used;
-            let col = if g.highlight { C_RED } else { "#e9eef9" };
-            c.fill_text(g.chars, bx, if bottom { bottom_y } else { top_y }, col, font, TextAlign::Center);
-        }
-    }
-}
 
 /// Hex (ehex) digit value: 0-9, A=10 … (Traveller extended hex).
 fn ehex(c: u8) -> Option<i32> {
