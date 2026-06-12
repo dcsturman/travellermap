@@ -282,7 +282,7 @@ pub fn draw(
         // Per-parsec hex grid only once hexes are big enough to read (and to
         // avoid drawing tens of thousands of hexagons when zoomed out).
         if opts.sector_grid && view.scale >= PARSEC_GRID_MIN_SCALE {
-            draw_hex_grid(&c, &view, w, h);
+            draw_hex_grid(&c, &view, w, h, dpr, sector_index);
         }
         mark("routes+hexgrid", &mut marks);
         for sector in sectors {
@@ -936,27 +936,99 @@ fn draw_world_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f64, ov: &Ove
 
 // --- grid + worlds ----------------------------------------------------------
 
-fn draw_hex_grid(c: &impl Canvas, view: &ViewState, w: f64, h: f64) {
-    let size = view.scale / 3f64.sqrt();
-    if size < 2.0 {
-        return;
-    }
-    let (wc0, wc1, wr0, wr1) = visible_hex_range(view, w, h);
-    for wc in wc0..=wc1 {
-        for wr in wr0..=wr1 {
-            let (cx, cy) = view.to_screen(w, h, hex_parsec(wc, wr));
-            if !on_screen(cx, cy, w, h, size) {
-                continue;
+// Persistent per-sector hex-grid geometry: one `Path2d` of all 1280 hex
+// outlines in world (parsec) coords, built once per sector. Same trick as the
+// border cache — the old grid issued a separate `stroke()` per on-screen
+// hexagon (thousands of wasm→JS crossings per frame, the zoomed-in hot layer);
+// now we stroke cached world-space paths under one view transform. (Clear on
+// milieu switch, like `SECTOR_GEOM`.)
+thread_local! {
+    static GRID_GEOM: RefCell<HashMap<(i32, i32), Path2d>> = RefCell::new(HashMap::new());
+}
+
+/// Build (once) the full hex-grid outline `Path2d` for one sector, in world
+/// coords (so it composes with the world→device transform like the borders).
+fn build_grid_geom(loc: (i32, i32)) -> Path2d {
+    let p = Path2d::new().unwrap();
+    for col in 1..=SECTOR_W {
+        for row in 1..=SECTOR_H {
+            let (wc, wr) = (loc.0 * SECTOR_W + col, loc.1 * SECTOR_H + row);
+            let v0 = hex_vertex(wc, wr, 0);
+            p.move_to(v0.0, v0.1);
+            for k in 1..6 {
+                let v = hex_vertex(wc, wr, k);
+                p.line_to(v.0, v.1);
             }
-            let pts: Vec<(f64, f64)> = (0..6)
-                .map(|k| {
-                    let a = std::f64::consts::FRAC_PI_3 * k as f64;
-                    (cx + size * a.cos(), cy + size * a.sin())
-                })
-                .collect();
-            c.stroke_polyline(&pts, "rgba(130,150,190,0.22)", 1.0, true, &[]);
+            p.close_path();
         }
     }
+    p
+}
+
+/// Does this sector's bounding box overlap the viewport (+~1 hex margin)? Used
+/// to skip off-screen sectors in the `sectors` slice so we don't stroke their
+/// whole grids.
+fn sector_in_viewport(loc: (i32, i32), view: &ViewState, w: f64, h: f64) -> bool {
+    let (c0, c1) = (loc.0 * SECTOR_W + 1, loc.0 * SECTOR_W + SECTOR_W);
+    let (r0, r1) = (loc.1 * SECTOR_H + 1, loc.1 * SECTOR_H + SECTOR_H);
+    let (mut minx, mut maxx, mut miny, mut maxy) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+    for &c in &[c0, c1] {
+        for &r in &[r0, r1] {
+            let (x, y) = view.to_screen(w, h, hex_parsec(c, r));
+            minx = minx.min(x);
+            maxx = maxx.max(x);
+            miny = miny.min(y);
+            maxy = maxy.max(y);
+        }
+    }
+    let m = view.scale;
+    maxx >= -m && minx <= w + m && maxy >= -m && miny <= h + m
+}
+
+/// Per-parsec hex grid, drawn from cached per-sector world-space `Path2d`s under
+/// one view transform — a handful of `add_path` + a single `stroke`, instead of
+/// a `stroke()` per on-screen hexagon.
+fn draw_hex_grid(
+    canvas: &Canvas2d,
+    view: &ViewState,
+    w: f64,
+    h: f64,
+    dpr: f64,
+    sector_index: &HashMap<(i32, i32), String>,
+) {
+    let s = view.scale;
+    if s / 3f64.sqrt() < 2.0 {
+        return; // hexes too small to read
+    }
+    // Draw the grid for every *charted* sector overlapping the viewport (from
+    // the index, not the loaded set) so it shows regardless of world-data load
+    // state and never tiles the uncharted void.
+    let combined = Path2d::new().unwrap();
+    let mut any = false;
+    GRID_GEOM.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        for cell in visible_sectors(view, w, h) {
+            if !sector_index.contains_key(&cell) || !sector_in_viewport(cell, view, w, h) {
+                continue;
+            }
+            let g = cache.entry(cell).or_insert_with(|| build_grid_geom(cell));
+            combined.add_path(g);
+            any = true;
+        }
+    });
+    if !any {
+        return;
+    }
+    let ctx = &canvas.ctx;
+    // World(parsec) → device: device = dpr · (w/2 + (p − center)·s), uniform.
+    let a = dpr * s;
+    let (e, f) = (dpr * (w / 2.0 - view.center.0 * s), dpr * (h / 2.0 - view.center.1 * s));
+    ctx.save();
+    let _ = ctx.set_transform(a, 0.0, 0.0, a, e, f);
+    ctx.set_line_width(1.0 / s); // ~1 css px (the transform scales by s)
+    ctx.set_stroke_style_str("rgba(130,150,190,0.22)");
+    ctx.stroke_with_path(&combined);
+    ctx.restore();
 }
 
 /// Faithful port of the reference `DrawWorld` layout. All offsets and font
