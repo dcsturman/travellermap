@@ -14,7 +14,7 @@ use axum::{
     extract::{Path, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use serde::Deserialize;
@@ -211,6 +211,7 @@ async fn main() {
         .route("/api/search", get(get_search))
         .route("/api/sector/{milieu}/{name}", get(get_sector))
         .route("/api/res/{*path}", get(get_res))
+        .route("/api/admin/flush", post(flush_cache))
         // Permissive CORS is a dev convenience (Trunk serves the wasm app from
         // a different origin). Tighten before any real deployment.
         .layer(CorsLayer::permissive())
@@ -224,6 +225,19 @@ async fn main() {
 
 async fn health() -> &'static str {
     "ok"
+}
+
+/// `POST /api/admin/flush` — drop the built-response cache so the next request
+/// for each sector/overlay re-parses from `res/` (the cold-cache path). The
+/// parsed-index caches (universe/search) stay warm on purpose: for profiling we
+/// want to measure sector parse + serialize, not re-parse the milieu index on
+/// every request. Returns how many entries were evicted. Unauthenticated — a
+/// dev/profiling convenience; gate or remove before any real deployment.
+async fn flush_cache(State(state): State<AppState>) -> Response {
+    let mut cache = state.response_cache.lock().unwrap();
+    let n = cache.len();
+    cache.clear();
+    (StatusCode::OK, format!("flushed {n} cached responses\n")).into_response()
 }
 
 /// `GET /api/res/{*path}` — serve a static asset from the shared `res/` tree

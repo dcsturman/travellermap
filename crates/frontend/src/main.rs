@@ -211,6 +211,9 @@ fn App() -> impl IntoView {
         }
         let Some(v) = view.get() else { return };
         let _ = canvas_size.get();
+        // Re-run as batches arrive so a viewport larger than MAX_STREAM keeps
+        // filling in (this effect otherwise only fires on pan/zoom).
+        let _ = version.get();
         if v.scale < render::WORLD_MIN_SCALE {
             return; // zoomed out — macro overlays cover this, no per-sector fetch
         }
@@ -219,10 +222,14 @@ fn App() -> impl IntoView {
         };
         let (w, h) = logical_dims(&canvas_el);
         let needed = render::visible_sectors(&v, w, h);
-        if needed.len() > MAX_STREAM {
-            return;
-        }
-        let to_fetch: Vec<((i32, i32), String)> = index.with_value(|idx| {
+        // Viewport-center cell (bbox midpoint of the visible range) — used to
+        // fetch nearest-first.
+        let (cx, cy) = needed.iter().fold((0i64, 0i64), |(ax, ay), (x, y)| {
+            (ax + *x as i64, ay + *y as i64)
+        });
+        let n = needed.len().max(1) as i64;
+        let (cx, cy) = ((cx / n) as i32, (cy / n) as i32);
+        let mut to_fetch: Vec<((i32, i32), String)> = index.with_value(|idx| {
             needed
                 .into_iter()
                 .filter_map(|cell| idx.get(&cell).map(|name| (cell, name.clone())))
@@ -233,6 +240,15 @@ fn App() -> impl IntoView {
                 })
                 .collect()
         });
+        // Never bail on a big viewport: fetch the nearest-to-center unloaded
+        // sectors up to the cap (bounds concurrent fetches), and the `version`
+        // re-run above pulls in the rest as these land — so it converges instead
+        // of leaving panned-to sectors permanently blank.
+        to_fetch.sort_by_key(|((x, y), _)| {
+            let (dx, dy) = ((x - cx) as i64, (y - cy) as i64);
+            dx * dx + dy * dy
+        });
+        to_fetch.truncate(MAX_STREAM);
         for (cell, name) in to_fetch {
             inflight.update_value(|i| {
                 i.insert(cell);
