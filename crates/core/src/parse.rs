@@ -592,6 +592,24 @@ pub fn border_region(hexes: &[String], sx: i32, sy: i32) -> Vec<(i32, i32)> {
     region
 }
 
+/// Extract one sector's inline metadata block (`<Sector>…</Sector>`) from a
+/// milieu region list, by sector name. Many sectors keep their borders/routes/
+/// subsectors inline in the region list (`{milieu}.xml`) in addition to — or
+/// instead of — a per-sector `<name>.xml` (the Aslan Hierate interior has only
+/// the inline form). The returned substring is a valid single-root XML document
+/// that `sector_borders`/`sector_routes`/`sector_subsectors`/`sector_border_styles`
+/// consume directly. Matches against any `<Name>` child (sectors can carry
+/// several localized names).
+pub fn milieu_sector_block(region_xml: &str, name: &str) -> Option<String> {
+    let doc = roxmltree::Document::parse(region_xml).ok()?;
+    let node = doc.descendants().filter(|n| n.has_tag_name("Sector")).find(|s| {
+        s.children()
+            .filter(|n| n.has_tag_name("Name"))
+            .any(|n| n.text().map(|t| t.trim() == name).unwrap_or(false))
+    })?;
+    Some(region_xml[node.range()].to_owned())
+}
+
 /// Per-sector routes from a sector metadata `.xml` (`<Route Start="…" End="…"
 /// [StartOffsetX/Y EndOffsetX/Y Allegiance]/>`).
 pub fn sector_routes(xml: &str) -> Vec<Route> {

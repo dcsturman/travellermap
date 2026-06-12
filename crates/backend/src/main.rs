@@ -5,7 +5,7 @@
 //! job is to stream sector/metadata (see `tmap_core::dto`) to the browser,
 //! which renders the map itself (Leptos/WASM). See CLAUDE.md "Mission".
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -54,6 +54,10 @@ struct AppState {
     /// Cache of serialized JSON responses (key → (etag, bytes)) so repeat
     /// requests skip parsing + serialization. The data is static at runtime.
     response_cache: Arc<Mutex<HashMap<String, (String, Bytes)>>>,
+    /// Lazily-cached raw text of each milieu's region list (`{milieu}.xml`). A
+    /// sector's borders/routes may be defined inline there as well as (or
+    /// instead of) in its own `.xml`, so sector builds consult it.
+    region_cache: Arc<Mutex<HashMap<String, Arc<String>>>>,
 }
 
 /// Parse the named `res/Vectors/{name}.xml` files, skipping any that fail.
@@ -124,6 +128,27 @@ impl AppState {
             .unwrap()
             .insert(milieu.to_string(), u.clone());
         Ok(u)
+    }
+
+    /// Raw region-list XML (`{milieu}.xml`) for a milieu, read + cached on first
+    /// use. Empty string if absent. Used to recover metadata (borders/routes)
+    /// for sectors that define it inline in the region list rather than in their
+    /// own `.xml`.
+    fn region_xml(&self, milieu: &str) -> Arc<String> {
+        if let Some(r) = self.region_cache.lock().unwrap().get(milieu) {
+            return r.clone();
+        }
+        let path = self
+            .res_dir
+            .join("Sectors")
+            .join(milieu)
+            .join(format!("{milieu}.xml"));
+        let arc = Arc::new(read_text(path).unwrap_or_default());
+        self.region_cache
+            .lock()
+            .unwrap()
+            .insert(milieu.to_string(), arc.clone());
+        arc
     }
 
     /// The name search index for a milieu, built and cached on first use.
@@ -202,6 +227,7 @@ async fn main() {
         overlays: Arc::new(OnceLock::new()),
         search_cache: Arc::new(Mutex::new(HashMap::new())),
         response_cache: Arc::new(Mutex::new(HashMap::new())),
+        region_cache: Arc::new(Mutex::new(HashMap::new())),
     };
 
     let app = Router::new()
@@ -494,10 +520,45 @@ fn build_sector_bytes(
         })
         .unwrap_or_else(|| format!("{name}.xml"));
     let meta_xml = read_text(dir.join(&meta_file)).unwrap_or_default();
-    let subsectors = sector_subsectors(&meta_xml);
-    let routes = sector_routes(&meta_xml);
+    // A sector's metadata may live in its own `<name>.xml` AND/OR inline in the
+    // milieu region list's `<Sector>` block — read BOTH and merge (dedup), never
+    // assuming one or the other. The Aslan Hierate interior, for example, has
+    // borders only inline in the region list while its worlds load from a bare
+    // `.tab`; frontier sectors have their own file. Missing either source drops
+    // real borders/routes (left whole polities unshaded).
+    let region = state.region_xml(milieu);
+    let inline = tmap_core::parse::milieu_sector_block(&region, name).unwrap_or_default();
+
+    let mut subsectors = sector_subsectors(&meta_xml);
+    if subsectors.is_empty() {
+        subsectors = sector_subsectors(&inline);
+    }
+
+    let mut routes = sector_routes(&meta_xml);
+    let mut seen_routes: HashSet<(String, String, (i32, i32), (i32, i32))> = routes
+        .iter()
+        .map(|r| (r.start.clone(), r.end.clone(), r.start_offset, r.end_offset))
+        .collect();
+    for r in sector_routes(&inline) {
+        if seen_routes.insert((r.start.clone(), r.end.clone(), r.start_offset, r.end_offset)) {
+            routes.push(r);
+        }
+    }
+
     let mut borders = sector_borders(&meta_xml);
-    let border_styles = sector_border_styles(&meta_xml);
+    let mut seen_borders: HashSet<(String, Vec<String>)> =
+        borders.iter().map(|b| (b.allegiance.clone(), b.hexes.clone())).collect();
+    for b in sector_borders(&inline) {
+        if seen_borders.insert((b.allegiance.clone(), b.hexes.clone())) {
+            borders.push(b);
+        }
+    }
+
+    let mut border_styles = sector_border_styles(&meta_xml);
+    for (k, v) in sector_border_styles(&inline) {
+        border_styles.entry(k).or_insert(v);
+    }
+
     for b in &mut borders {
         if let Some(loc) = location {
             b.region = border_region(&b.hexes, loc.x, loc.y);
@@ -549,6 +610,7 @@ mod tests {
             overlays: Arc::new(OnceLock::new()),
             search_cache: Arc::new(Mutex::new(HashMap::new())),
             response_cache: Arc::new(Mutex::new(HashMap::new())),
+            region_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -594,6 +656,24 @@ mod tests {
             data.worlds.len() > 100,
             "Yiklerzdanzh (SEC format) should parse worlds, got {}",
             data.worlds.len()
+        );
+
+        // Aslan Hierate interior sectors (e.g. Hlakhoi) have NO per-sector
+        // metadata `.xml` — their `As` border lives only inline in the milieu
+        // region list `M1105.xml`. Must still produce a filled border region,
+        // else huge swathes of the Hierate render unshaded.
+        let bytes = build_sector_bytes(&state, "M1105", "Hlakhoi", "overview")
+            .expect("Hlakhoi builds");
+        let data: SectorData = serde_json::from_slice(&bytes).unwrap();
+        let as_region: usize = data
+            .borders
+            .iter()
+            .filter(|b| b.allegiance.starts_with("As"))
+            .map(|b| b.region.len())
+            .sum();
+        assert!(
+            as_region > 100,
+            "Hlakhoi (inline-only border in region list) should have an Aslan border region, got {as_region}"
         );
     }
 }
