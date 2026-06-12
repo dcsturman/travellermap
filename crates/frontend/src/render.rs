@@ -285,8 +285,14 @@ pub fn draw(
             draw_hex_grid(&c, &view, w, h, dpr, sector_index);
         }
         mark("routes+hexgrid", &mut marks);
-        for sector in sectors {
-            draw_sector_worlds(&c, &view, w, h, sector, opts.more_world_colors);
+        if view.scale < WORLD_BASIC_SCALE {
+            // Dot tier (no text): batched discs + zone rings from the per-sector
+            // cache — a few fills instead of a draw call per world.
+            draw_world_dots(&c, &view, w, h, dpr, sectors, opts.more_world_colors);
+        } else {
+            for sector in sectors {
+                draw_sector_worlds(&c, &view, w, h, sector, opts.more_world_colors);
+            }
         }
         mark("worlds", &mut marks);
         // Border labels ("Third Imperium") once names are legible.
@@ -478,13 +484,28 @@ struct SectorGroup {
     color: String,
     fill: Path2d,
     region: Vec<(i32, i32)>,
+    /// Boundary edges to **same-sector** non-region neighbors — determined by
+    /// this sector's region alone, so cached once (the bulk of the stroke).
+    interior_stroke: Path2d,
+    /// Region hexes that have a neighbor in an **adjacent sector**; their
+    /// cross-sector ("seam") edges are the only part recomputed per combine,
+    /// against the merged region.
+    edge_hexes: Vec<(i32, i32)>,
+}
+
+/// The sector grid cell a world hex belongs to.
+fn hex_sector(wc: i32, wr: i32) -> (i32, i32) {
+    ((wc - 1).div_euclid(SECTOR_W), (wr - 1).div_euclid(SECTOR_H))
 }
 thread_local! {
     static SECTOR_GEOM: RefCell<HashMap<(i32, i32), SectorGeom>> = RefCell::new(HashMap::new());
 }
 
-/// Build (once) the fill `Path2d` + region hexes for one sector's border groups.
+/// Build (once) per-sector border geometry: each group's fill `Path2d`, its
+/// region hexes, the cached **interior** boundary stroke (same-sector edges),
+/// and the list of hexes that touch an adjacent sector (for seam recompute).
 fn build_sector_geom(sector: &SectorData) -> SectorGeom {
+    use std::collections::HashSet;
     let mut groups: HashMap<&str, (String, Vec<(i32, i32)>)> = HashMap::new();
     for border in &sector.borders {
         if border.region.is_empty() {
@@ -502,7 +523,10 @@ fn build_sector_geom(sector: &SectorData) -> SectorGeom {
     let groups = groups
         .into_iter()
         .filter_map(|(key, (color, region))| {
+            let rset: HashSet<(i32, i32)> = region.iter().copied().collect();
             let fill = Path2d::new().ok()?;
+            let interior_stroke = Path2d::new().ok()?;
+            let mut edge_hexes = Vec::new();
             for &(wc, wr) in &region {
                 // Inflate fill hexagons ~3% so neighbors overlap (no AA seam).
                 let v0 = hex_vertex_r(wc, wr, 0, HEX_VR * 1.03);
@@ -512,8 +536,27 @@ fn build_sector_geom(sector: &SectorData) -> SectorGeom {
                     fill.line_to(v.0, v.1);
                 }
                 fill.close_path();
+                // Classify each edge: same-sector edges resolve against this
+                // sector's region now (cached); cross-sector ones wait for the
+                // merged region at combine time.
+                let hsec = hex_sector(wc, wr);
+                let mut has_cross = false;
+                for (nb, (va, vb)) in hex_neighbors(wc, wr) {
+                    if hex_sector(nb.0, nb.1) == hsec {
+                        if !rset.contains(&nb) {
+                            let (a, b) = (hex_vertex(wc, wr, va), hex_vertex(wc, wr, vb));
+                            interior_stroke.move_to(a.0, a.1);
+                            interior_stroke.line_to(b.0, b.1);
+                        }
+                    } else {
+                        has_cross = true;
+                    }
+                }
+                if has_cross {
+                    edge_hexes.push((wc, wr));
+                }
             }
-            Some(SectorGroup { key: key.to_owned(), color, fill, region })
+            Some(SectorGroup { key: key.to_owned(), color, fill, region, interior_stroke, edge_hexes })
         })
         .collect();
     SectorGeom { groups }
@@ -526,28 +569,32 @@ fn build_border_geometry(sectors: &[&SectorData]) -> Vec<(String, Path2d, Path2d
     use std::collections::HashSet;
     SECTOR_GEOM.with(|cache| {
         let mut cache = cache.borrow_mut();
-        // group key → (color, combined fill, merged region hex-set)
-        let mut acc: HashMap<String, (String, Path2d, HashSet<(i32, i32)>)> = HashMap::new();
+        // group key → (color, combined fill, merged region, combined stroke, seam-candidate hexes)
+        type Acc = (String, Path2d, HashSet<(i32, i32)>, Path2d, Vec<(i32, i32)>);
+        let mut acc: HashMap<String, Acc> = HashMap::new();
         for sector in sectors {
             let Some(loc) = sector.info.location else { continue };
             let geom = cache.entry((loc.x, loc.y)).or_insert_with(|| build_sector_geom(sector));
             for g in &geom.groups {
-                let entry = acc
-                    .entry(g.key.clone())
-                    .or_insert_with(|| (g.color.clone(), Path2d::new().unwrap(), HashSet::new()));
+                let entry = acc.entry(g.key.clone()).or_insert_with(|| {
+                    (g.color.clone(), Path2d::new().unwrap(), HashSet::new(), Path2d::new().unwrap(), Vec::new())
+                });
                 entry.1.add_path(&g.fill);
                 entry.2.extend(g.region.iter().copied());
+                entry.3.add_path(&g.interior_stroke); // cached same-sector edges
+                entry.4.extend(g.edge_hexes.iter().copied());
             }
         }
         acc.into_values()
-            .map(|(color, fill, region)| {
-                // Stroke only edges where the merged region meets a non-region
-                // hex — boundary-correct across sector seams (the reason this
-                // pass can't be cached per-sector).
-                let stroke = Path2d::new().unwrap();
-                for &(wc, wr) in &region {
+            .map(|(color, fill, region, stroke, edge_hexes)| {
+                // Interior edges are already in `stroke` (cached). Recompute only
+                // the seam edges: a hex's neighbor in an ADJACENT sector that the
+                // merged region doesn't cover — boundary-correct across seams,
+                // but iterating only the thin sector-edge ring, not every hex.
+                for (wc, wr) in edge_hexes {
+                    let hsec = hex_sector(wc, wr);
                     for (nb, (va, vb)) in hex_neighbors(wc, wr) {
-                        if !region.contains(&nb) {
+                        if hex_sector(nb.0, nb.1) != hsec && !region.contains(&nb) {
                             let (a, b) = (hex_vertex(wc, wr, va), hex_vertex(wc, wr, vb));
                             stroke.move_to(a.0, a.1);
                             stroke.line_to(b.0, b.1);
@@ -1028,6 +1075,118 @@ fn draw_hex_grid(
     ctx.set_line_width(1.0 / s); // ~1 css px (the transform scales by s)
     ctx.set_stroke_style_str("rgba(130,150,190,0.22)");
     ctx.stroke_with_path(&combined);
+    ctx.restore();
+}
+
+/// Dot-tier disc radius (parsec) and zone-ring radius (parsec) — constant in
+/// world space, so the dot geometry can be cached and drawn under the view
+/// transform.
+const DOT_R: f64 = 0.1 * CONTENT_SCALE;
+const ZONE_R: f64 = 0.4;
+
+/// Cached per-sector "dot tier" geometry (scale < `WORLD_BASIC_SCALE`, no text):
+/// world discs + travel-zone rings grouped by color into `Path2d`s in world
+/// coords. Built once per sector (per `more_colors` setting) so a zoomed-out
+/// frame with thousands of worlds issues a few `fill`/`stroke`s instead of a
+/// `fill_circle`/`stroke_arc` per world. *(Clear on milieu switch.)*
+struct SectorDots {
+    more_colors: bool,
+    discs: Vec<(String, Path2d)>,
+    outlines: Vec<(String, Path2d)>,
+    zones: Vec<(String, Path2d)>,
+}
+thread_local! {
+    static SECTOR_DOTS: RefCell<HashMap<(i32, i32), SectorDots>> = RefCell::new(HashMap::new());
+}
+
+fn build_sector_dots(sector: &SectorData, more_colors: bool) -> SectorDots {
+    use std::f64::consts::PI;
+    let mut discs: HashMap<String, Path2d> = HashMap::new();
+    let mut outlines: HashMap<String, Path2d> = HashMap::new();
+    let mut zones: HashMap<String, Path2d> = HashMap::new();
+    if let Some(loc) = sector.info.location {
+        let add_circle = |map: &mut HashMap<String, Path2d>, color: &str, cx: f64, cy: f64| {
+            let p = map.entry(color.to_owned()).or_insert_with(|| Path2d::new().unwrap());
+            p.move_to(cx + DOT_R, cy);
+            let _ = p.arc(cx, cy, DOT_R, 0.0, 2.0 * PI);
+        };
+        for world in &sector.worlds {
+            let Some((col, row)) = parse_hex(&world.hex) else { continue };
+            let (wc, wr) = world_hex(loc.x, loc.y, col, row);
+            let (cx, cy) = hex_parsec(wc, wr);
+            // Travel-zone open-bottom arc (behind the disc).
+            let zc = match world.zone.as_str() { "A" => Some(C_AMBER), "R" => Some(C_RED), _ => None };
+            if let Some(zc) = zc {
+                let (a0, a1) = (PI - 0.384, 2.0 * PI + 0.384);
+                let p = zones.entry(zc.to_owned()).or_insert_with(|| Path2d::new().unwrap());
+                p.move_to(cx + ZONE_R * a0.cos(), cy + ZONE_R * a0.sin());
+                let _ = p.arc(cx, cy, ZONE_R, a0, a1);
+            }
+            let (fill, outline) = world_colors(world, more_colors);
+            add_circle(&mut discs, fill, cx, cy);
+            if let Some(oc) = outline {
+                add_circle(&mut outlines, oc, cx, cy);
+            }
+        }
+    }
+    SectorDots {
+        more_colors,
+        discs: discs.into_iter().collect(),
+        outlines: outlines.into_iter().collect(),
+        zones: zones.into_iter().collect(),
+    }
+}
+
+/// Dot-tier worlds (scale < `WORLD_BASIC_SCALE`): batched discs + zone rings
+/// from the per-sector cache, drawn under one view transform.
+fn draw_world_dots(canvas: &Canvas2d, view: &ViewState, w: f64, h: f64, dpr: f64, sectors: &[&SectorData], more_colors: bool) {
+    let s = view.scale;
+    let mut discs: HashMap<String, Path2d> = HashMap::new();
+    let mut outlines: HashMap<String, Path2d> = HashMap::new();
+    let mut zones: HashMap<String, Path2d> = HashMap::new();
+    let merge = |dst: &mut HashMap<String, Path2d>, src: &[(String, Path2d)]| {
+        for (c, p) in src {
+            dst.entry(c.clone()).or_insert_with(|| Path2d::new().unwrap()).add_path(p);
+        }
+    };
+    SECTOR_DOTS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        for sector in sectors {
+            let Some(loc) = sector.info.location else { continue };
+            if !sector_in_viewport((loc.x, loc.y), view, w, h) {
+                continue;
+            }
+            let dots = cache.entry((loc.x, loc.y)).or_insert_with(|| build_sector_dots(sector, more_colors));
+            if dots.more_colors != more_colors {
+                *dots = build_sector_dots(sector, more_colors); // toggle changed disc colors
+            }
+            merge(&mut zones, &dots.zones);
+            merge(&mut discs, &dots.discs);
+            merge(&mut outlines, &dots.outlines);
+        }
+    });
+    let ctx = &canvas.ctx;
+    let a = dpr * s;
+    let (e, f) = (dpr * (w / 2.0 - view.center.0 * s), dpr * (h / 2.0 - view.center.1 * s));
+    let cs = s * CONTENT_SCALE;
+    ctx.save();
+    let _ = ctx.set_transform(a, 0.0, 0.0, a, e, f);
+    // Zones first (behind), then disc fills, then vacuum outlines. Line widths
+    // are css px ÷ s (the transform scales by s).
+    ctx.set_line_width(((0.03 * cs).max(1.5)) / s);
+    for (color, path) in &zones {
+        ctx.set_stroke_style_str(color);
+        ctx.stroke_with_path(path);
+    }
+    for (color, path) in &discs {
+        ctx.set_fill_style_str(color);
+        ctx.fill_with_path_2d(path);
+    }
+    ctx.set_line_width(((0.02 * cs).max(1.0)) / s);
+    for (color, path) in &outlines {
+        ctx.set_stroke_style_str(color);
+        ctx.stroke_with_path(path);
+    }
     ctx.restore();
 }
 
