@@ -279,9 +279,16 @@ pub struct RouteWaypoint {
     pub sector: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub uwp: String,
+    /// Population/Belts/Gas-giants digits; the third digit is the gas-giant count.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub pbg: String,
     /// Travel zone (`"A"`/`"R"`/empty).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub zone: String,
+    /// Full allegiance display name (e.g. "Third Imperium, Domain of Deneb"),
+    /// resolved from the world's allegiance code — for the printable route sheet.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub allegiance: String,
 }
 
 /// The result of a jump-route search: an ordered list of waypoints from start

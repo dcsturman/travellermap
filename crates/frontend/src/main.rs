@@ -18,6 +18,7 @@ use web_sys::HtmlCanvasElement;
 mod canvas;
 mod glyph;
 mod render;
+mod route_print;
 use render::ViewState;
 
 const MILIEU: &str = "M1105";
@@ -536,8 +537,19 @@ fn App() -> impl IntoView {
             let _ = win().navigator().clipboard().write_text(&text);
         }
     };
+    // Print just the route: open a window with a formatted route sheet (mirrors
+    // the reference print/route.html) and let it print itself.
     let do_print = move |_: web_sys::MouseEvent| {
-        let _ = win().print();
+        let html = route.with(|r| r.as_ref().map(|r| route_print::build_route_print_html(r, route_jump.get_untracked())));
+        let Some(html) = html.filter(|h| !h.is_empty()) else { return };
+        if let Ok(Some(w)) = win().open_with_url_and_target("", "_blank") {
+            if let Some(doc) = w.document().and_then(|d| d.dyn_into::<web_sys::HtmlDocument>().ok()) {
+                let arr = js_sys::Array::new();
+                arr.push(&wasm_bindgen::JsValue::from_str(&html));
+                let _ = doc.write(&arr);
+                let _ = doc.close();
+            }
+        }
     };
 
     // Home → the charted-space overview.

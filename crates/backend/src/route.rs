@@ -24,7 +24,9 @@ struct IndexedWorld {
     hex: String,
     sector: String,
     uwp: String,
+    pbg: String,
     zone: String,
+    allegiance: String, // full display name, resolved from the code
 }
 
 /// Every world of a milieu, ready for jump-route finding. `nodes` mirrors
@@ -55,7 +57,9 @@ impl WorldIndex {
                     coord: w.node.coord,
                     sector: w.sector.clone(),
                     uwp: w.uwp.clone(),
+                    pbg: w.pbg.clone(),
                     zone: w.zone.clone(),
+                    allegiance: w.allegiance.clone(),
                 }
             })
             .collect::<Vec<_>>();
@@ -98,9 +102,30 @@ fn hex_label(col: i32, row: i32) -> String {
     format!("{col:02}{row:02}")
 }
 
+/// Code → full display name from `res/t5ss/allegiance_codes.tab` (columns
+/// `Code Legacy BaseCode Name Location`) — e.g. `ImDd` → "Third Imperium,
+/// Domain of Deneb". Used to label the printable route sheet.
+fn load_allegiance_names(res_dir: &FsPath) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    let path = res_dir.join("t5ss").join("allegiance_codes.tab");
+    if let Ok(text) = std::fs::read_to_string(path) {
+        for line in text.lines().skip(1) {
+            let cols: Vec<&str> = line.split('\t').collect();
+            if let (Some(code), Some(name)) = (cols.first(), cols.get(3)) {
+                let (code, name) = (code.trim(), name.trim());
+                if !code.is_empty() && !name.is_empty() {
+                    map.insert(code.to_string(), name.to_string());
+                }
+            }
+        }
+    }
+    map
+}
+
 /// Build the per-milieu world index by loading every sector's worlds.
 pub fn build_world_index(res_dir: &FsPath, milieu: &str, universe: &Universe) -> WorldIndex {
     let dir = res_dir.join("Sectors").join(milieu);
+    let alleg_names = load_allegiance_names(res_dir);
     let mut worlds: Vec<IndexedWorld> = Vec::new();
 
     for entry in &universe.sectors {
@@ -120,13 +145,16 @@ pub fn build_world_index(res_dir: &FsPath, milieu: &str, universe: &Universe) ->
                 imperial: is_default_imperial(&w.allegiance),
                 refuel: has_refuel(&w.uwp, &w.pbg),
             };
+            let allegiance = alleg_names.get(&w.allegiance).cloned().unwrap_or(w.allegiance);
             worlds.push(IndexedWorld {
                 node,
                 name: w.name,
                 hex: w.hex,
                 sector: entry.name.clone(),
                 uwp: w.uwp,
+                pbg: w.pbg,
                 zone: w.zone,
+                allegiance,
             });
         }
     }
