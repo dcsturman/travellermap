@@ -16,7 +16,6 @@ mod grid;
 mod hud;
 mod labels;
 mod overlays;
-mod range;
 mod routes;
 mod stars;
 mod status;
@@ -26,23 +25,28 @@ use std::collections::HashMap;
 
 use tmap_core::dto::{Overlays, RouteResult, SectorData};
 use wasm_bindgen::JsCast;
-use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
+use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, Path2d};
 
 use crate::canvas::Canvas;
 
 // Public API (unchanged for `main.rs`).
 pub use common::{
-    fit_sector, home_view, sector_hex_parsec, visible_sectors, world_hex, world_to_parsec,
-    RangeView, RenderOptions, ViewState, MAX_SCALE, MIN_SCALE, WORLD_MIN_SCALE,
+    fit_jump_view, fit_sector, home_view, sector_hex_parsec, visible_sectors, world_hex,
+    world_to_parsec, JumpClip, RenderOptions, ViewState, MAX_SCALE, MIN_SCALE, WORLD_MIN_SCALE,
 };
 
 use common::{
-    MACRO_MAX_SCALE, MACRO_WORLDS_MAX, MACRO_WORLDS_MIN, PARSEC_GRID_MIN_SCALE, ROUTE_MIN_SCALE,
-    SECTOR_GRID_MIN, SECTOR_H, SECTOR_NAME_MAX, SECTOR_NAME_MIN, SECTOR_W, SUBSECTOR_GRID_MIN,
-    SUBSECTOR_H, SUBSECTOR_NAME_MAX, SUBSECTOR_NAME_MIN, SUBSECTOR_W, WORLD_BASIC_SCALE,
+    hex_vertex_r, jump_hexes, MACRO_MAX_SCALE, MACRO_WORLDS_MAX, MACRO_WORLDS_MIN,
+    PARSEC_GRID_MIN_SCALE, ROUTE_MIN_SCALE, SECTOR_GRID_MIN, SECTOR_H, SECTOR_NAME_MAX,
+    SECTOR_NAME_MIN, SECTOR_W, SUBSECTOR_GRID_MIN, SUBSECTOR_H, SUBSECTOR_NAME_MAX,
+    SUBSECTOR_NAME_MIN, SUBSECTOR_W, WORLD_BASIC_SCALE, HEX_VR,
 };
 
 use crate::canvas::Canvas2d;
+
+/// Flat backdrop behind the jump-N cutout bubble (the light gray surround in the
+/// reference's Jump-N Neighborhood image).
+const JUMPMAP_SURROUND: &str = "#e8e8e8";
 
 /// Clear all cached per-sector geometry (call on a milieu switch, when the world
 /// data underneath the caches changes). Wired up by the upcoming milieu selector.
@@ -93,30 +97,45 @@ pub fn draw(
         t = n;
     };
 
-    c.clear("#000000", w, h);
-    // Galaxy image behind the starfield (macro zoom only; fades out by scale 2).
-    stars::draw_galaxy(&c, &view, w, h);
-    stars::draw_stars(&c, &view, w, h);
-    mark("stars", &mut marks);
+    // Jump-N neighborhood cutout: a flat light-gray surround, then the rest of
+    // the scene clipped to the jump bubble over a deep-space fill — no starfield,
+    // galaxy, or macro overlays (the reference's Jump-N Neighborhood look). The
+    // clip (set here, in CSS-px space) rasterizes to device space and persists
+    // across the later passes' own transforms; it's released at frame end.
+    if let Some(jc) = opts.jump_clip {
+        c.clear(JUMPMAP_SURROUND, w, h);
+        let clip = build_jump_clip_path(&view, w, h, jc);
+        c.ctx.save();
+        c.ctx.clip_with_path_2d(&clip);
+        c.clear("#000000", w, h); // deep space inside the bubble
+        mark("stars", &mut marks);
+        mark("macro", &mut marks);
+    } else {
+        c.clear("#000000", w, h);
+        // Galaxy image behind the starfield (macro zoom only; fades out by scale 2).
+        stars::draw_galaxy(&c, &view, w, h);
+        stars::draw_stars(&c, &view, w, h);
+        mark("stars", &mut marks);
 
-    if view.scale < MACRO_MAX_SCALE {
-        if let Some(ov) = overlays {
-            overlays::draw_overlays(&c, &view, w, h, ov, opts);
+        if view.scale < MACRO_MAX_SCALE {
+            if let Some(ov) = overlays {
+                overlays::draw_overlays(&c, &view, w, h, ov, opts);
+            }
         }
-    }
-    // Capitals + homeworlds (Worlds.xml) over the macro view (scale 0.5–4).
-    if opts.important_worlds && (MACRO_WORLDS_MIN..=MACRO_WORLDS_MAX).contains(&view.scale) {
-        if let Some(ov) = overlays {
-            overlays::draw_world_labels(&c, &view, w, h, ov);
+        // Capitals + homeworlds (Worlds.xml) over the macro view (scale 0.5–4).
+        if opts.important_worlds && (MACRO_WORLDS_MIN..=MACRO_WORLDS_MAX).contains(&view.scale) {
+            if let Some(ov) = overlays {
+                overlays::draw_world_labels(&c, &view, w, h, ov);
+            }
         }
-    }
-    // Galaxy-scale mega labels at the most zoomed-out view (MegaLabelMaxScale=1/4).
-    if opts.region_names && view.scale <= 0.25 {
-        if let Some(ov) = overlays {
-            overlays::draw_mega_labels(&c, &view, w, h, ov);
+        // Galaxy-scale mega labels at the most zoomed-out view (MegaLabelMaxScale=1/4).
+        if opts.region_names && view.scale <= 0.25 {
+            if let Some(ov) = overlays {
+                overlays::draw_mega_labels(&c, &view, w, h, ov);
+            }
         }
+        mark("macro", &mut marks);
     }
-    mark("macro", &mut marks);
 
     // Sector / subsector boundary grids and background names. All grids share the
     // reference's gray, scale-faded `gridColor`.
@@ -176,13 +195,11 @@ pub fn draw(
         }
     }
 
-    // Active jump-N range view: highlight the selected world's neighborhood
-    // (every loaded world within N parsecs) on top of the world layer. Only the
-    // detail view carries worlds, so it's gated on the same threshold.
-    if let Some(rng) = opts.range {
-        if view.scale >= WORLD_MIN_SCALE {
-            range::draw_range(&c, &view, w, h, sectors, rng);
-        }
+    // Release the jump-N cutout clip (worlds + grid + routes are now drawn within
+    // the bubble). Nothing past here belongs in the cutout (dim/route/compass/HUD
+    // are all suppressed by the caller's cutout options), so restore unconditionally.
+    if opts.jump_clip.is_some() {
+        c.ctx.restore();
     }
 
     // Dim sectors not flagged Official/Preserve/InReview (opt-in appearance).
@@ -205,6 +222,25 @@ pub fn draw(
     if opts.perf_hud {
         hud::draw_perf_hud(&c, w, h, &marks, sectors.len(), view.scale);
     }
+}
+
+/// Build the clip path (CSS-px space) for a jump-N cutout: the union of the
+/// bubble's hexes, each inflated slightly so the union is gap-free and has a
+/// clean outer boundary (the same trick the border fills use).
+fn build_jump_clip_path(view: &ViewState, w: f64, h: f64, jc: JumpClip) -> Path2d {
+    let path = Path2d::new().unwrap();
+    for (hc, hr) in jump_hexes(jc.center, jc.jump) {
+        for k in 0..6 {
+            let (x, y) = view.to_screen(w, h, hex_vertex_r(hc, hr, k, HEX_VR * 1.06));
+            if k == 0 {
+                path.move_to(x, y);
+            } else {
+                path.line_to(x, y);
+            }
+        }
+        path.close_path();
+    }
+    path
 }
 
 /// `performance.now()` in milliseconds (monotonic, sub-ms). Returns 0 if

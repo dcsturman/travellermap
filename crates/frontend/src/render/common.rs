@@ -2,7 +2,7 @@
 //! scale thresholds, the OTU color palette, and the hex/sector geometry helpers
 //! that every render pass builds on. No `web-sys` here — pure scene math.
 
-use tmap_core::astrometrics::PARSEC_SCALE_X;
+use tmap_core::astrometrics::{Coord, PARSEC_SCALE_X};
 
 pub(crate) const SECTOR_W: i32 = 32; // parsec columns per sector
 pub(crate) const SECTOR_H: i32 = 40; // parsec rows per sector
@@ -62,14 +62,42 @@ pub struct ViewState {
     pub center: (f64, f64),
 }
 
-/// The jump-N range view for a selected world: highlight every loaded world
-/// within `jump` parsecs of the origin hex. `origin` is the absolute world hex
-/// `Coord` (built via [`world_hex`], exactly as the route planner builds its
-/// waypoint coords) so `hex_distance` here matches the route distances.
+/// A jump-N neighborhood cutout: render only the hexes within `jump` parsecs of
+/// `center`, clipped to the jump "bubble" on a flat background (the reference's
+/// Jump-N Neighborhood view). `center` is the absolute world hex `Coord` (built
+/// via [`world_hex`], exactly as the route planner builds its waypoint coords)
+/// so `hex_distance` here matches the route distances.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct RangeView {
-    pub origin: tmap_core::astrometrics::Coord,
+pub struct JumpClip {
+    pub center: Coord,
     pub jump: i32,
+}
+
+/// Every absolute hex within `jump` parsecs of `center` (the jump-N bubble).
+/// A `±(jump+1)` bounding box is a superset of the disc, filtered by hex distance.
+pub(crate) fn jump_hexes(center: Coord, jump: i32) -> Vec<(i32, i32)> {
+    let mut hexes = Vec::new();
+    for dc in -(jump + 1)..=(jump + 1) {
+        for dr in -(jump + 1)..=(jump + 1) {
+            let (c, r) = (center.x + dc, center.y + dr);
+            if center.hex_distance(Coord::new(c, r)) <= jump {
+                hexes.push((c, r));
+            }
+        }
+    }
+    hexes
+}
+
+/// Frame a square cutout canvas (`w`×`h` CSS px) on the jump-N bubble around
+/// `center`: centered on the world, scaled so the bubble (≈ `2·jump+1` hexes
+/// tall) fits with a small margin.
+pub fn fit_jump_view(w: f64, h: f64, center: Coord, jump: i32) -> ViewState {
+    // Bubble height ≈ 2·jump centers + ~1.15 for the outer hex vertices; the +2.0
+    // keeps a thin margin. Tight enough that even J-6 stays ≥ the 24 px/parsec
+    // name threshold, so world names show at every rating.
+    let span_parsecs = 2.0 * jump as f64 + 2.0;
+    let scale = (w.min(h) * 0.95 / span_parsecs).clamp(MIN_SCALE, MAX_SCALE);
+    ViewState { scale, center: hex_parsec(center.x, center.y) }
 }
 
 /// Layer-visibility / appearance toggles, driven by the hamburger settings menu
@@ -88,7 +116,7 @@ pub struct RenderOptions {
     pub more_world_colors: bool,  // color worlds by trade class (vs. plain)
     pub dim_unofficial: bool,     // dim sectors not tagged Official/Preserve/InReview
     pub perf_hud: bool,           // per-layer frame-timing overlay (profiling)
-    pub range: Option<RangeView>, // active jump-N range view (selected world's neighborhood)
+    pub jump_clip: Option<JumpClip>, // render only a jump-N neighborhood cutout (clipped)
 }
 
 impl Default for RenderOptions {
@@ -105,7 +133,7 @@ impl Default for RenderOptions {
             more_world_colors: true,
             dim_unofficial: false,
             perf_hud: false,
-            range: None,
+            jump_clip: None,
         }
     }
 }

@@ -66,6 +66,32 @@ fn open_print_html(html: &str) {
     let _ = win().open_with_url_and_target(&url, "_blank");
 }
 
+/// Trigger a browser download of a canvas as a PNG (via a data-URL `<a download>`).
+fn download_canvas_png(canvas: &HtmlCanvasElement, filename: &str) {
+    let Ok(url) = canvas.to_data_url_with_type("image/png") else { return };
+    let Some(doc) = win().document() else { return };
+    let Ok(a) = doc.create_element("a") else { return };
+    let _ = a.set_attribute("href", &url);
+    let _ = a.set_attribute("download", filename);
+    if let Ok(a) = a.dyn_into::<web_sys::HtmlElement>() {
+        a.click();
+    }
+}
+
+/// Open a print window for a canvas (PNG embedded in a minimal self-printing doc).
+fn print_canvas(canvas: &HtmlCanvasElement, title: &str) {
+    let Ok(url) = canvas.to_data_url_with_type("image/png") else { return };
+    let html = format!(
+        "<!DOCTYPE html><html><head><meta charset=utf-8><title>{title}</title>\
+         <style>body{{margin:0;padding:24px;text-align:center;font:14px system-ui,sans-serif;color:#000;}}\
+           h1{{font-size:18px;margin:0 0 14px;}}img{{max-width:100%;border:1px solid #000;}}\
+           @media print{{body{{padding:0;}}}}</style></head><body>\
+         <h1>{title}</h1><img src=\"{url}\">\
+         <script>window.onload=function(){{window.print();}}</script></body></html>"
+    );
+    open_print_html(&html);
+}
+
 /// Strip HTML tags from a credits string (roxmltree already decoded entities),
 /// collapsing whitespace to a single readable line for the footer.
 fn strip_html(s: &str) -> String {
@@ -223,10 +249,13 @@ fn App() -> impl IntoView {
     // second click on the same sector skips the round-trip.
     let selected = RwSignal::new(None::<SelectedWorld>);
     let full_sectors = StoredValue::new(HashMap::<(i32, i32), SectorData>::new());
-    // Active jump-N range view: (selected-world identity, RangeView). The
-    // identity `(sector_coord, hex)` ties the range to a specific world so
-    // dismissing / re-selecting clears it; `jump` (1..=6) is the active rating.
-    let range = RwSignal::new(None::<((i32, i32), String, render::RangeView)>);
+    // Active jump-N neighborhood cutout: (selected-world identity, world name,
+    // origin Coord, jump). The identity `(sector_coord, hex)` ties it to a
+    // specific world so dismissing / re-selecting clears it; `jump` (1..=6) is
+    // the active rating. Rendered into its own overlay canvas (jumpmap_ref).
+    let jumpmap =
+        RwSignal::new(None::<((i32, i32), String, tmap_core::astrometrics::Coord, i32)>);
+    let jumpmap_ref = NodeRef::<leptos::html::Canvas>::new();
     let (route_status, set_route_status) = signal(String::new());
     // Distinguish a click (set endpoint) from a drag (pan): remember press origin.
     let down_pos = RwSignal::new(None::<(f64, f64)>);
@@ -246,17 +275,51 @@ fn App() -> impl IntoView {
     // Which floating panel is open: 0 none, 1 legend (key), 2 settings (menu).
     let panel = RwSignal::new(0u8);
 
-    // Keep the jump-range overlay tied to the selected world: if the selection
-    // is cleared (panel close / empty-space click) or moves to a different
-    // world, drop a range that was pinned to the old one.
+    // Keep the jump-N cutout tied to the selected world: if the selection is
+    // cleared (panel close / empty-space click) or moves to a different world,
+    // close a cutout that was pinned to the old one.
     Effect::new(move |_| {
         let cur = selected.get().map(|s| (s.sector_coord, s.world.hex.clone()));
-        range.update(|r| {
-            if let Some((coord, hex, _)) = r {
+        jumpmap.update(|j| {
+            if let Some((coord, hex, _, _)) = j {
                 if cur.as_ref() != Some(&(*coord, hex.clone())) {
-                    *r = None;
+                    *j = None;
                 }
             }
+        });
+    });
+
+    // Render the jump-N neighborhood cutout into its own overlay canvas whenever
+    // the active cutout (or the streamed world data) changes. Reuses the main
+    // `render::draw` with a hex-bubble clip + flat background (cutout options:
+    // no compass/dim/perf/sector-watermark, no computed route).
+    Effect::new(move |_| {
+        let _ = version.get(); // re-render as neighbor sectors stream in
+        let Some((_, _, origin, jump)) = jumpmap.get() else { return };
+        let Some(canvas_el) = jumpmap_ref.get() else { return };
+        let (cw, ch) = (canvas_el.client_width().max(1) as f64, canvas_el.client_height().max(1) as f64);
+        let dpr = win().device_pixel_ratio();
+        canvas_el.set_width((cw * dpr).round().max(1.0) as u32);
+        canvas_el.set_height((ch * dpr).round().max(1.0) as u32);
+        let v = render::fit_jump_view(cw, ch, origin, jump);
+        let opts = render::RenderOptions {
+            galactic_direction: false,
+            sector_names: false,
+            region_names: false, // no subsector watermark / border labels in the cutout
+            dim_unofficial: false,
+            perf_hud: false,
+            jump_clip: Some(render::JumpClip { center: origin, jump }),
+            ..render::RenderOptions::default()
+        };
+        // The cutout spans a few sectors at most; draw from all loaded sectors
+        // overlapping the bubble (cheap) — neighbors fill in as they stream.
+        sectors.with_value(|loaded| {
+            let refs: Vec<&SectorData> = loaded.values().collect();
+            overlays.with_value(|ov| {
+                index.with_value(|idx| {
+                    render::draw(&canvas_el, &refs, ov.as_ref(), idx, v, opts, None);
+                });
+            });
         });
     });
 
@@ -391,7 +454,7 @@ fn App() -> impl IntoView {
             more_world_colors: opt_world_colors.get(),
             dim_unofficial: opt_dim.get(),
             perf_hud: opt_perf.get(),
-            range: range.get().map(|(_, _, rv)| rv),
+            jump_clip: None,
         };
         if canvas_size.get().0 == 0 {
             return; // not sized yet (subscribes to resize)
@@ -907,10 +970,13 @@ fn App() -> impl IntoView {
                 on_jump_range=move |n: i32| {
                     let Some(sel) = selected.get_untracked() else { return };
                     let id = (sel.sector_coord, sel.world.hex.clone());
-                    // Toggle: clicking the active J-N again clears the range.
-                    let active = range.get_untracked().filter(|(c, h, _)| (*c, h.clone()) == id).map(|(_, _, rv)| rv.jump);
+                    // Toggle: clicking the active J-N again closes the cutout.
+                    let active = jumpmap
+                        .get_untracked()
+                        .filter(|(c, h, _, _)| (*c, h.clone()) == id)
+                        .map(|(_, _, _, j)| j);
                     if active == Some(n) {
-                        range.set(None);
+                        jumpmap.set(None);
                         return;
                     }
                     // Build the origin's absolute world hex `Coord` the same way
@@ -918,18 +984,69 @@ fn App() -> impl IntoView {
                     // the neighborhood matches route distances.
                     let Some((col, row)) = parse_hex(&sel.world.hex) else { return };
                     let (wc, wr) = render::world_hex(sel.sector_coord.0, sel.sector_coord.1, col, row);
-                    let rv = render::RangeView { origin: tmap_core::astrometrics::Coord::new(wc, wr), jump: n };
-                    range.set(Some((sel.sector_coord, sel.world.hex.clone(), rv)));
+                    let name = if sel.world.name.is_empty() {
+                        format!("{} {}", sel.sector_name, sel.world.hex)
+                    } else {
+                        sel.world.name.clone()
+                    };
+                    jumpmap.set(Some((
+                        sel.sector_coord,
+                        name,
+                        tmap_core::astrometrics::Coord::new(wc, wr),
+                        n,
+                    )));
                 }
                 active_jump=Signal::derive(move || {
                     let sel = selected.get();
-                    range.get()
-                        .filter(|(c, h, _)| {
+                    jumpmap
+                        .get()
+                        .filter(|(c, h, _, _)| {
                             sel.as_ref().is_some_and(|s| s.sector_coord == *c && &s.world.hex == h)
                         })
-                        .map(|(_, _, rv)| rv.jump)
+                        .map(|(_, _, _, j)| j)
                         .unwrap_or(0)
                 }) />
+            // --- jump-N neighborhood cutout overlay (a J-N pill renders it) ---
+            <Show when=move || jumpmap.get().is_some()>
+                <div style="position:fixed; top:56px; left:50%; transform:translateX(-50%); \
+                            box-sizing:border-box; padding:12px 14px 14px; border-radius:8px; \
+                            background:rgba(12,15,24,0.97); border:1px solid #2a3145; \
+                            box-shadow:0 6px 26px rgba(0,0,0,0.6); z-index:25; \
+                            font:13px system-ui,sans-serif; color:#cfd6e6;">
+                    <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
+                        <span style="flex:1; font:700 14px system-ui; color:#fff;">
+                            {move || jumpmap.get().map(|(_, n, _, j)| format!("Jump-{j} Neighborhood — {n}")).unwrap_or_default()}
+                        </span>
+                        <span on:click=move |_| jumpmap.set(None)
+                              style="cursor:pointer; color:#8a93a8; font-size:18px; line-height:1;">"✕"</span>
+                    </div>
+                    <canvas node_ref=jumpmap_ref width="360" height="360"
+                            style="display:block; width:360px; height:360px; \
+                                   max-width:calc(100vw - 60px); border-radius:4px; background:#e8e8e8;"></canvas>
+                    <div style="display:flex; gap:8px; margin-top:10px;">
+                        <button on:click=move |_| {
+                                    if let Some(cv) = jumpmap_ref.get_untracked() {
+                                        let title = jumpmap.get_untracked()
+                                            .map(|(_, n, _, j)| format!("Jump-{j} Neighborhood: {n}")).unwrap_or_default();
+                                        print_canvas(&cv, &title);
+                                    }
+                                }
+                                style="flex:1; padding:7px 0; border-radius:15px; cursor:pointer; \
+                                       border:1px solid #2a3145; background:rgba(40,44,58,0.7); \
+                                       color:#cdd5e6; font:600 12px system-ui;">"🖨  Print"</button>
+                        <button on:click=move |_| {
+                                    if let Some(cv) = jumpmap_ref.get_untracked() {
+                                        let fname = jumpmap.get_untracked()
+                                            .map(|(_, n, _, j)| format!("{n} jump-{j}.png")).unwrap_or_else(|| "jumpmap.png".into());
+                                        download_canvas_png(&cv, &fname);
+                                    }
+                                }
+                                style="flex:1; padding:7px 0; border-radius:15px; cursor:pointer; \
+                                       border:1px solid #2a3145; background:rgba(40,44,58,0.7); \
+                                       color:#cdd5e6; font:600 12px system-ui;">"⬇  Download PNG"</button>
+                    </div>
+                </div>
+            </Show>
             // --- bottom pane (mirrors the reference #bottom-pane): red stripe,
             //     the per-sector data-source credit (or Mongoose copyright) on the
             //     left, the TRAVELLER® wordmark on the right. ---
