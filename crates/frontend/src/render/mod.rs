@@ -182,21 +182,6 @@ pub fn draw(
         labels::draw_galactic_directions(&c, w, h);
     }
 
-    // Data-source footer: credit of the sector nearest the viewport center.
-    if let Some(s) = sectors
-        .iter()
-        .filter(|s| s.info.location.is_some())
-        .min_by(|a, b| {
-            let d = |s: &&SectorData| {
-                let l = s.info.location.unwrap();
-                let (cx, cy) = common::sector_center(l.x, l.y);
-                (cx - view.center.0).powi(2) + (cy - view.center.1).powi(2)
-            };
-            d(a).total_cmp(&d(b))
-        })
-    {
-        status::draw_footer(&c, w, h, s);
-    }
     mark("labels+misc", &mut marks);
 
     if opts.perf_hud {

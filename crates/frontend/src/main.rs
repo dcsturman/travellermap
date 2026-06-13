@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use tmap_core::astrometrics::parse_hex;
+use tmap_core::astrometrics::{parse_hex, PARSEC_SCALE_X};
 use tmap_core::dto::{Overlays, RouteResult, SearchResult, SearchResults, SectorData, Universe};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
@@ -45,6 +45,22 @@ fn main() {
 
 fn win() -> web_sys::Window {
     web_sys::window().expect("no window")
+}
+
+/// Strip HTML tags from a credits string (roxmltree already decoded entities),
+/// collapsing whitespace to a single readable line for the footer.
+fn strip_html(s: &str) -> String {
+    let mut out = String::new();
+    let mut in_tag = false;
+    for ch in s.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(ch),
+            _ => {}
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// A small underlined section header in a panel.
@@ -159,6 +175,28 @@ fn App() -> impl IntoView {
     let route = RwSignal::new(None::<RouteResult>); // computed jump route (reactive: draws + lists)
     let (version, set_version) = signal(0u32);
     let (index_ready, set_index_ready) = signal(false);
+
+    // Data-source credit for the sector under the viewport center — the footer's
+    // dynamic left text (recomputes as you pan/zoom or sectors stream in).
+    let footer_credit = Memo::new(move |_| {
+        let _ = version.get();
+        let Some(v) = view.get() else { return String::new() };
+        let wc = (v.center.0 / PARSEC_SCALE_X as f64).round() as i32;
+        let wr = v.center.1.round() as i32;
+        let cell = ((wc - 1).div_euclid(32), (wr - 1).div_euclid(40));
+        sectors.with_value(|m| {
+            m.get(&cell)
+                .map(|s| {
+                    let credit = s.info.credits.as_deref().map(strip_html).unwrap_or_default();
+                    if credit.is_empty() {
+                        s.info.name.clone()
+                    } else {
+                        format!("{} — {}", s.info.name, credit)
+                    }
+                })
+                .unwrap_or_default()
+        })
+    });
 
     // Jump-route planner state.
     let route_open = RwSignal::new(false); // planner panel visible (squiggle toggle)
@@ -739,17 +777,21 @@ fn App() -> impl IntoView {
                     </div>
                 </div>
             </Show>
+            // --- data-source footer: dynamic per-sector credit (left) + fixed
+            //     Traveller/Mongoose attribution (right). ---
             <div style="position:fixed; bottom:0; left:0; right:0; pointer-events:none; \
-                        text-align:center; padding:5px 0; \
-                        font:12px system-ui,sans-serif; text-shadow:0 1px 3px #000; \
-                        background:linear-gradient(transparent, rgba(0,0,0,0.55));">
-                <span style="color:#e32736; font-weight:700; letter-spacing:0.04em;">
-                    "The Traveller Map"
-                </span>
-                <span style="color:#9aa3b8;">
-                    " · Traveller © Mongoose Publishing (fair use) · \
-                     data: the Traveller Map community (travellermap.com)"
-                </span>
+                        display:flex; align-items:baseline; justify-content:space-between; gap:18px; \
+                        box-sizing:border-box; padding:7px 16px; \
+                        font:14px Helvetica,Arial,sans-serif; color:#e6ecf7; \
+                        text-shadow:0 1px 3px #000,0 0 6px #000; \
+                        background:linear-gradient(transparent, rgba(0,0,0,0.78));">
+                <div style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; \
+                            white-space:nowrap;">
+                    {move || footer_credit.get()}
+                </div>
+                <div style="flex:none; color:#c4ccdc;">
+                    "Traveller © Mongoose Publishing (fair use) · data: travellermap.com community"
+                </div>
             </div>
 
             // --- top-right control cluster: home / key / hamburger ---
