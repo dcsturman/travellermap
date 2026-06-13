@@ -73,19 +73,29 @@ pub struct JumpClip {
     pub jump: i32,
 }
 
-/// Every absolute hex within `jump` parsecs of `center` (the jump-N bubble).
-/// A `±(jump+1)` bounding box is a superset of the disc, filtered by hex distance.
+/// Every absolute hex within `jump` parsecs of `center` (the jump-N bubble),
+/// computed by BFS over [`hex_neighbors`] — the *rendered* grid adjacency (with
+/// `hex_parsec`'s even-column stagger). BFS depth equals hex distance, so this is
+/// the jump-N neighborhood, and it's guaranteed to line up with the drawn hexes.
+/// (We deliberately do NOT use `Coord::hex_distance` here: it assumes the
+/// opposite column parity, which would pick a lopsided, misaligned set.)
 pub(crate) fn jump_hexes(center: Coord, jump: i32) -> Vec<(i32, i32)> {
-    let mut hexes = Vec::new();
-    for dc in -(jump + 1)..=(jump + 1) {
-        for dr in -(jump + 1)..=(jump + 1) {
-            let (c, r) = (center.x + dc, center.y + dr);
-            if center.hex_distance(Coord::new(c, r)) <= jump {
-                hexes.push((c, r));
+    use std::collections::HashSet;
+    let mut seen: HashSet<(i32, i32)> = HashSet::new();
+    let mut frontier = vec![(center.x, center.y)];
+    seen.insert((center.x, center.y));
+    for _ in 0..jump {
+        let mut next = Vec::new();
+        for &(c, r) in &frontier {
+            for (nb, _) in hex_neighbors(c, r) {
+                if seen.insert(nb) {
+                    next.push(nb);
+                }
             }
         }
+        frontier = next;
     }
-    hexes
+    seen.into_iter().collect()
 }
 
 /// Frame a square cutout canvas (`w`×`h` CSS px) on the jump-N bubble around
