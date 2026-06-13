@@ -603,101 +603,105 @@ fn App() -> impl IntoView {
             </div>
             // --- jump-route planner panel (toggled by the route button) ---
             <Show when=move || route_open.get()>
-                <div style="position:fixed; top:58px; left:12px; width:460px; \
+                <div style="position:fixed; top:56px; left:12px; width:300px; \
                             max-width:calc(100vw - 24px); box-sizing:border-box; \
-                            padding:18px 22px 16px; border-radius:14px; background:#fff; \
-                            box-shadow:0 8px 30px rgba(0,0,0,0.55); \
-                            font:16px system-ui,sans-serif; color:#222;">
-                    <div style="display:flex; align-items:center; gap:8px; \
-                                border-bottom:1px solid #dadada; padding:4px 0;">
+                            max-height:min(350px, calc(100vh - 70px)); display:flex; flex-direction:column; \
+                            padding:10px 14px 12px; border-radius:12px; background:#fff; \
+                            box-shadow:0 6px 26px rgba(0,0,0,0.5); \
+                            font:13px system-ui,sans-serif; color:#222;">
+                    <div style="flex:none; display:flex; align-items:center; gap:6px; \
+                                border-bottom:1px solid #d8d8d8; margin-bottom:8px;">
                         <input type="text" placeholder="Start (type or click map)"
                                prop:value=move || route_start.get()
                                on:input=move |ev| route_start.set(event_target_value(&ev))
                                style="flex:1; min-width:0; border:none; outline:none; \
                                       background:transparent; color:#222; \
-                                      font:300 22px system-ui,sans-serif; padding:8px 2px;" />
+                                      font:16px system-ui,sans-serif; padding:7px 2px;" />
                         <button title="Clear" on:click=move |_| clear_route()
                                 style="border:none; background:transparent; cursor:pointer; \
-                                       font-size:22px; color:#888; padding:0 6px; line-height:1;">"✕"</button>
+                                       font-size:18px; color:#888; padding:0 4px; line-height:1;">"✕"</button>
                     </div>
-                    <div style="display:flex; align-items:center; gap:8px; margin-top:8px; \
-                                border-bottom:1px solid #dadada; padding:4px 0;">
+                    <div style="flex:none; display:flex; align-items:center; gap:6px; \
+                                border-bottom:1px solid #d8d8d8; margin-bottom:10px;">
                         <input type="text" placeholder="Destination (type or click map)"
                                prop:value=move || route_end.get()
                                on:input=move |ev| route_end.set(event_target_value(&ev))
                                style="flex:1; min-width:0; border:none; outline:none; \
                                       background:transparent; color:#222; \
-                                      font:300 22px system-ui,sans-serif; padding:8px 2px;" />
+                                      font:16px system-ui,sans-serif; padding:7px 2px;" />
                         <button title="Swap start & destination" on:click=move |_| swap_route()
                                 style="border:none; background:transparent; cursor:pointer; \
-                                       font-size:20px; color:#444; padding:0 6px; line-height:1;">"⇅"</button>
+                                       font-size:16px; color:#444; padding:0 4px; line-height:1;">"⇅"</button>
                     </div>
-                    <div style="display:flex; gap:10px; margin-top:18px;">
+                    <div style="flex:none; display:flex; gap:6px;">
                         {(1..=6).map(|n| view! {
                             <button on:click=move |_| do_route(n)
                                     style:background=move || if route_jump.get() == n { "#e32736" } else { "#fff" }
                                     style:color=move || if route_jump.get() == n { "#fff" } else { "#333" }
-                                    style="flex:1; padding:11px 0; border:1px solid #ccc; \
-                                           border-radius:22px; cursor:pointer; \
-                                           font:600 16px system-ui,sans-serif;">
+                                    style="flex:1; padding:0; line-height:28px; border:1px solid #ccc; \
+                                           border-radius:15px; cursor:pointer; \
+                                           font:600 13px system-ui,sans-serif;">
                                 {format!("J-{n}")}
                             </button>
                         }).collect_view()}
                     </div>
-                    <div style="margin-top:12px; min-height:1.2em; color:#555; font-size:14px; \
-                                text-align:center;">
+                    <div style="flex:none; min-height:1em; color:#555; font-size:12px; \
+                                text-align:center; margin-top:6px;">
                         {move || route_status.get()}
                     </div>
-                    {move || route.with(|r| r.as_ref().map(|r| {
-                        let wps = &r.waypoints;
-                        let summary = format!("{} parsecs — {} jumps", r.parsecs, r.jumps);
-                        let rows = wps.iter().enumerate().map(|(i, w)| {
-                            let leg = (i > 0).then(|| wps[i - 1].coord.hex_distance(w.coord));
-                            let (name, sub) = (w.name.clone(), format!("{} {}", w.sector, w.hex));
-                            view! {
-                                <div>
-                                    {leg.map(|d| view! {
-                                        <div style="display:flex; height:26px;">
-                                            <div style="width:40px; flex:none; position:relative; \
-                                                        display:flex; align-items:center; justify-content:center;">
-                                                <div style="position:absolute; top:-3px; bottom:-3px; left:50%; \
-                                                            transform:translateX(-50%); width:4px; background:#2e7d2e;"></div>
-                                                <span style="position:relative; background:#fff; padding:0 3px; \
-                                                             font:600 14px system-ui; color:#222;">{d}</span>
+                    // Scrollable results region — the box is capped, the list scrolls.
+                    <div style="flex:1; min-height:0; overflow:auto; margin-top:4px;">
+                        {move || route.with(|r| r.as_ref().map(|r| {
+                            let wps = &r.waypoints;
+                            let summary = format!("{} parsecs — {} jumps", r.parsecs, r.jumps);
+                            let rows = wps.iter().enumerate().map(|(i, w)| {
+                                let leg = (i > 0).then(|| wps[i - 1].coord.hex_distance(w.coord));
+                                let (name, sub) = (w.name.clone(), format!("{} {}", w.sector, w.hex));
+                                view! {
+                                    <div>
+                                        {leg.map(|d| view! {
+                                            <div style="display:flex; height:20px;">
+                                                <div style="width:26px; flex:none; position:relative; \
+                                                            display:flex; align-items:center; justify-content:center;">
+                                                    <div style="position:absolute; top:-3px; bottom:-3px; left:50%; \
+                                                                transform:translateX(-50%); width:3px; background:#2e7d2e;"></div>
+                                                    <span style="position:relative; background:#fff; padding:0 2px; \
+                                                                 font:600 13px system-ui; color:#222;">{d}</span>
+                                                </div>
+                                            </div>
+                                        })}
+                                        <div style="display:flex; align-items:center;">
+                                            <div style="width:26px; flex:none; display:flex; justify-content:center;">
+                                                <div style="width:13px; height:13px; border-radius:50%; \
+                                                            background:#2e7d2e;"></div>
+                                            </div>
+                                            <div style="flex:1; min-width:0;">
+                                                <div style="font:600 16px system-ui; color:#111; \
+                                                            text-decoration:underline; line-height:1.1;">{name}</div>
+                                                <div style="font:12px system-ui; color:#666;">{sub}</div>
                                             </div>
                                         </div>
-                                    })}
-                                    <div style="display:flex; align-items:center;">
-                                        <div style="width:40px; flex:none; display:flex; justify-content:center;">
-                                            <div style="width:18px; height:18px; border-radius:50%; \
-                                                        background:#2e7d2e;"></div>
-                                        </div>
-                                        <div style="flex:1; min-width:0;">
-                                            <div style="font:600 18px system-ui; color:#111; \
-                                                        text-decoration:underline; line-height:1.15;">{name}</div>
-                                            <div style="font:14px system-ui; color:#555;">{sub}</div>
-                                        </div>
                                     </div>
+                                }
+                            }).collect_view();
+                            view! {
+                                <div style="text-align:center; font:600 14px system-ui; color:#222; \
+                                            padding:5px 0 10px;">{summary}</div>
+                                <div>{rows}</div>
+                                <div style="display:flex; gap:10px; margin-top:14px; \
+                                            border-top:1px solid #e3e3e3; padding-top:12px;">
+                                    <button on:click=do_print
+                                            style="flex:1; padding:7px 0; border:1px solid #ccc; border-radius:16px; \
+                                                   background:#fff; color:#333; cursor:pointer; font:600 12px system-ui;">
+                                        "🖨  Print"</button>
+                                    <button on:click=do_copy
+                                            style="flex:1; padding:7px 0; border:1px solid #ccc; border-radius:16px; \
+                                                   background:#fff; color:#333; cursor:pointer; font:600 12px system-ui;">
+                                        "⧉  Copy"</button>
                                 </div>
                             }
-                        }).collect_view();
-                        view! {
-                            <div style="text-align:center; font:600 16px system-ui; color:#222; \
-                                        margin:8px 0 12px;">{summary}</div>
-                            <div>{rows}</div>
-                            <div style="display:flex; gap:12px; margin-top:16px; \
-                                        border-top:1px solid #e3e3e3; padding-top:14px;">
-                                <button on:click=do_print
-                                        style="flex:1; padding:9px 0; border:1px solid #ccc; border-radius:22px; \
-                                               background:#fff; color:#333; cursor:pointer; font:600 14px system-ui;">
-                                    "🖨  Print"</button>
-                                <button on:click=do_copy
-                                        style="flex:1; padding:9px 0; border:1px solid #ccc; border-radius:22px; \
-                                               background:#fff; color:#333; cursor:pointer; font:600 14px system-ui;">
-                                    "⧉  Copy"</button>
-                            </div>
-                        }
-                    }))}
+                        }))}
+                    </div>
                 </div>
             </Show>
             <div style="position:fixed; bottom:0; left:0; right:0; pointer-events:none; \
