@@ -24,7 +24,22 @@ mod world_print;
 use render::ViewState;
 use world_panel::{subsector_letter, SelectedWorld, WorldPanel};
 
-const MILIEU: &str = "M1105";
+/// Default milieu (Imperial year 1105, "The Golden Age").
+const DEFAULT_MILIEU: &str = "M1105";
+/// The curated era snapshots offered by the milieu selector: `(code, display
+/// label)`. A hardcoded OTU subset ported from the reference `index.html`
+/// `#settings` milieu radios — the data (`milieu.tab`) only lists which XMLs
+/// exist + an OTU tag, not these labels (and includes M600, which we omit).
+const MILIEUX: &[(&str, &str)] = &[
+    ("IW", "The Interstellar Wars"),
+    ("M0", "Milieu 0 – Early Imperium"),
+    ("M990", "990 – Solomani Rim War"),
+    ("M1105", "1105 – The Golden Age"),
+    ("M1120", "1120 – The Rebellion"),
+    ("M1201", "1201 – The New Era"),
+    ("M1248", "1248 – The New, New Era"),
+    ("M1900", "1900 – The Far Far Future"),
+];
 /// Where the map opens — Spinward Marches grid coords.
 const START: (i32, i32) = (-4, -1);
 /// Safety cap: when zoomed out far enough to see more than this many sectors,
@@ -194,10 +209,10 @@ async fn fetch_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T, Stri
 
 /// Fetch a computed jump route from the backend `/api/route` endpoint. `start`
 /// and `end` are `"Sector Name 0101"` strings; `jump` is the drive rating.
-async fn fetch_route(start: &str, end: &str, jump: i32) -> Result<RouteResult, String> {
+async fn fetch_route(start: &str, end: &str, jump: i32, milieu: &str) -> Result<RouteResult, String> {
     let s = String::from(js_sys::encode_uri_component(start));
     let e = String::from(js_sys::encode_uri_component(end));
-    let url = format!("/api/route?start={s}&end={e}&jump={jump}&milieu={MILIEU}");
+    let url = format!("/api/route?start={s}&end={e}&jump={jump}&milieu={milieu}");
     fetch_json::<RouteResult>(&url).await
 }
 
@@ -205,6 +220,10 @@ async fn fetch_route(start: &str, end: &str, jump: i32) -> Result<RouteResult, S
 fn App() -> impl IntoView {
     let canvas_ref = NodeRef::<leptos::html::Canvas>::new();
     let (status, set_status) = signal("Loading universe…".to_string());
+    // Active milieu (era snapshot). Changing it tears down and re-streams the
+    // universe for that era (see the universe-load effect); per-milieu caches and
+    // overlays differ, but the macro overlays are milieu-independent so they stay.
+    let milieu = RwSignal::new(DEFAULT_MILIEU);
     let (view, set_view) = signal(None::<ViewState>);
     let (results, set_results) = signal(Vec::<SearchResult>::new());
     let drag = RwSignal::new(None::<(f64, f64)>);
@@ -339,22 +358,46 @@ fn App() -> impl IntoView {
         .ok();
     resize_cb.forget(); // lives for the app's lifetime
 
-    // 1) Load the universe index once.
-    spawn_local(async move {
-        match fetch_json::<Universe>(&format!("/api/universe?milieu={MILIEU}")).await {
-            Ok(u) => {
-                let map: HashMap<(i32, i32), String> = u
-                    .sectors
-                    .into_iter()
-                    .map(|s| ((s.location.x, s.location.y), s.name))
-                    .collect();
-                set_status.set(format!("{MILIEU} — {} sectors · drag to pan, scroll to zoom", map.len()));
-                index.set_value(map);
-                set_index_ready.set(true);
-                set_version.update(|v| *v += 1); // redraw so sector names show
+    // 1) Load the universe index for the active milieu — and reload it whenever
+    //    the milieu changes. Reading `milieu.get()` subscribes this effect; on a
+    //    switch it tears down all per-milieu state (index, streamed sectors,
+    //    in-flight/failed sets, full-LOD cache, per-sector render geometry) and
+    //    resets milieu-scoped UI (selection, jump-map, route, search), then
+    //    re-fetches. The macro overlays are milieu-independent, so they stay.
+    Effect::new(move |_| {
+        let m = milieu.get();
+        set_index_ready.set(false);
+        index.set_value(HashMap::new());
+        sectors.update_value(|s| s.clear());
+        inflight.update_value(|i| i.clear());
+        failed.update_value(|f| f.clear());
+        full_sectors.update_value(|fs| fs.clear());
+        render::clear_caches();
+        selected.set(None);
+        jumpmap.set(None);
+        route.set(None);
+        set_results.set(Vec::new());
+        set_status.set(format!("Loading {m}…"));
+        spawn_local(async move {
+            match fetch_json::<Universe>(&format!("/api/universe?milieu={m}")).await {
+                Ok(u) => {
+                    // Ignore a response that arrived after another switch.
+                    if milieu.get_untracked() != m {
+                        return;
+                    }
+                    let map: HashMap<(i32, i32), String> = u
+                        .sectors
+                        .into_iter()
+                        .map(|s| ((s.location.x, s.location.y), s.name))
+                        .collect();
+                    set_status.set(format!("{m} — {} sectors · drag to pan, scroll to zoom", map.len()));
+                    index.set_value(map);
+                    set_index_ready.set(true);
+                    set_version.update(|v| *v += 1); // redraw so sector names show
+                }
+                Err(e) => set_status.set(format!("Universe load failed: {e}")),
             }
-            Err(e) => set_status.set(format!("Universe load failed: {e}")),
-        }
+        });
     });
 
     // 1b) Load the macro overlays once (charted-space borders/routes/rifts).
@@ -370,6 +413,7 @@ fn App() -> impl IntoView {
         if !index_ready.get() {
             return;
         }
+        let m = milieu.get_untracked(); // milieu change reloads via index_ready/version
         let Some(v) = view.get() else { return };
         let _ = canvas_size.get();
         // Re-run as batches arrive so a viewport larger than MAX_STREAM keeps
@@ -418,8 +462,14 @@ fn App() -> impl IntoView {
             spawn_local(async move {
                 // `overview` LOD: drops fields not rendered until extreme zoom
                 // (stellar/Ix/Ex/Cx/…) — smaller payloads, cached + CDN-friendly.
-                let url = format!("/api/sector/{MILIEU}/{encoded}?lod=overview");
-                match fetch_json::<SectorData>(&url).await {
+                let url = format!("/api/sector/{m}/{encoded}?lod=overview");
+                let result = fetch_json::<SectorData>(&url).await;
+                // Drop a response that arrived after a milieu switch (else stale
+                // old-era data would persist, since loaded cells aren't re-fetched).
+                if milieu.get_untracked() != m {
+                    return;
+                }
+                match result {
                     Ok(data) => sectors.update_value(|s| {
                         s.insert(cell, data);
                     }),
@@ -606,9 +656,13 @@ fn App() -> impl IntoView {
         // Fetch the clicked sector at full LOD, then upgrade the selected world in
         // place (only if the user hasn't since clicked elsewhere).
         let encoded = String::from(js_sys::encode_uri_component(&sector_name));
+        let m = milieu.get_untracked();
         spawn_local(async move {
-            let url = format!("/api/sector/{MILIEU}/{encoded}?lod=full");
+            let url = format!("/api/sector/{m}/{encoded}?lod=full");
             let Ok(full) = fetch_json::<SectorData>(&url).await else { return };
+            if milieu.get_untracked() != m {
+                return; // milieu switched mid-fetch — drop stale full data
+            }
             if let Some(fw) = full.worlds.iter().find(|w| w.hex == hex).cloned() {
                 selected.update(|cur| {
                     if let Some(c) = cur {
@@ -655,8 +709,9 @@ fn App() -> impl IntoView {
             return;
         }
         let encoded = String::from(js_sys::encode_uri_component(&q));
+        let m = milieu.get_untracked();
         spawn_local(async move {
-            if let Ok(r) = fetch_json::<SearchResults>(&format!("/api/search?q={encoded}&milieu={MILIEU}")).await {
+            if let Ok(r) = fetch_json::<SearchResults>(&format!("/api/search?q={encoded}&milieu={m}")).await {
                 set_results.set(r.results);
             }
         });
@@ -692,8 +747,9 @@ fn App() -> impl IntoView {
             return;
         }
         set_route_status.set("Computing route…".into());
+        let m = milieu.get_untracked();
         spawn_local(async move {
-            match fetch_route(&s, &e, j).await {
+            match fetch_route(&s, &e, j, m).await {
                 Ok(r) => {
                     // Summary + waypoint list render from `route` itself; clear
                     // the transient status line.
@@ -1077,10 +1133,18 @@ fn App() -> impl IntoView {
                 </div>
             </div>
 
-            // --- top-right control cluster: home / key / hamburger ---
+            // --- top-right control cluster: home / clock / key / hamburger ---
             <div style="position:fixed; top:10px; right:12px; display:flex; gap:6px;">
                 <button on:click=on_home title="Home — charted-space overview"
                         style=BTN_STYLE>"⌂"</button>
+                <button title="Milieu — time period" style=BTN_STYLE
+                        on:click=move |_| panel.update(|p| *p = if *p == 3 { 0 } else { 3 })>
+                    <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor"
+                         stroke-width="2" stroke-linecap="round" style="vertical-align:middle;">
+                        <circle cx="12" cy="12" r="9"></circle>
+                        <path d="M12 7 V12 L15.5 14"></path>
+                    </svg>
+                </button>
                 <button title="Map key / legend" style=BTN_STYLE
                         on:click=move |_| panel.update(|p| *p = if *p == 1 { 0 } else { 1 })>
                     <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"
@@ -1093,6 +1157,37 @@ fn App() -> impl IntoView {
                 <button title="Settings & layers" style=BTN_STYLE
                         on:click=move |_| panel.update(|p| *p = if *p == 2 { 0 } else { 2 })>"☰"</button>
             </div>
+
+            // --- milieu / time selector panel ---
+            <Show when=move || panel.get() == 3>
+                <div style=PANEL_STYLE>
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <span style="font-weight:700; letter-spacing:0.05em;">"MILIEU"</span>
+                        <span on:click=move |_| panel.set(0)
+                              style="cursor:pointer; color:#8a93a8; font-size:18px;">"✕"</span>
+                    </div>
+                    <hr style="border:none; border-top:1px solid #2a3145; margin:8px 0 6px;" />
+                    <div style="color:#8a93a8; font-size:12px; margin-bottom:6px;">
+                        "Era snapshot of charted space. Switching reloads sector data."
+                    </div>
+                    {MILIEUX.iter().map(|(code, label)| {
+                        let code = *code;
+                        let label = *label;
+                        view! {
+                            <div on:click=move |_| { milieu.set(code); panel.set(0); }
+                                 style="display:flex; align-items:baseline; gap:10px; padding:7px 4px; \
+                                        cursor:pointer; border-bottom:1px solid #20283a;"
+                                 style:color=move || if milieu.get() == code { "#e32736" } else { "#dfe5f2" }>
+                                <span style="flex:none; width:14px; text-align:center; font-weight:700;">
+                                    {move || if milieu.get() == code { "●" } else { "" }}
+                                </span>
+                                <span style="flex:none; width:46px; font-weight:700; font-size:12px;">{code}</span>
+                                <span>{label}</span>
+                            </div>
+                        }
+                    }).collect_view()}
+                </div>
+            </Show>
 
             // --- legend / key panel (ported from index.html #legendBox) ---
             <Show when=move || panel.get() == 1>
