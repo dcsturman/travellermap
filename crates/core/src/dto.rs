@@ -89,6 +89,13 @@ pub struct SectorInfo {
     /// Named subsectors (from the sector metadata `.xml`); empty if unavailable.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subsectors: Vec<Subsector>,
+    /// Space-separated review tags from the `<Sector Tags="…">` attribute:
+    /// `Official Preserve InReview Unreviewed Apocryphal`. Empty if absent.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tags: String,
+    /// Raw `<Credits>` text (may be HTML-encoded). `None` if absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credits: Option<String>,
 }
 
 /// A per-sector (micro) allegiance border: the closed loop of boundary hexes

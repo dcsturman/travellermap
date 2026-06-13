@@ -4,6 +4,41 @@ use crate::canvas::Canvas;
 
 use super::common::{hex_parsec, on_screen, visible_hex_range, ViewState, STAR_MIN_SCALE};
 
+/// Galaxy background image, composited behind the procedural starfield at macro
+/// (zoomed-out) view and faded out as you zoom in.
+///
+/// The reference maps `res/Candy/Galaxy.png` onto a parsec rect spanning roughly
+/// `x:[-18257, 18294], y:[-26234, 6228]` (origin (-18257, -26234), size
+/// 36551 × 32462). We convert that rect's corners through `view.to_screen` and
+/// draw the image into the resulting pixel box — so the galaxy pans/zooms with
+/// the map. It is enormous, so only its central region shows at typical
+/// zoom-out (expected/correct).
+///
+/// Opacity follows the reference `ScaleInterpolate(1, 0, scale, 1/8, 2)`: full
+/// at `scale <= 1/8`, fading to 0 by `scale == 2`, and capped at ~0.85 so the
+/// starfield still reads on top. Above `scale = 2` (detail zoom) it is skipped.
+#[allow(dead_code)]
+pub(crate) fn draw_galaxy(c: &impl Canvas, view: &ViewState, w: f64, h: f64) {
+    if view.scale > 2.0 {
+        return; // invisible at detail zoom
+    }
+    let alpha = ((2.0 - view.scale) / (2.0 - 0.125)).clamp(0.0, 1.0) * 0.85;
+    if alpha <= 0.0 {
+        return;
+    }
+    // Galaxy.png mapped to this absolute parsec rect (top-left .. bottom-right).
+    let (dx, dy) = view.to_screen(w, h, (-18257.0, -26234.0));
+    let (bx, by) = view.to_screen(w, h, (18294.0, 6228.0));
+    c.draw_image(
+        "/api/res/Candy/Galaxy.png",
+        dx,
+        dy,
+        bx - dx,
+        by - dy,
+        alpha,
+    );
+}
+
 /// Cheap deterministic 2D hash for star placement (stable under pan).
 fn hash2(a: i32, b: i32) -> u32 {
     let mut h = (a as u32).wrapping_mul(0x27d4_eb2d) ^ (b as u32).wrapping_mul(0x1656_67b1);

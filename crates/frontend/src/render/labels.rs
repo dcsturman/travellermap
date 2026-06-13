@@ -18,6 +18,20 @@ use super::common::{
 const LABEL_ROT: f64 = -50.0 * std::f64::consts::PI / 180.0;
 const LABEL_SCALE_X: f64 = 0.75;
 
+/// Scale-faded watermark color (matches the reference `sectorName.textStyle`
+/// fade): brightest when the name is the primary content (zoomed out), dimming
+/// as world-detail tiers kick in, but legible throughout.
+fn watermark_color(scale: f64, base_alpha: f64) -> String {
+    let a = if scale < 16.0 {
+        base_alpha
+    } else if scale < 48.0 {
+        base_alpha * 0.6
+    } else {
+        base_alpha * 0.4
+    };
+    format!("rgba(214, 221, 245, {a:.3})")
+}
+
 /// Sector names: rotated watermark at sector centers (font 5.5 parsec).
 pub(crate) fn draw_sector_names(
     c: &impl Canvas,
@@ -27,13 +41,14 @@ pub(crate) fn draw_sector_names(
     sector_index: &HashMap<(i32, i32), String>,
 ) {
     let font_px = (5.5 * view.scale).clamp(10.0, 520.0);
-    let font = format!("600 {}px {DEFAULT_FONT}", font_px as i32);
+    let font = format!("700 {}px {DEFAULT_FONT}", font_px as i32);
+    let color = watermark_color(view.scale, 0.38);
     for (&(sx, sy), name) in sector_index {
         let (cx, cy) = view.to_screen(w, h, sector_center(sx, sy));
         if !on_screen(cx, cy, w, h, font_px) {
             continue;
         }
-        c.fill_text_rotated(name, cx, cy, "rgba(208,214,236,0.16)", &font, LABEL_ROT, LABEL_SCALE_X);
+        c.fill_text_rotated(name, cx, cy, &color, &font, LABEL_ROT, LABEL_SCALE_X);
     }
 }
 
@@ -43,7 +58,8 @@ pub(crate) fn draw_subsector_names(c: &impl Canvas, view: &ViewState, w: f64, h:
         return;
     };
     let font_px = (1.5 * view.scale).clamp(10.0, 260.0);
-    let font = format!("600 {}px {DEFAULT_FONT}", font_px as i32);
+    let font = format!("700 {}px {DEFAULT_FONT}", font_px as i32);
+    let color = watermark_color(view.scale, 0.44);
     for ss in &sector.info.subsectors {
         let Some(letter) = ss.index.bytes().next() else {
             continue;
@@ -59,7 +75,7 @@ pub(crate) fn draw_subsector_names(c: &impl Canvas, view: &ViewState, w: f64, h:
         if !on_screen(cx, cy, w, h, font_px) {
             continue;
         }
-        c.fill_text_rotated(&ss.name, cx, cy, "rgba(206,200,228,0.22)", &font, LABEL_ROT, LABEL_SCALE_X);
+        c.fill_text_rotated(&ss.name, cx, cy, &color, &font, LABEL_ROT, LABEL_SCALE_X);
     }
 }
 

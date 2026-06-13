@@ -574,12 +574,23 @@ fn build_sector_bytes(
         outcome.worlds
     };
 
+    // Review tags + data-source credit (prefer the per-sector xml; the inline
+    // region-list block carries Tags too, so fall back to it for tags).
+    let mut tags = tmap_core::parse::sector_tags(&meta_xml);
+    if tags.is_empty() {
+        tags = tmap_core::parse::sector_tags(&inline);
+    }
+    let credits = tmap_core::parse::sector_credits(&meta_xml)
+        .or_else(|| tmap_core::parse::sector_credits(&inline));
+
     let data = SectorData {
         info: SectorInfo {
             name: name.to_string(),
             location,
             milieu: milieu.to_string(),
             subsectors,
+            tags,
+            credits,
         },
         worlds,
         borders,

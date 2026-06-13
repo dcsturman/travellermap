@@ -18,6 +18,7 @@ mod labels;
 mod overlays;
 mod routes;
 mod stars;
+mod status;
 mod worlds;
 
 use std::collections::HashMap;
@@ -91,6 +92,8 @@ pub fn draw(
     };
 
     c.clear("#000000", w, h);
+    // Galaxy image behind the starfield (macro zoom only; fades out by scale 2).
+    stars::draw_galaxy(&c, &view, w, h);
     stars::draw_stars(&c, &view, w, h);
     mark("stars", &mut marks);
 
@@ -160,9 +163,30 @@ pub fn draw(
         }
     }
 
+    // Dim sectors not flagged Official/Preserve/InReview (opt-in appearance).
+    if opts.dim_unofficial {
+        status::draw_dim_overlay(&c, &view, w, h, sectors);
+    }
+
     // Compass labels last, on top of everything, at every zoom.
     if opts.galactic_direction {
         labels::draw_galactic_directions(&c, w, h);
+    }
+
+    // Data-source footer: credit of the sector nearest the viewport center.
+    if let Some(s) = sectors
+        .iter()
+        .filter(|s| s.info.location.is_some())
+        .min_by(|a, b| {
+            let d = |s: &&SectorData| {
+                let l = s.info.location.unwrap();
+                let (cx, cy) = common::sector_center(l.x, l.y);
+                (cx - view.center.0).powi(2) + (cy - view.center.1).powi(2)
+            };
+            d(a).total_cmp(&d(b))
+        })
+    {
+        status::draw_footer(&c, w, h, s);
     }
     mark("labels+misc", &mut marks);
 

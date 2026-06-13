@@ -158,6 +158,7 @@ fn App() -> impl IntoView {
     let opt_important = RwSignal::new(true);
     let opt_filled = RwSignal::new(true);
     let opt_world_colors = RwSignal::new(true);
+    let opt_dim = RwSignal::new(false);
     let opt_perf = RwSignal::new(false);
     // Which floating panel is open: 0 none, 1 legend (key), 2 settings (menu).
     let panel = RwSignal::new(0u8);
@@ -291,6 +292,7 @@ fn App() -> impl IntoView {
             important_worlds: opt_important.get(),
             filled_borders: opt_filled.get(),
             more_world_colors: opt_world_colors.get(),
+            dim_unofficial: opt_dim.get(),
             perf_hud: opt_perf.get(),
         };
         if canvas_size.get().0 == 0 {
@@ -548,12 +550,13 @@ fn App() -> impl IntoView {
                     <div style="font-weight:700; color:#aab3c8; margin:12px 0 2px;">"APPEARANCE"</div>
                     {toggle_row("More World Colors", opt_world_colors)}
                     {toggle_row("Filled Borders", opt_filled)}
+                    {toggle_row("Dim Unofficial", opt_dim)}
                     <div style="font-weight:700; color:#aab3c8; margin:12px 0 2px;">"DEBUG"</div>
                     {toggle_row("Frame Timing (HUD)", opt_perf)}
                     <div style="margin-top:14px; padding-top:10px; border-top:1px solid #20283a; \
                                 font-size:12px; color:#7e879c; line-height:1.5;">
-                        "Not yet ported: Dim Unofficial Data, style themes, \
-                         milieu time-travel, and share links."
+                        "Not yet ported: style themes, milieu time-travel, \
+                         and share links."
                     </div>
                 </div>
             </Show>

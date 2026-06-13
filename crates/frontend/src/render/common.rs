@@ -76,6 +76,7 @@ pub struct RenderOptions {
     pub important_worlds: bool,   // capitals + homeworlds (macro dots)
     pub filled_borders: bool,     // tint the interior of bordered regions
     pub more_world_colors: bool,  // color worlds by trade class (vs. plain)
+    pub dim_unofficial: bool,     // dim sectors not tagged Official/Preserve/InReview
     pub perf_hud: bool,           // per-layer frame-timing overlay (profiling)
 }
 
@@ -91,6 +92,7 @@ impl Default for RenderOptions {
             important_worlds: true,
             filled_borders: true,
             more_world_colors: true,
+            dim_unofficial: false,
             perf_hud: false,
         }
     }

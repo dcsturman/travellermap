@@ -463,6 +463,32 @@ pub fn parse_world_labels(xml: &str) -> Vec<WorldLabelDef> {
         .collect()
 }
 
+/// The root `<Sector>` element's `Tags` attribute — space-separated review tags
+/// (`Official Preserve InReview Unreviewed Apocryphal`). Returns it trimmed, or
+/// an empty string if the root isn't `<Sector>`, the attribute is absent, or the
+/// XML doesn't parse.
+pub fn sector_tags(xml: &str) -> String {
+    let Ok(doc) = roxmltree::Document::parse(xml) else {
+        return String::new();
+    };
+    doc.root_element()
+        .attribute("Tags")
+        .map(|s| s.trim().to_owned())
+        .unwrap_or_default()
+}
+
+/// The `<Credits>` child of the root `<Sector>` element, as trimmed text
+/// (roxmltree decodes XML entities, so `&lt;b&gt;` arrives as `<b>`). Returns
+/// `None` if absent, empty, or the XML doesn't parse.
+pub fn sector_credits(xml: &str) -> Option<String> {
+    let doc = roxmltree::Document::parse(xml).ok()?;
+    let credits = doc.root_element().children().find(|n| n.has_tag_name("Credits"))?;
+    // Concatenate all descendant text so multi-fragment content isn't truncated.
+    let text: String = credits.descendants().filter_map(|n| n.text()).collect();
+    let trimmed = text.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
+}
+
 /// Per-sector allegiance borders from a sector metadata `.xml` (`<Border
 /// Allegiance="…">hex hex …</Border>`).
 pub fn sector_borders(xml: &str) -> Vec<Border> {
@@ -862,6 +888,32 @@ Hex  Name                 UWP       Remarks       {Ix}   PBG W  A
     #[test]
     fn non_sector_xml_is_rejected() {
         assert!(sector_index_entry("<Milieu><Sector><X>0</X></Sector></Milieu>").is_err());
+    }
+
+    #[test]
+    fn reads_sector_tags_attribute() {
+        let xml = r#"<Sector Abbreviation="Spin" Tags="Official">
+              <X>-4</X><Y>-1</Y><Name>Spinward Marches</Name>
+            </Sector>"#;
+        assert_eq!(sector_tags(xml), "Official");
+        // Absent → empty.
+        assert_eq!(sector_tags(r#"<Sector><Name>X</Name></Sector>"#), "");
+    }
+
+    #[test]
+    fn reads_credits_decoded_text() {
+        // Mirrors res/Sectors/M1248/1248_Akti.xml: entity-encoded HTML inside
+        // <Credits>; roxmltree decodes the entities.
+        let xml = r#"<Sector>
+              <Name>Aktifao</Name>
+              <Credits>
+                &lt;b&gt;Aktifao&lt;/b&gt; sector borders designed by Shane MacLean.
+              </Credits>
+            </Sector>"#;
+        let c = sector_credits(xml).expect("has credits");
+        assert!(c.starts_with("<b>Aktifao</b>"), "decoded + trimmed: {c:?}");
+        // Absent → None.
+        assert_eq!(sector_credits(r#"<Sector><Name>X</Name></Sector>"#), None);
     }
 
     #[test]

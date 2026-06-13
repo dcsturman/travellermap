@@ -6,7 +6,12 @@
 //! via `CanvasRenderingContext2d`); a future `WgpuCanvas` can drop in without
 //! touching scene logic. See PORT_PLAN.md "Rendering" decision.
 
-use web_sys::CanvasRenderingContext2d;
+use std::cell::RefCell;
+use std::collections::HashMap;
+
+use wasm_bindgen::closure::Closure;
+use wasm_bindgen::JsCast;
+use web_sys::{CanvasRenderingContext2d, HtmlImageElement};
 
 #[derive(Clone, Copy)]
 pub enum TextAlign {
@@ -50,6 +55,19 @@ pub trait Canvas {
         rot: f64,
         scale_x: f64,
     );
+    /// Draw a (lazily loaded, cached) image referenced by `url` into the screen
+    /// rect `(dx, dy, dw, dh)` at `alpha`. Backend-agnostic by design: callers
+    /// pass a URL string, never a `web-sys` image handle, so the seam stays
+    /// swappable. Loading is async — the first call kicks off the fetch and the
+    /// draw is skipped until the image is ready, then a redraw is nudged.
+    fn draw_image(&self, url: &str, dx: f64, dy: f64, dw: f64, dh: f64, alpha: f64);
+}
+
+thread_local! {
+    /// Per-thread cache of lazily-loaded images, keyed by URL. wasm is
+    /// single-threaded, so a thread-local `RefCell` is the natural fit.
+    static IMAGE_CACHE: RefCell<HashMap<String, HtmlImageElement>> =
+        RefCell::new(HashMap::new());
 }
 
 /// Canvas 2D backend over a `CanvasRenderingContext2d`.
@@ -159,4 +177,46 @@ impl Canvas for Canvas2d {
         self.ctx.restore();
     }
 
+    fn draw_image(&self, url: &str, dx: f64, dy: f64, dw: f64, dh: f64, alpha: f64) {
+        if alpha <= 0.0 {
+            return;
+        }
+        IMAGE_CACHE.with(|cache| {
+            let img = cache.borrow().get(url).cloned();
+            let img = match img {
+                Some(img) => img,
+                None => {
+                    // First time we've seen this URL: create the element, start
+                    // the load, and nudge a redraw once it finishes so the
+                    // freshly-decoded image paints on the next frame. The app
+                    // already re-renders on window "resize", so reuse that.
+                    let img = HtmlImageElement::new().unwrap();
+                    let onload = Closure::<dyn FnMut()>::new(move || {
+                        if let Some(win) = web_sys::window() {
+                            if let Ok(ev) = web_sys::Event::new("resize") {
+                                let _ = win.dispatch_event(&ev);
+                            }
+                        }
+                    });
+                    img.set_onload(Some(onload.as_ref().unchecked_ref()));
+                    onload.forget(); // keep the closure alive for the image's lifetime
+                    img.set_src(url);
+                    cache
+                        .borrow_mut()
+                        .insert(url.to_string(), img.clone());
+                    img
+                }
+            };
+            // Only draw once decoded; until then the load is in flight.
+            if img.complete() && img.natural_width() > 0 {
+                self.ctx.save();
+                self.ctx.set_global_alpha(alpha);
+                let _ = self
+                    .ctx
+                    .draw_image_with_html_image_element_and_dw_and_dh(&img, dx, dy, dw, dh);
+                self.ctx.set_global_alpha(1.0);
+                self.ctx.restore();
+            }
+        });
+    }
 }
