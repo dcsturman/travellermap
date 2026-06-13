@@ -109,14 +109,22 @@ pub fn draw(
             overlays::draw_world_labels(&c, &view, w, h, ov);
         }
     }
+    // Galaxy-scale mega labels at the most zoomed-out view (MegaLabelMaxScale=1/4).
+    if opts.region_names && view.scale <= 0.25 {
+        if let Some(ov) = overlays {
+            overlays::draw_mega_labels(&c, &view, w, h, ov);
+        }
+    }
     mark("macro", &mut marks);
 
-    // Sector / subsector boundary grids and background names.
+    // Sector / subsector boundary grids and background names. All grids share the
+    // reference's gray, scale-faded `gridColor`.
+    let gc = common::grid_color(view.scale);
     if opts.sector_grid && view.scale >= SUBSECTOR_GRID_MIN {
-        grid::draw_grid_lines(&c, &view, w, h, SUBSECTOR_W, SUBSECTOR_H, "rgba(140,160,200,0.34)", 1.2);
+        grid::draw_grid_lines(&c, &view, w, h, SUBSECTOR_W, SUBSECTOR_H, &gc, 1.4);
     }
     if opts.sector_grid && view.scale >= SECTOR_GRID_MIN {
-        grid::draw_grid_lines(&c, &view, w, h, SECTOR_W, SECTOR_H, "rgba(170,190,225,0.55)", 1.4);
+        grid::draw_grid_lines(&c, &view, w, h, SECTOR_W, SECTOR_H, &gc, 1.6);
     }
     if opts.sector_names && (SECTOR_NAME_MIN..=SECTOR_NAME_MAX).contains(&view.scale) {
         labels::draw_sector_names(&c, &view, w, h, sector_index);

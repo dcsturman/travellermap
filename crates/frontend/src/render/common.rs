@@ -265,6 +265,28 @@ pub(crate) fn sector_in_viewport(loc: (i32, i32), view: &ViewState, w: f64, h: f
     maxx >= -m && minx <= w + m && maxy >= -m && miny <= h + m
 }
 
+/// Logarithmic scale interpolation, ported from the reference `Stylesheet`:
+/// returns `lo` at/below `min`, `hi` at/above `max`, linear in `log2(scale)`
+/// between. Used for grid alpha and galaxy/background opacity fades.
+pub(crate) fn scale_interpolate(lo: f64, hi: f64, scale: f64, min: f64, max: f64) -> f64 {
+    if scale <= min {
+        return lo;
+    }
+    if scale >= max {
+        return hi;
+    }
+    let p = (scale.log2() - min.log2()) / (max.log2() - min.log2());
+    lo + (hi - lo) * p
+}
+
+/// Grid-line color — `Color.Gray` at an alpha that fades in with zoom
+/// (`ScaleInterpolate(0,1, scale, SectorGridMinScale=0.5, SectorGridFullScale=4)`).
+/// Shared by the sector / subsector / parsec grids (reference `gridColor`).
+pub(crate) fn grid_color(scale: f64) -> String {
+    let a = scale_interpolate(0.0, 1.0, scale, 0.5, 4.0);
+    format!("rgba(128,128,128,{a:.3})")
+}
+
 /// Border stroke color by allegiance — ported from `res/styles/otu.css`
 /// (specific 4-char codes first, then the 2-char prefix fallback, then gray).
 pub(crate) fn allegiance_border_color(a: &str) -> &'static str {

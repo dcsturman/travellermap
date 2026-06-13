@@ -127,6 +127,36 @@ fn draw_rift_label(c: &impl Canvas, view: &ViewState, w: f64, h: f64, v: &Vector
     c.fill_text_rotated(&v.name.replace('\n', " "), sx, sy, color, &font, 35.0_f64.to_radians(), 1.0);
 }
 
+/// Galaxy-scale labels (`Overlays.mega_labels`): "Charted Space", "Core
+/// Sophonts", … shown only at the most zoomed-out view. White; major labels bold,
+/// minor labels smaller italic. Font scales to a roughly constant on-screen size
+/// (reference `megaNameScaleFactor = min(35, 0.75/scale)`).
+pub(crate) fn draw_mega_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f64, ov: &Overlays) {
+    let unit = 0.75_f64.min(35.0 * view.scale); // = scaleFactor · scale
+    let major_px = (24.0 * unit).max(8.0) as i32;
+    let minor_px = (18.0 * unit).max(7.0) as i32;
+    let major_font = format!("700 {major_px}px {DEFAULT_FONT}");
+    let minor_font = format!("italic {minor_px}px {DEFAULT_FONT}");
+    for label in &ov.mega_labels {
+        // `x` is already in the reference's x-compressed world space (same as our
+        // parsec coords), so it maps straight through the view transform.
+        let (sx, sy) = view.to_screen(w, h, (label.x as f64, label.y as f64));
+        if !on_screen(sx, sy, w, h, 320.0) {
+            continue;
+        }
+        let (font, size) = if label.minor {
+            (&minor_font, minor_px as f64)
+        } else {
+            (&major_font, major_px as f64)
+        };
+        let lines: Vec<&str> = label.text.split('\n').collect();
+        let top = sy - (lines.len() as f64 - 1.0) * size * 0.6;
+        for (i, line) in lines.iter().enumerate() {
+            c.fill_text(line, sx, top + i as f64 * size * 1.15, "rgba(255,255,255,0.92)", font, TextAlign::Center);
+        }
+    }
+}
+
 /// Capitals + homeworlds (`Overlays.labels`): a Wheat dot at the world hex with
 /// a red name label offset by its `bias` (reference `WorldObject.Paint`).
 pub(crate) fn draw_world_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f64, ov: &Overlays) {

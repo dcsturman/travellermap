@@ -10,8 +10,8 @@ use web_sys::Path2d;
 use crate::canvas::{Canvas, Canvas2d};
 
 use super::common::{
-    hex_vertex, sector_in_viewport, visible_hex_range, visible_sectors, ViewState, SECTOR_H,
-    SECTOR_W,
+    grid_color, hex_vertex, sector_in_viewport, visible_hex_range, visible_sectors, ViewState,
+    SECTOR_H, SECTOR_W,
 };
 
 /// Straight sector/subsector boundary lines at every `step` parsecs (boundaries
@@ -122,7 +122,7 @@ pub(crate) fn draw_hex_grid(
     ctx.save();
     let _ = ctx.set_transform(a, 0.0, 0.0, a, e, f);
     ctx.set_line_width(1.0 / s); // ~1 css px (the transform scales by s)
-    ctx.set_stroke_style_str("rgba(130,150,190,0.22)");
+    ctx.set_stroke_style_str(&grid_color(s)); // gray, scale-faded (reference gridColor)
     ctx.stroke_with_path(&combined);
     ctx.restore();
 }

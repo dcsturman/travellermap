@@ -11,7 +11,9 @@
 //! aborting the whole sector — matching the reference, which logs and continues.
 
 use crate::astrometrics::Coord;
-use crate::dto::{Border, Route, SectorIndexEntry, SubPath, Subsector, VectorObject, World};
+use crate::dto::{
+    Border, MegaLabel, Route, SectorIndexEntry, SubPath, Subsector, VectorObject, World,
+};
 use base64::Engine;
 use regex::Regex;
 use std::collections::HashMap;
@@ -618,6 +620,26 @@ pub fn border_region(hexes: &[String], sx: i32, sy: i32) -> Vec<(i32, i32)> {
     region
 }
 
+/// Parse `res/labels/mega_labels.tab` (columns `Text X Y Minor`, tab-delimited,
+/// one header line) into galaxy-scale labels. `Text` uses a literal `\n` for
+/// line breaks; `Minor` is `True`/`False`.
+pub fn parse_mega_labels(text: &str) -> Vec<MegaLabel> {
+    text.lines()
+        .skip(1)
+        .filter_map(|line| {
+            let mut cols = line.split('\t');
+            let raw = cols.next()?.trim();
+            if raw.is_empty() {
+                return None;
+            }
+            let x = cols.next()?.trim().parse().ok()?;
+            let y = cols.next()?.trim().parse().ok()?;
+            let minor = cols.next().is_some_and(|s| s.trim().eq_ignore_ascii_case("true"));
+            Some(MegaLabel { text: raw.replace("\\n", "\n"), x, y, minor })
+        })
+        .collect()
+}
+
 /// Extract one sector's inline metadata block (`<Sector>…</Sector>`) from a
 /// milieu region list, by sector name. Many sectors keep their borders/routes/
 /// subsectors inline in the region list (`{milieu}.xml`) in addition to — or
@@ -652,6 +674,7 @@ pub fn sector_routes(xml: &str) -> Vec<Route> {
                 start_offset: (off(&n, "StartOffsetX"), off(&n, "StartOffsetY")),
                 end_offset: (off(&n, "EndOffsetX"), off(&n, "EndOffsetY")),
                 allegiance: n.attribute("Allegiance").map(str::to_owned),
+                color: n.attribute("Color").map(|v| v.trim().to_owned()),
             })
         })
         .collect()

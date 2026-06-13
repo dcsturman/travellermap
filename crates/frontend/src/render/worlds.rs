@@ -14,13 +14,23 @@ use crate::glyph;
 
 use super::common::{
     hex_parsec, on_screen, sector_in_viewport, world_hex, ViewState, ALLEGIANCE_MIN_SCALE, C_AMBER,
-    C_RED, C_WATER, C_DRY, CONTENT_SCALE, DEFAULT_FONT, WORLD_FULL_SCALE, WORLD_UWP_SCALE,
+    C_RED, C_WATER, C_DRY, CONTENT_SCALE, DEFAULT_FONT, WORLD_BASIC_SCALE, WORLD_FULL_SCALE,
+    WORLD_UWP_SCALE,
 };
 
-/// Dot-tier disc radius (parsec) and zone-ring radius (parsec) — constant in
-/// world space, so the dot geometry can be cached and drawn under the view
-/// transform.
-const DOT_R: f64 = 0.1 * CONTENT_SCALE;
+/// World disc radius (parsec), reference `discRadius`: **0.2** at the dot-only
+/// tier (Dotmap, scale < `WORLD_BASIC_SCALE`), **0.1** once world detail is
+/// drawn. The travel-zone broken ring sits 0.1 parsec outside the disc.
+fn disc_radius(dotmap: bool) -> f64 {
+    if dotmap {
+        0.2
+    } else {
+        0.1
+    }
+}
+
+/// Travel-zone arc radius (parsec) — a single open-bottom arc encircling the
+/// world's hex content (amber/red), not a full ring.
 const ZONE_R: f64 = 0.4;
 
 /// Cached per-sector "dot tier" geometry (scale < `WORLD_BASIC_SCALE`, no text):
@@ -30,6 +40,7 @@ const ZONE_R: f64 = 0.4;
 /// `fill_circle`/`stroke_arc` per world. *(Clear on milieu switch.)*
 struct SectorDots {
     more_colors: bool,
+    dotmap: bool, // disc radius tier the geometry was built for
     discs: Vec<(String, Path2d)>,
     outlines: Vec<(String, Path2d)>,
     zones: Vec<(String, Path2d)>,
@@ -96,16 +107,17 @@ pub(crate) fn draw_placeholder_glyphs(canvas: &Canvas2d, view: &ViewState, w: f6
     }
 }
 
-fn build_sector_dots(sector: &SectorData, more_colors: bool) -> SectorDots {
-    use std::f64::consts::PI;
+fn build_sector_dots(sector: &SectorData, more_colors: bool, dotmap: bool) -> SectorDots {
+    use std::f64::consts::{PI, TAU};
+    let disc_r = disc_radius(dotmap);
     let mut discs: HashMap<String, Path2d> = HashMap::new();
     let mut outlines: HashMap<String, Path2d> = HashMap::new();
     let mut zones: HashMap<String, Path2d> = HashMap::new();
     if let Some(loc) = sector.info.location {
         let add_circle = |map: &mut HashMap<String, Path2d>, color: &str, cx: f64, cy: f64| {
             let p = map.entry(color.to_owned()).or_insert_with(|| Path2d::new().unwrap());
-            p.move_to(cx + DOT_R, cy);
-            let _ = p.arc(cx, cy, DOT_R, 0.0, 2.0 * PI);
+            p.move_to(cx + disc_r, cy);
+            let _ = p.arc(cx, cy, disc_r, 0.0, TAU);
         };
         for world in &sector.worlds {
             // Placeholder/anomaly worlds get a special glyph instead of a disc
@@ -116,7 +128,7 @@ fn build_sector_dots(sector: &SectorData, more_colors: bool) -> SectorDots {
             let Some((col, row)) = parse_hex(&world.hex) else { continue };
             let (wc, wr) = world_hex(loc.x, loc.y, col, row);
             let (cx, cy) = hex_parsec(wc, wr);
-            // Travel-zone open-bottom arc (behind the disc).
+            // Travel zone: a single open-bottom arc behind the disc (amber/red).
             let zc = match world.zone.as_str() { "A" => Some(C_AMBER), "R" => Some(C_RED), _ => None };
             if let Some(zc) = zc {
                 let (a0, a1) = (PI - 0.384, 2.0 * PI + 0.384);
@@ -133,6 +145,7 @@ fn build_sector_dots(sector: &SectorData, more_colors: bool) -> SectorDots {
     }
     SectorDots {
         more_colors,
+        dotmap,
         discs: discs.into_iter().collect(),
         outlines: outlines.into_iter().collect(),
         zones: zones.into_iter().collect(),
@@ -143,6 +156,7 @@ fn build_sector_dots(sector: &SectorData, more_colors: bool) -> SectorDots {
 /// from the per-sector cache, drawn under one view transform.
 pub(crate) fn draw_world_dots(canvas: &Canvas2d, view: &ViewState, w: f64, h: f64, dpr: f64, sectors: &[&SectorData], more_colors: bool) {
     let s = view.scale;
+    let dotmap = s < WORLD_BASIC_SCALE; // bigger discs when no per-world detail
     let mut discs: HashMap<String, Path2d> = HashMap::new();
     let mut outlines: HashMap<String, Path2d> = HashMap::new();
     let mut zones: HashMap<String, Path2d> = HashMap::new();
@@ -158,9 +172,9 @@ pub(crate) fn draw_world_dots(canvas: &Canvas2d, view: &ViewState, w: f64, h: f6
             if !sector_in_viewport((loc.x, loc.y), view, w, h) {
                 continue;
             }
-            let dots = cache.entry((loc.x, loc.y)).or_insert_with(|| build_sector_dots(sector, more_colors));
-            if dots.more_colors != more_colors {
-                *dots = build_sector_dots(sector, more_colors); // toggle changed disc colors
+            let dots = cache.entry((loc.x, loc.y)).or_insert_with(|| build_sector_dots(sector, more_colors, dotmap));
+            if dots.more_colors != more_colors || dots.dotmap != dotmap {
+                *dots = build_sector_dots(sector, more_colors, dotmap); // tier/colors changed
             }
             merge(&mut zones, &dots.zones);
             merge(&mut discs, &dots.discs);

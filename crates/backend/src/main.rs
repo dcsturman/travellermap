@@ -22,9 +22,9 @@ use tmap_core::{
     astrometrics::{parse_hex, Coord},
     dto::{Overlays, SearchResults, SectorData, SectorInfo, Universe, VectorObject, World, WorldLabel},
     parse::{
-        border_region, parse_column, parse_milieu_index, parse_sec, parse_tab, parse_vector_object,
-        parse_world_labels, sector_border_styles, sector_borders, sector_index_entry, sector_routes,
-        sector_subsectors,
+        border_region, parse_column, parse_mega_labels, parse_milieu_index, parse_sec, parse_tab,
+        parse_vector_object, parse_world_labels, sector_border_styles, sector_borders,
+        sector_index_entry, sector_routes, sector_subsectors,
     },
 };
 use tower_http::cors::CorsLayer;
@@ -84,6 +84,9 @@ fn build_overlays(res_dir: &FsPath) -> Overlays {
         routes: load_vectors(res_dir, ROUTE_FILES),
         rifts: load_vectors(res_dir, RIFT_FILES),
         labels: build_world_labels(res_dir),
+        mega_labels: read_text(res_dir.join("labels").join("mega_labels.tab"))
+            .map(|t| parse_mega_labels(&t))
+            .unwrap_or_default(),
     }
 }
 

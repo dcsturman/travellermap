@@ -2,7 +2,9 @@
 
 use crate::canvas::Canvas;
 
-use super::common::{hex_parsec, on_screen, visible_hex_range, ViewState, STAR_MIN_SCALE};
+use super::common::{
+    hex_parsec, on_screen, scale_interpolate, visible_hex_range, ViewState, STAR_MIN_SCALE,
+};
 
 /// Galaxy background image, composited behind the procedural starfield at macro
 /// (zoomed-out) view and faded out as you zoom in.
@@ -22,7 +24,9 @@ pub(crate) fn draw_galaxy(c: &impl Canvas, view: &ViewState, w: f64, h: f64) {
     if view.scale > 2.0 {
         return; // invisible at detail zoom
     }
-    let alpha = ((2.0 - view.scale) / (2.0 - 0.125)).clamp(0.0, 1.0) * 0.85;
+    // Reference `deepBackgroundOpacity = ScaleInterpolate(1,0, scale, 1/8, 2)`
+    // (logarithmic); capped slightly so the starfield still reads on top.
+    let alpha = scale_interpolate(1.0, 0.0, view.scale, 0.125, 2.0) * 0.9;
     if alpha <= 0.0 {
         return;
     }

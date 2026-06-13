@@ -136,6 +136,10 @@ pub struct Route {
     pub end_offset: (i32, i32),
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allegiance: Option<String>,
+    /// Explicit route color from the `<Route Color="...">` attribute, if any;
+    /// otherwise the renderer uses the default gray.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
 }
 
 /// A sector's worlds (and borders/routes), streamed as one payload to the
@@ -221,6 +225,18 @@ pub struct WorldLabel {
     pub bias: (i8, i8),
 }
 
+/// A galaxy-scale label from `res/labels/mega_labels.tab` (e.g. "Charted Space",
+/// "Core Sophonts"), shown only at the most zoomed-out view. `x`/`y` are in the
+/// reference map's (x-compressed) world coordinates; `text` may contain `\n`
+/// line breaks; `minor` picks the smaller italic font.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MegaLabel {
+    pub text: String,
+    pub x: f32,
+    pub y: f32,
+    pub minor: bool,
+}
+
 /// The macro overlays shown when zoomed out, grouped by kind. Charted-space
 /// scale and milieu-independent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -232,6 +248,9 @@ pub struct Overlays {
     /// payloads without this field still deserialize.
     #[serde(default)]
     pub labels: Vec<WorldLabel>,
+    /// Galaxy-scale labels (mega_labels.tab), shown at the most zoomed-out view.
+    #[serde(default)]
+    pub mega_labels: Vec<MegaLabel>,
 }
 
 /// One search hit — a world or sector — with where to jump to.
