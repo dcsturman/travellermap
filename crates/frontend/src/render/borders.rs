@@ -194,10 +194,22 @@ fn build_border_geometry(sectors: &[&SectorData]) -> Vec<(String, Path2d, Path2d
         // and resolve each seam candidate against the neighbor sector's region —
         // no giant merged set, no per-hex rescan.
         let cache = cell.borrow();
-        let in_region = |key: &str, co: (i32, i32), hex: (i32, i32)| -> bool {
-            cache
-                .get(&co)
-                .is_some_and(|geom| geom.groups.iter().any(|g| g.key == key && g.rset.contains(&hex)))
+        // Resolve a seam edge against the neighbor sector's region. Three states,
+        // not two: `InRegion` (suppress — interior), `OutOfRegion` (stroke — a real
+        // polity boundary), or `Unknown` when the neighbor sector hasn't been built
+        // yet (off-screen / still streaming). A polity region commonly continues
+        // across a sector seam into a sector that isn't in the current visible
+        // slice; if we treated "not built" as OutOfRegion we'd stroke a bright
+        // border straight down a contiguous region's edge (the Aslan "territory
+        // seam" bug). So: stroke ONLY when the neighbor sector IS built and the
+        // hex is genuinely outside the region; suppress when the neighbor is
+        // absent (unknown), since a missing true edge is far less wrong than a
+        // false one bisecting one polity.
+        let neighbor_strokes = |key: &str, co: (i32, i32), hex: (i32, i32)| -> bool {
+            match cache.get(&co) {
+                None => false, // neighbor sector not built yet → unknown, don't stroke
+                Some(geom) => !geom.groups.iter().any(|g| g.key == key && g.rset.contains(&hex)),
+            }
         };
         let mut acc: HashMap<&str, (String, Path2d, Path2d)> = HashMap::new();
         for sector in sectors {
@@ -209,10 +221,11 @@ fn build_border_geometry(sectors: &[&SectorData]) -> Vec<(String, Path2d, Path2d
                     .or_insert_with(|| (g.color.clone(), Path2d::new().unwrap(), Path2d::new().unwrap()));
                 entry.1.add_path(&g.fill);
                 entry.2.add_path(&g.interior_stroke); // cached same-sector edges
-                // Seam edges: stroke only where the neighbor isn't in this
-                // group's region in its sector (border ends at the seam).
+                // Seam edges: stroke only where the neighbor sector is built AND
+                // the neighbor hex isn't in this group's region (border ends at
+                // the seam). An unbuilt neighbor is left un-stroked, not bordered.
                 for seam in &g.seams {
-                    if !in_region(&g.key, seam.nb_cell, seam.nb) {
+                    if neighbor_strokes(&g.key, seam.nb_cell, seam.nb) {
                         entry.2.move_to(seam.a.0, seam.a.1);
                         entry.2.line_to(seam.b.0, seam.b.1);
                     }
