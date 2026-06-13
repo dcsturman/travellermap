@@ -204,20 +204,19 @@ fn build_border_geometry(sectors: &[&SectorData]) -> Vec<(String, Path2d, Path2d
         // and resolve each seam candidate against the neighbor sector's region —
         // no giant merged set, no per-hex rescan.
         let cache = cell.borrow();
-        // Resolve a seam edge against the neighbor sector's region. Three states,
-        // not two: `InRegion` (suppress — interior), `OutOfRegion` (stroke — a real
-        // polity boundary), or `Unknown` when the neighbor sector hasn't been built
-        // yet (off-screen / still streaming). A polity region commonly continues
-        // across a sector seam into a sector that isn't in the current visible
-        // slice; if we treated "not built" as OutOfRegion we'd stroke a bright
-        // border straight down a contiguous region's edge (the Aslan "territory
-        // seam" bug). So: stroke ONLY when the neighbor sector IS built and the
-        // hex is genuinely outside the region; suppress when the neighbor is
-        // absent (unknown), since a missing true edge is far less wrong than a
-        // false one bisecting one polity.
+        // Resolve a seam edge against the neighbor sector's region. A seam
+        // candidate only exists where this sector's OWN region does NOT include
+        // the neighbor hex (see `build_sector_geom` — region overlap across a
+        // seam is caught there and never becomes a seam), so it's a genuine
+        // polity boundary unless the neighbor sector continues the same region.
+        // Stroke it UNLESS the neighbor sector is built and lists that hex in the
+        // same group — i.e. an unbuilt/uncharted neighbor still closes the border
+        // (an undetailed neighbor in e.g. the Interstellar Wars milieu must not
+        // leave the Imperium border cut off). When the neighbor later streams in,
+        // the cache rebuilds and re-resolves against its real region.
         let neighbor_strokes = |key: &str, co: (i32, i32), hex: (i32, i32)| -> bool {
             match cache.get(&co) {
-                None => false, // neighbor sector not built yet → unknown, don't stroke
+                None => true, // neighbor not built → close the border at this edge
                 Some(geom) => !geom.groups.iter().any(|g| g.key == key && g.rset.contains(&hex)),
             }
         };

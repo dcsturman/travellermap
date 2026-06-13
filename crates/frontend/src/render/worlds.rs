@@ -72,8 +72,13 @@ fn is_anomaly(world: &World) -> bool {
 /// `anomaly` style elements (`content`/font/color/position). Drawn whenever
 /// worlds are visible (the glyph replaces the dot at every detail tier).
 pub(crate) fn draw_placeholder_glyphs(canvas: &Canvas2d, view: &ViewState, w: f64, h: f64, sectors: &[&SectorData]) {
-    let ctx = &canvas.ctx;
     let s = view.scale;
+    // `*`/`⌖` are `WorldDetails.Type` glyphs — Atlas+ only. Below that (Dotmap
+    // zoom) non-anomaly placeholders render as plain dots (`build_sector_dots`).
+    if s < WORLD_BASIC_SCALE {
+        return;
+    }
+    let ctx = &canvas.ctx;
     let cs = s * CONTENT_SCALE;
     // Reference FontInfo sizes are 0.6 parsec (same convention as our other
     // glyph fonts, ~size·cs px).
@@ -120,9 +125,19 @@ fn build_sector_dots(sector: &SectorData, more_colors: bool, dotmap: bool) -> Se
             let _ = p.arc(cx, cy, disc_r, 0.0, TAU);
         };
         for world in &sector.worlds {
-            // Placeholder/anomaly worlds get a special glyph instead of a disc
-            // (drawn by `draw_placeholder_glyphs`), so skip their dot geometry.
+            // Placeholder worlds: at Atlas+ zoom they get the `*`/`⌖` glyph
+            // (`draw_placeholder_glyphs`), so skip their dot geometry. But at
+            // Dotmap zoom the reference draws every *non-anomaly* world —
+            // placeholders included — as a plain white dot (`WorldDetails.Type`
+            // is off below scale 24, so no glyph), giving the dense uniform dot
+            // field of an uncharted sector. Anomalies draw nothing until Atlas.
             if is_placeholder(world) {
+                if dotmap && !is_anomaly(world) {
+                    let Some((col, row)) = parse_hex(&world.hex) else { continue };
+                    let (wc, wr) = world_hex(loc.x, loc.y, col, row);
+                    let (cx, cy) = hex_parsec(wc, wr);
+                    add_circle(&mut discs, "#ffffff", cx, cy);
+                }
                 continue;
             }
             let Some((col, row)) = parse_hex(&world.hex) else { continue };

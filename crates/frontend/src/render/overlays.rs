@@ -138,9 +138,9 @@ pub(crate) fn draw_mega_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f64
     let major_font = format!("700 {major_px}px {DEFAULT_FONT}");
     let minor_font = format!("italic {minor_px}px {DEFAULT_FONT}");
     for label in &ov.mega_labels {
-        // `x` is already in the reference's x-compressed world space (same as our
-        // parsec coords), so it maps straight through the view transform.
-        let (sx, sy) = view.to_screen(w, h, (label.x as f64, label.y as f64));
+        // X is in raw (un-compressed) parsec units; apply the x-compression
+        // (matches the vector/region label convention).
+        let (sx, sy) = view.to_screen(w, h, (label.x as f64 * PARSEC_SCALE_X as f64, label.y as f64));
         if !on_screen(sx, sy, w, h, 320.0) {
             continue;
         }
@@ -166,7 +166,9 @@ pub(crate) fn draw_mega_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f64
 /// in the same x-compressed world space as the mega labels (straight to_screen).
 pub(crate) fn draw_minor_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f64, ov: &Overlays) {
     for label in &ov.minor_labels {
-        let (sx, sy) = view.to_screen(w, h, (label.x as f64, label.y as f64));
+        // X is in raw (un-compressed) parsec units, like the vector region
+        // labels — apply the x-compression to land them on the map.
+        let (sx, sy) = view.to_screen(w, h, (label.x as f64 * PARSEC_SCALE_X as f64, label.y as f64));
         if !on_screen(sx, sy, w, h, 220.0) {
             continue;
         }
