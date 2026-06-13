@@ -62,6 +62,16 @@ pub struct ViewState {
     pub center: (f64, f64),
 }
 
+/// The jump-N range view for a selected world: highlight every loaded world
+/// within `jump` parsecs of the origin hex. `origin` is the absolute world hex
+/// `Coord` (built via [`world_hex`], exactly as the route planner builds its
+/// waypoint coords) so `hex_distance` here matches the route distances.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RangeView {
+    pub origin: tmap_core::astrometrics::Coord,
+    pub jump: i32,
+}
+
 /// Layer-visibility / appearance toggles, driven by the hamburger settings menu
 /// (mirrors the reference's Features / Appearance switches). Everything on by
 /// default.
@@ -78,6 +88,7 @@ pub struct RenderOptions {
     pub more_world_colors: bool,  // color worlds by trade class (vs. plain)
     pub dim_unofficial: bool,     // dim sectors not tagged Official/Preserve/InReview
     pub perf_hud: bool,           // per-layer frame-timing overlay (profiling)
+    pub range: Option<RangeView>, // active jump-N range view (selected world's neighborhood)
 }
 
 impl Default for RenderOptions {
@@ -94,11 +105,12 @@ impl Default for RenderOptions {
             more_world_colors: true,
             dim_unofficial: false,
             perf_hud: false,
+            range: None,
         }
     }
 }
 
-pub(crate) fn world_hex(sx: i32, sy: i32, col: i32, row: i32) -> (i32, i32) {
+pub fn world_hex(sx: i32, sy: i32, col: i32, row: i32) -> (i32, i32) {
     (sx * SECTOR_W + col, sy * SECTOR_H + row)
 }
 

@@ -223,6 +223,10 @@ fn App() -> impl IntoView {
     // second click on the same sector skips the round-trip.
     let selected = RwSignal::new(None::<SelectedWorld>);
     let full_sectors = StoredValue::new(HashMap::<(i32, i32), SectorData>::new());
+    // Active jump-N range view: (selected-world identity, RangeView). The
+    // identity `(sector_coord, hex)` ties the range to a specific world so
+    // dismissing / re-selecting clears it; `jump` (1..=6) is the active rating.
+    let range = RwSignal::new(None::<((i32, i32), String, render::RangeView)>);
     let (route_status, set_route_status) = signal(String::new());
     // Distinguish a click (set endpoint) from a drag (pan): remember press origin.
     let down_pos = RwSignal::new(None::<(f64, f64)>);
@@ -241,6 +245,20 @@ fn App() -> impl IntoView {
     let opt_perf = RwSignal::new(false);
     // Which floating panel is open: 0 none, 1 legend (key), 2 settings (menu).
     let panel = RwSignal::new(0u8);
+
+    // Keep the jump-range overlay tied to the selected world: if the selection
+    // is cleared (panel close / empty-space click) or moves to a different
+    // world, drop a range that was pinned to the old one.
+    Effect::new(move |_| {
+        let cur = selected.get().map(|s| (s.sector_coord, s.world.hex.clone()));
+        range.update(|r| {
+            if let Some((coord, hex, _)) = r {
+                if cur.as_ref() != Some(&(*coord, hex.clone())) {
+                    *r = None;
+                }
+            }
+        });
+    });
 
     // 0) Size the canvas on mount, and re-size on window resize.
     Effect::new(move |_| {
@@ -373,6 +391,7 @@ fn App() -> impl IntoView {
             more_world_colors: opt_world_colors.get(),
             dim_unofficial: opt_dim.get(),
             perf_hud: opt_perf.get(),
+            range: range.get().map(|(_, _, rv)| rv),
         };
         if canvas_size.get().0 == 0 {
             return; // not sized yet (subscribes to resize)
@@ -884,7 +903,33 @@ fn App() -> impl IntoView {
                     if let Some(sel) = selected.get_untracked() {
                         open_print_html(&world_print::build_world_print_html(&sel));
                     }
-                } />
+                }
+                on_jump_range=move |n: i32| {
+                    let Some(sel) = selected.get_untracked() else { return };
+                    let id = (sel.sector_coord, sel.world.hex.clone());
+                    // Toggle: clicking the active J-N again clears the range.
+                    let active = range.get_untracked().filter(|(c, h, _)| (*c, h.clone()) == id).map(|(_, _, rv)| rv.jump);
+                    if active == Some(n) {
+                        range.set(None);
+                        return;
+                    }
+                    // Build the origin's absolute world hex `Coord` the same way
+                    // the route planner does (`world_hex(sx, sy, col, row)`), so
+                    // the neighborhood matches route distances.
+                    let Some((col, row)) = parse_hex(&sel.world.hex) else { return };
+                    let (wc, wr) = render::world_hex(sel.sector_coord.0, sel.sector_coord.1, col, row);
+                    let rv = render::RangeView { origin: tmap_core::astrometrics::Coord::new(wc, wr), jump: n };
+                    range.set(Some((sel.sector_coord, sel.world.hex.clone(), rv)));
+                }
+                active_jump=Signal::derive(move || {
+                    let sel = selected.get();
+                    range.get()
+                        .filter(|(c, h, _)| {
+                            sel.as_ref().is_some_and(|s| s.sector_coord == *c && &s.world.hex == h)
+                        })
+                        .map(|(_, _, rv)| rv.jump)
+                        .unwrap_or(0)
+                }) />
             // --- bottom pane (mirrors the reference #bottom-pane): red stripe,
             //     the per-sector data-source credit (or Mongoose copyright) on the
             //     left, the TRAVELLER® wordmark on the right. ---

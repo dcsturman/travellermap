@@ -209,13 +209,18 @@ fn expanded_body(sel: &SelectedWorld) -> impl IntoView {
 }
 
 /// The world detail panel. Shown when `selected` is `Some`. `on_close` clears the
-/// selection; `on_plan_route` seeds the jump-route planner with this world.
+/// selection; `on_plan_route` seeds the jump-route planner with this world;
+/// `on_jump_range` toggles the jump-N range overlay (J-N highlights every world
+/// within N parsecs on the map). `active_jump` reflects the current range rating
+/// (0 = none) so the J-N pills show their active state.
 #[component]
 pub fn WorldPanel(
     selected: RwSignal<Option<SelectedWorld>>,
     #[prop(into)] on_close: Callback<()>,
     #[prop(into)] on_plan_route: Callback<String>,
     #[prop(into)] on_print: Callback<()>,
+    #[prop(into)] on_jump_range: Callback<i32>,
+    #[prop(into)] active_jump: Signal<i32>,
 ) -> impl IntoView {
     let expanded = RwSignal::new(true);
 
@@ -276,6 +281,22 @@ pub fn WorldPanel(
                                            border:1px solid #2a3145; background:rgba(40,44,58,0.7); \
                                            color:#cdd5e6; font:600 13px system-ui;">
                                 {move || if expanded.get() { "▾" } else { "▸" }}</button>
+                        </div>
+
+                        // --- jump-range pills: J-N highlights this world's
+                        //     jump-N neighborhood on the map (toggle the same N off). ---
+                        <div style="flex:none; display:flex; gap:6px; margin-top:8px;">
+                            {(1..=6).map(|n| view! {
+                                <button title="Highlight jump-N neighborhood"
+                                        on:click=move |_| on_jump_range.run(n)
+                                        style:background=move || if active_jump.get() == n { "#e32736" } else { "rgba(40,44,58,0.7)" }
+                                        style:color=move || if active_jump.get() == n { "#fff" } else { "#cdd5e6" }
+                                        style="flex:1; padding:0; line-height:26px; cursor:pointer; \
+                                               border:1px solid #2a3145; border-radius:15px; \
+                                               font:600 12px system-ui;">
+                                    {format!("J-{n}")}
+                                </button>
+                            }).collect_view()}
                         </div>
 
                         // --- expandable body (scrolls) ---

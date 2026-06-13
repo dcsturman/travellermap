@@ -16,6 +16,7 @@ mod grid;
 mod hud;
 mod labels;
 mod overlays;
+mod range;
 mod routes;
 mod stars;
 mod status;
@@ -31,8 +32,8 @@ use crate::canvas::Canvas;
 
 // Public API (unchanged for `main.rs`).
 pub use common::{
-    fit_sector, home_view, sector_hex_parsec, visible_sectors, world_to_parsec, RenderOptions,
-    ViewState, MAX_SCALE, MIN_SCALE, WORLD_MIN_SCALE,
+    fit_sector, home_view, sector_hex_parsec, visible_sectors, world_hex, world_to_parsec,
+    RangeView, RenderOptions, ViewState, MAX_SCALE, MIN_SCALE, WORLD_MIN_SCALE,
 };
 
 use common::{
@@ -172,6 +173,15 @@ pub fn draw(
             for sector in sectors {
                 labels::draw_border_labels(&c, &view, w, h, sector);
             }
+        }
+    }
+
+    // Active jump-N range view: highlight the selected world's neighborhood
+    // (every loaded world within N parsecs) on top of the world layer. Only the
+    // detail view carries worlds, so it's gated on the same threshold.
+    if let Some(rng) = opts.range {
+        if view.scale >= WORLD_MIN_SCALE {
+            range::draw_range(&c, &view, w, h, sectors, rng);
         }
     }
 
