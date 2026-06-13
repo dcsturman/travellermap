@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 /// A single world (system main world) within a sector — one T5 `.tab` row.
 /// Empty/absent fields are omitted from the wire form to keep payloads lean.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct World {
     /// Four-digit hex label within the sector, e.g. `"0101"` (col/row, 01-32 / 01-40).
     pub hex: String,
