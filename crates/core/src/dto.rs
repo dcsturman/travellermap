@@ -225,12 +225,13 @@ pub struct WorldLabel {
     pub bias: (i8, i8),
 }
 
-/// A galaxy-scale label from `res/labels/mega_labels.tab` (e.g. "Charted Space",
-/// "Core Sophonts"), shown only at the most zoomed-out view. `x`/`y` are in the
-/// reference map's (x-compressed) world coordinates; `text` may contain `\n`
-/// line breaks; `minor` picks the smaller italic font.
+/// A free-placed map label from the `Text\tX\tY\tMinor` label files
+/// (`res/labels/mega_labels.tab` galaxy-scale names, `minor_labels.tab` region
+/// names). `x`/`y` are in the reference map's (x-compressed) world coordinates;
+/// `text` may contain `\n` line breaks. The `minor` flag selects the smaller
+/// font/alternate color — its meaning differs per dataset (see the draw passes).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct MegaLabel {
+pub struct MapLabel {
     pub text: String,
     pub x: f32,
     pub y: f32,
@@ -250,7 +251,11 @@ pub struct Overlays {
     pub labels: Vec<WorldLabel>,
     /// Galaxy-scale labels (mega_labels.tab), shown at the most zoomed-out view.
     #[serde(default)]
-    pub mega_labels: Vec<MegaLabel>,
+    pub mega_labels: Vec<MapLabel>,
+    /// Minor region labels (minor_labels.tab) — red region names ("Mixed Client
+    /// States", …) drawn over the macro view (scale 0.5–4).
+    #[serde(default)]
+    pub minor_labels: Vec<MapLabel>,
 }
 
 /// One search hit — a world or sector — with where to jump to.

@@ -128,6 +128,13 @@ pub fn draw(
                 overlays::draw_world_labels(&c, &view, w, h, ov);
             }
         }
+        // Minor region labels (minor_labels.tab) — red region names over the
+        // macro view (MacroLabelMinScale 1/2 … MacroLabelMaxScale 4).
+        if opts.region_names && (MACRO_WORLDS_MIN..=MACRO_WORLDS_MAX).contains(&view.scale) {
+            if let Some(ov) = overlays {
+                overlays::draw_minor_labels(&c, &view, w, h, ov);
+            }
+        }
         // Galaxy-scale mega labels at the most zoomed-out view (MegaLabelMaxScale=1/4).
         if opts.region_names && view.scale <= 0.25 {
             if let Some(ov) = overlays {

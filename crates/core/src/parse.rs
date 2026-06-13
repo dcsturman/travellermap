@@ -12,7 +12,7 @@
 
 use crate::astrometrics::Coord;
 use crate::dto::{
-    Border, MegaLabel, Route, SectorIndexEntry, SubPath, Subsector, VectorObject, World,
+    Border, MapLabel, Route, SectorIndexEntry, SubPath, Subsector, VectorObject, World,
 };
 use base64::Engine;
 use regex::Regex;
@@ -620,10 +620,10 @@ pub fn border_region(hexes: &[String], sx: i32, sy: i32) -> Vec<(i32, i32)> {
     region
 }
 
-/// Parse `res/labels/mega_labels.tab` (columns `Text X Y Minor`, tab-delimited,
-/// one header line) into galaxy-scale labels. `Text` uses a literal `\n` for
-/// line breaks; `Minor` is `True`/`False`.
-pub fn parse_mega_labels(text: &str) -> Vec<MegaLabel> {
+/// Parse a `Text\tX\tY\tMinor` label file (tab-delimited, one header line) — used
+/// for both `res/labels/mega_labels.tab` and `minor_labels.tab`. `Text` uses a
+/// literal `\n` for line breaks; `Minor` is `True`/`False`.
+pub fn parse_map_labels(text: &str) -> Vec<MapLabel> {
     text.lines()
         .skip(1)
         .filter_map(|line| {
@@ -635,7 +635,7 @@ pub fn parse_mega_labels(text: &str) -> Vec<MegaLabel> {
             let x = cols.next()?.trim().parse().ok()?;
             let y = cols.next()?.trim().parse().ok()?;
             let minor = cols.next().is_some_and(|s| s.trim().eq_ignore_ascii_case("true"));
-            Some(MegaLabel { text: raw.replace("\\n", "\n"), x, y, minor })
+            Some(MapLabel { text: raw.replace("\\n", "\n"), x, y, minor })
         })
         .collect()
 }

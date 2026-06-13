@@ -157,6 +157,36 @@ pub(crate) fn draw_mega_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f64
     }
 }
 
+/// Minor region labels (`Overlays.minor_labels`, from `minor_labels.tab`), drawn
+/// over the macro view (scale 0.5–4). Ported from `DrawMacroNames`' minor block:
+/// a label's `minor` flag picks `macroNames.SmallFont` (5/1.4 parsec, regular) +
+/// `textColor` (white) when true, else `MediumFont` (6.5/1.4 parsec, **italic**)
+/// + `textHighlightColor` (**red**) — so the common `Minor=False` region names
+/// ("Mixed Client States", "Aslan Colonies", …) read as red italic. `x`/`y` are
+/// in the same x-compressed world space as the mega labels (straight to_screen).
+pub(crate) fn draw_minor_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f64, ov: &Overlays) {
+    for label in &ov.minor_labels {
+        let (sx, sy) = view.to_screen(w, h, (label.x as f64, label.y as f64));
+        if !on_screen(sx, sy, w, h, 220.0) {
+            continue;
+        }
+        // FontInfo sizes are in parsecs → px by × scale, with a legibility floor.
+        let parsec = if label.minor { 5.0 / 1.4 } else { 6.5 / 1.4 };
+        let size = (parsec * view.scale).max(8.0) as i32;
+        let (font, color) = if label.minor {
+            (format!("{size}px {DEFAULT_FONT}"), "#ffffff")
+        } else {
+            (format!("italic {size}px {DEFAULT_FONT}"), C_RED)
+        };
+        let size = size as f64;
+        let lines: Vec<&str> = label.text.split('\n').map(str::trim).collect();
+        let top = sy - (lines.len() as f64 - 1.0) * size * 0.5;
+        for (i, line) in lines.iter().enumerate() {
+            c.fill_text(line, sx, top + i as f64 * size, color, &font, TextAlign::Center);
+        }
+    }
+}
+
 /// Capitals + homeworlds (`Overlays.labels`): a Wheat dot at the world hex with
 /// a red name label offset by its `bias` (reference `WorldObject.Paint`).
 pub(crate) fn draw_world_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f64, ov: &Overlays) {
