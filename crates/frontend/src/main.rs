@@ -782,7 +782,7 @@ fn App() -> impl IntoView {
                             gap:18px; padding:8px 14px 10px;">
                     <div style="flex:1; min-width:0; font-style:italic; line-height:1.45; \
                                 text-shadow:0 1px 2px #000; overflow:hidden; \
-                                text-overflow:ellipsis; white-space:nowrap;">
+                                display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2;">
                         {move || {
                             let c = footer_credit.get();
                             if c.is_empty() {
