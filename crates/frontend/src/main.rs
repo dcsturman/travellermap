@@ -161,6 +161,7 @@ fn App() -> impl IntoView {
 
     // Jump-route planner state.
     let route_open = RwSignal::new(false); // planner panel visible (squiggle toggle)
+    let route_hover = RwSignal::new(false); // hover state for the toggle (icon → red)
     let route_start = RwSignal::new(String::new());
     let route_end = RwSignal::new(String::new());
     let route_jump = RwSignal::new(0i32); // 0 = none chosen yet (a J-N pill picks it)
@@ -511,14 +512,21 @@ fn App() -> impl IntoView {
             do_route(j);
         }
     };
-    // Copy the computed route to the clipboard as plain text.
+    // Copy the computed route to the clipboard — matches the reference
+    // `RouteResultsTextTemplate`: "<D> parsecs -- <J> jumps", then per stop
+    // "* Name (Sector Hex)" with "Jump <d> to" between consecutive stops.
     let do_copy = move |_: web_sys::MouseEvent| {
         let text = route.with(|r| {
             r.as_ref()
                 .map(|r| {
-                    let mut s = format!("Jump route — {} parsecs, {} jumps\n", r.parsecs, r.jumps);
-                    for w in &r.waypoints {
-                        s.push_str(&format!("{} ({} {})\n", w.name, w.sector, w.hex));
+                    let wps = &r.waypoints;
+                    let mut s = format!("{} parsecs -- {} jumps\n\n", r.parsecs, r.jumps);
+                    for (i, w) in wps.iter().enumerate() {
+                        s.push_str(&format!("* {} ({} {})\n", w.name, w.sector, w.hex));
+                        if i + 1 < wps.len() {
+                            let leg = w.coord.hex_distance(wps[i + 1].coord);
+                            s.push_str(&format!("\n    Jump {leg} to\n\n"));
+                        }
                     }
                     s
                 })
@@ -555,15 +563,29 @@ fn App() -> impl IntoView {
             <div style="position:fixed; top:10px; left:12px; width:320px; \
                         font:14px system-ui,sans-serif; color:#cfd6e6;">
                 <div style="display:flex; gap:6px; align-items:stretch;">
-                    <input type="search" placeholder="Search worlds & sectors…"
-                           on:input=on_search
-                           style="flex:1; min-width:0; box-sizing:border-box; padding:7px 10px; \
-                                  border-radius:6px; border:1px solid #2a3145; \
-                                  background:rgba(10,12,20,0.85); color:#e6ecf7; outline:none;" />
+                    <div style="flex:1; min-width:0; position:relative;">
+                        <input type="search" placeholder="Search…"
+                               on:input=on_search
+                               style="width:100%; box-sizing:border-box; padding:8px 32px 8px 12px; \
+                                      border-radius:6px; border:1px solid #c5ccd8; \
+                                      background:#fff; color:#222; font-size:15px; outline:none;" />
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#888"
+                             stroke-width="2" stroke-linecap="round"
+                             style="position:absolute; right:9px; top:50%; transform:translateY(-50%); pointer-events:none;">
+                            <circle cx="11" cy="11" r="7"></circle>
+                            <path d="M21 21 L16 16"></path>
+                        </svg>
+                    </div>
                     <button title="Jump route"
                             on:click=move |_| route_open.update(|o| *o = !*o)
+                            on:mouseenter=move |_| route_hover.set(true)
+                            on:mouseleave=move |_| route_hover.set(false)
                             style:background=move || if route_open.get() { "#e32736" } else { "rgba(40,44,58,0.92)" }
-                            style:color=move || if route_open.get() { "#fff" } else { "#cdd5e6" }
+                            style:color=move || {
+                                if route_open.get() { "#fff" }
+                                else if route_hover.get() { "#e32736" }
+                                else { "#cdd5e6" }
+                            }
                             style="flex:none; width:40px; border:1px solid #2a3145; border-radius:6px; \
                                    cursor:pointer; display:flex; align-items:center; justify-content:center;">
                         <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
@@ -606,8 +628,8 @@ fn App() -> impl IntoView {
                 <div style="position:fixed; top:56px; left:12px; width:300px; \
                             max-width:calc(100vw - 24px); box-sizing:border-box; \
                             max-height:min(350px, calc(100vh - 70px)); display:flex; flex-direction:column; \
-                            padding:10px 14px 12px; border-radius:12px; background:#fff; \
-                            box-shadow:0 6px 26px rgba(0,0,0,0.5); \
+                            padding:10px 14px 12px; border-radius:0; background:#fff; \
+                            border:1px solid #000; box-shadow:0 6px 26px rgba(0,0,0,0.5); \
                             font:13px system-ui,sans-serif; color:#222;">
                     <div style="flex:none; display:flex; align-items:center; gap:6px; \
                                 border-bottom:1px solid #d8d8d8; margin-bottom:8px;">
@@ -617,7 +639,7 @@ fn App() -> impl IntoView {
                                style="flex:1; min-width:0; border:none; outline:none; \
                                       background:transparent; color:#222; \
                                       font:16px system-ui,sans-serif; padding:7px 2px;" />
-                        <button title="Clear" on:click=move |_| clear_route()
+                        <button title="Clear" tabindex="-1" on:click=move |_| clear_route()
                                 style="border:none; background:transparent; cursor:pointer; \
                                        font-size:18px; color:#888; padding:0 4px; line-height:1;">"✕"</button>
                     </div>
@@ -629,7 +651,7 @@ fn App() -> impl IntoView {
                                style="flex:1; min-width:0; border:none; outline:none; \
                                       background:transparent; color:#222; \
                                       font:16px system-ui,sans-serif; padding:7px 2px;" />
-                        <button title="Swap start & destination" on:click=move |_| swap_route()
+                        <button title="Swap start & destination" tabindex="-1" on:click=move |_| swap_route()
                                 style="border:none; background:transparent; cursor:pointer; \
                                        font-size:16px; color:#444; padding:0 4px; line-height:1;">"⇅"</button>
                     </div>
