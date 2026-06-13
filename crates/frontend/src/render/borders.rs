@@ -152,13 +152,23 @@ fn build_sector_geom(sector: &SectorData) -> SectorGeom {
                 // candidates resolved at combine against the neighbor's region.
                 let hsec = hex_sector(wc, wr);
                 for (nb, (va, vb)) in hex_neighbors(wc, wr) {
+                    // A neighbor already in THIS region is interior, full stop —
+                    // even when it lives in an adjacent sector. Authors draw some
+                    // polity regions to overlap across the seam (the reference's
+                    // `border.Path.Contains(neighbor)` checks the border's own
+                    // path, which may list out-of-sector hexes), so this must be
+                    // tested before the same-sector/seam split. Otherwise such an
+                    // edge becomes a seam candidate, gets resolved against the
+                    // neighbor sector's separately-encoded region (which doesn't
+                    // list the hex), and is stroked as a false "territory seam".
+                    if rset.contains(&nb) {
+                        continue;
+                    }
                     let nbsec = hex_sector(nb.0, nb.1);
                     if nbsec == hsec {
-                        if !rset.contains(&nb) {
-                            let (a, b) = (hex_vertex(wc, wr, va), hex_vertex(wc, wr, vb));
-                            interior_stroke.move_to(a.0, a.1);
-                            interior_stroke.line_to(b.0, b.1);
-                        }
+                        let (a, b) = (hex_vertex(wc, wr, va), hex_vertex(wc, wr, vb));
+                        interior_stroke.move_to(a.0, a.1);
+                        interior_stroke.line_to(b.0, b.1);
                     } else {
                         seams.push(SeamEdge {
                             nb_cell: nbsec,
