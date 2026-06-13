@@ -186,14 +186,8 @@ fn App() -> impl IntoView {
         let cell = ((wc - 1).div_euclid(32), (wr - 1).div_euclid(40));
         sectors.with_value(|m| {
             m.get(&cell)
-                .map(|s| {
-                    let credit = s.info.credits.as_deref().map(strip_html).unwrap_or_default();
-                    if credit.is_empty() {
-                        s.info.name.clone()
-                    } else {
-                        format!("{} — {}", s.info.name, credit)
-                    }
-                })
+                .and_then(|s| s.info.credits.as_deref())
+                .map(strip_html)
                 .unwrap_or_default()
         })
     });
@@ -777,20 +771,33 @@ fn App() -> impl IntoView {
                     </div>
                 </div>
             </Show>
-            // --- data-source footer: dynamic per-sector credit (left) + fixed
-            //     Traveller/Mongoose attribution (right). ---
-            <div style="position:fixed; bottom:0; left:0; right:0; pointer-events:none; \
-                        display:flex; align-items:baseline; justify-content:space-between; gap:18px; \
-                        box-sizing:border-box; padding:7px 16px; \
-                        font:14px Helvetica,Arial,sans-serif; color:#e6ecf7; \
-                        text-shadow:0 1px 3px #000,0 0 6px #000; \
-                        background:linear-gradient(transparent, rgba(0,0,0,0.78));">
-                <div style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; \
-                            white-space:nowrap;">
-                    {move || footer_credit.get()}
-                </div>
-                <div style="flex:none; color:#c4ccdc;">
-                    "Traveller © Mongoose Publishing (fair use) · data: travellermap.com community"
+            // --- bottom pane (mirrors the reference #bottom-pane): red stripe,
+            //     the per-sector data-source credit (or Mongoose copyright) on the
+            //     left, the TRAVELLER® wordmark on the right. ---
+            <div style="position:fixed; left:0; right:0; bottom:0; box-sizing:border-box; \
+                        overflow:hidden; pointer-events:none; color:#fff; \
+                        background:rgba(0,0,0,0.6); font:14px Helvetica,Arial,sans-serif;">
+                <div style="height:7px; background:#e32736;"></div>
+                <div style="display:flex; align-items:flex-start; justify-content:space-between; \
+                            gap:18px; padding:8px 14px 10px;">
+                    <div style="flex:1; min-width:0; font-style:italic; line-height:1.45; \
+                                text-shadow:0 1px 2px #000; overflow:hidden; \
+                                text-overflow:ellipsis; white-space:nowrap;">
+                        {move || {
+                            let c = footer_credit.get();
+                            if c.is_empty() {
+                                view! {
+                                    <span>"The "<b><i>"Traveller"</i></b>" game in all forms is owned by \
+                                        Mongoose Publishing. Copyright 1977 \u{2013} 2024 Mongoose Publishing."</span>
+                                }.into_any()
+                            } else {
+                                view! { <span>{c}</span> }.into_any()
+                            }
+                        }}
+                    </div>
+                    <div style="flex:none; width:300px; height:51px; \
+                                background:url('/api/res/ui/logo-flat.svg') no-repeat top right; \
+                                background-size:contain;"></div>
                 </div>
             </div>
 
