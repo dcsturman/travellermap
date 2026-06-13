@@ -542,14 +542,15 @@ fn App() -> impl IntoView {
     let do_print = move |_: web_sys::MouseEvent| {
         let html = route.with(|r| r.as_ref().map(|r| route_print::build_route_print_html(r, route_jump.get_untracked())));
         let Some(html) = html.filter(|h| !h.is_empty()) else { return };
-        if let Ok(Some(w)) = win().open_with_url_and_target("", "_blank") {
-            if let Some(doc) = w.document().and_then(|d| d.dyn_into::<web_sys::HtmlDocument>().ok()) {
-                let arr = js_sys::Array::new();
-                arr.push(&wasm_bindgen::JsValue::from_str(&html));
-                let _ = doc.write(&arr);
-                let _ = doc.close();
-            }
-        }
+        // Open the sheet as a Blob URL — reliable across browsers (top-level
+        // `document.write`/`data:` are flaky/blocked); the doc self-prints on load.
+        let parts = js_sys::Array::new();
+        parts.push(&wasm_bindgen::JsValue::from_str(&html));
+        let bag = web_sys::BlobPropertyBag::new();
+        bag.set_type("text/html");
+        let Ok(blob) = web_sys::Blob::new_with_str_sequence_and_options(&parts, &bag) else { return };
+        let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob) else { return };
+        let _ = win().open_with_url_and_target(&url, "_blank");
     };
 
     // Home → the charted-space overview.
