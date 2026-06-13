@@ -155,7 +155,7 @@ fn App() -> impl IntoView {
     let inflight = StoredValue::new(HashSet::<(i32, i32)>::new());
     let failed = StoredValue::new(HashSet::<(i32, i32)>::new()); // sectors that errored — don't retry
     let overlays = StoredValue::new(None::<Overlays>);
-    let route = StoredValue::new(None::<RouteResult>); // computed jump route to draw
+    let route = RwSignal::new(None::<RouteResult>); // computed jump route (reactive: draws + lists)
     let (version, set_version) = signal(0u32);
     let (index_ready, set_index_ready) = signal(false);
 
@@ -342,7 +342,7 @@ fn App() -> impl IntoView {
                 .collect();
             overlays.with_value(|ov| {
                 index.with_value(|idx| {
-                    route.with_value(|r| {
+                    route.with(|r| {
                         render::draw(&canvas_el, &refs, ov.as_ref(), idx, v, opts, r.as_ref());
                     });
                 });
@@ -474,7 +474,9 @@ fn App() -> impl IntoView {
         spawn_local(async move {
             match fetch_route(&s, &e, j).await {
                 Ok(r) => {
-                    set_route_status.set(format!("{} jumps · {} pc", r.jumps, r.parsecs));
+                    // Summary + waypoint list render from `route` itself; clear
+                    // the transient status line.
+                    set_route_status.set(String::new());
                     // Center the view on the route's start so it's visible.
                     if let Some(wp) = r.waypoints.first() {
                         set_view.set(Some(ViewState {
@@ -482,10 +484,12 @@ fn App() -> impl IntoView {
                             center: render::world_to_parsec(wp.coord.x, wp.coord.y),
                         }));
                     }
-                    route.set_value(Some(r));
-                    set_version.update(|v| *v += 1);
+                    route.set(Some(r));
                 }
-                Err(err) => set_route_status.set(format!("No route: {err}")),
+                Err(err) => {
+                    route.set(None);
+                    set_route_status.set(format!("No route: {err}"));
+                }
             }
         });
     };
@@ -495,8 +499,7 @@ fn App() -> impl IntoView {
         route_end.set(String::new());
         route_jump.set(0);
         set_route_status.set(String::new());
-        route.set_value(None);
-        set_version.update(|v| *v += 1);
+        route.set(None);
     };
     // Swap start ⇄ destination (⇅) and recompute if a jump is already chosen.
     let swap_route = move || {
@@ -507,6 +510,26 @@ fn App() -> impl IntoView {
         if j > 0 {
             do_route(j);
         }
+    };
+    // Copy the computed route to the clipboard as plain text.
+    let do_copy = move |_: web_sys::MouseEvent| {
+        let text = route.with(|r| {
+            r.as_ref()
+                .map(|r| {
+                    let mut s = format!("Jump route — {} parsecs, {} jumps\n", r.parsecs, r.jumps);
+                    for w in &r.waypoints {
+                        s.push_str(&format!("{} ({} {})\n", w.name, w.sector, w.hex));
+                    }
+                    s
+                })
+                .unwrap_or_default()
+        });
+        if !text.is_empty() {
+            let _ = win().navigator().clipboard().write_text(&text);
+        }
+    };
+    let do_print = move |_: web_sys::MouseEvent| {
+        let _ = win().print();
     };
 
     // Home → the charted-space overview.
@@ -529,13 +552,28 @@ fn App() -> impl IntoView {
                     on:mouseup=on_up
                     on:mouseleave=on_leave
                     on:wheel=on_wheel></canvas>
-            <div style="position:fixed; top:10px; left:12px; width:260px; \
+            <div style="position:fixed; top:10px; left:12px; width:320px; \
                         font:14px system-ui,sans-serif; color:#cfd6e6;">
-                <input type="search" placeholder="Search worlds & sectors…"
-                       on:input=on_search
-                       style="width:100%; box-sizing:border-box; padding:7px 10px; \
-                              border-radius:6px; border:1px solid #2a3145; \
-                              background:rgba(10,12,20,0.85); color:#e6ecf7; outline:none;" />
+                <div style="display:flex; gap:6px; align-items:stretch;">
+                    <input type="search" placeholder="Search worlds & sectors…"
+                           on:input=on_search
+                           style="flex:1; min-width:0; box-sizing:border-box; padding:7px 10px; \
+                                  border-radius:6px; border:1px solid #2a3145; \
+                                  background:rgba(10,12,20,0.85); color:#e6ecf7; outline:none;" />
+                    <button title="Jump route"
+                            on:click=move |_| route_open.update(|o| *o = !*o)
+                            style:background=move || if route_open.get() { "#e32736" } else { "rgba(40,44,58,0.92)" }
+                            style:color=move || if route_open.get() { "#fff" } else { "#cdd5e6" }
+                            style="flex:none; width:40px; border:1px solid #2a3145; border-radius:6px; \
+                                   cursor:pointer; display:flex; align-items:center; justify-content:center;">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
+                             stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="5" cy="18" r="2.4" fill="currentColor" stroke="none"></circle>
+                            <circle cx="19" cy="6" r="2.4" fill="currentColor" stroke="none"></circle>
+                            <path d="M5 18 L10 11 L14 14 L19 6"></path>
+                        </svg>
+                    </button>
+                </div>
                 <div style="margin-top:4px; max-height:60vh; overflow:auto; \
                             background:rgba(10,12,20,0.92); border-radius:6px;">
                     <For each=move || results.get()
@@ -606,9 +644,60 @@ fn App() -> impl IntoView {
                             </button>
                         }).collect_view()}
                     </div>
-                    <div style="margin-top:12px; min-height:1.2em; color:#555; font-size:14px;">
+                    <div style="margin-top:12px; min-height:1.2em; color:#555; font-size:14px; \
+                                text-align:center;">
                         {move || route_status.get()}
                     </div>
+                    {move || route.with(|r| r.as_ref().map(|r| {
+                        let wps = &r.waypoints;
+                        let summary = format!("{} parsecs — {} jumps", r.parsecs, r.jumps);
+                        let rows = wps.iter().enumerate().map(|(i, w)| {
+                            let leg = (i > 0).then(|| wps[i - 1].coord.hex_distance(w.coord));
+                            let (name, sub) = (w.name.clone(), format!("{} {}", w.sector, w.hex));
+                            view! {
+                                <div>
+                                    {leg.map(|d| view! {
+                                        <div style="display:flex; height:26px;">
+                                            <div style="width:40px; flex:none; position:relative; \
+                                                        display:flex; align-items:center; justify-content:center;">
+                                                <div style="position:absolute; top:-3px; bottom:-3px; left:50%; \
+                                                            transform:translateX(-50%); width:4px; background:#2e7d2e;"></div>
+                                                <span style="position:relative; background:#fff; padding:0 3px; \
+                                                             font:600 14px system-ui; color:#222;">{d}</span>
+                                            </div>
+                                        </div>
+                                    })}
+                                    <div style="display:flex; align-items:center;">
+                                        <div style="width:40px; flex:none; display:flex; justify-content:center;">
+                                            <div style="width:18px; height:18px; border-radius:50%; \
+                                                        background:#2e7d2e;"></div>
+                                        </div>
+                                        <div style="flex:1; min-width:0;">
+                                            <div style="font:600 18px system-ui; color:#111; \
+                                                        text-decoration:underline; line-height:1.15;">{name}</div>
+                                            <div style="font:14px system-ui; color:#555;">{sub}</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            }
+                        }).collect_view();
+                        view! {
+                            <div style="text-align:center; font:600 16px system-ui; color:#222; \
+                                        margin:8px 0 12px;">{summary}</div>
+                            <div>{rows}</div>
+                            <div style="display:flex; gap:12px; margin-top:16px; \
+                                        border-top:1px solid #e3e3e3; padding-top:14px;">
+                                <button on:click=do_print
+                                        style="flex:1; padding:9px 0; border:1px solid #ccc; border-radius:22px; \
+                                               background:#fff; color:#333; cursor:pointer; font:600 14px system-ui;">
+                                    "🖨  Print"</button>
+                                <button on:click=do_copy
+                                        style="flex:1; padding:9px 0; border:1px solid #ccc; border-radius:22px; \
+                                               background:#fff; color:#333; cursor:pointer; font:600 14px system-ui;">
+                                    "⧉  Copy"</button>
+                            </div>
+                        }
+                    }))}
                 </div>
             </Show>
             <div style="position:fixed; bottom:0; left:0; right:0; pointer-events:none; \
@@ -628,9 +717,6 @@ fn App() -> impl IntoView {
             <div style="position:fixed; top:10px; right:12px; display:flex; gap:6px;">
                 <button on:click=on_home title="Home — charted-space overview"
                         style=BTN_STYLE>"⌂"</button>
-                <button title="Jump route" style=BTN_STYLE
-                        style:background=move || if route_open.get() { "#e32736" } else { "rgba(40,44,58,0.92)" }
-                        on:click=move |_| route_open.update(|o| *o = !*o)>"↝"</button>
                 <button title="Map key / legend" style=BTN_STYLE
                         on:click=move |_| panel.update(|p| *p = if *p == 1 { 0 } else { 1 })>
                     <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"
