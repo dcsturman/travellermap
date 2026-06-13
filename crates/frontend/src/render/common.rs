@@ -114,6 +114,13 @@ pub fn world_to_parsec(wc: i32, wr: i32) -> (f64, f64) {
     hex_parsec(wc, wr)
 }
 
+/// Parsec center of a world given its sector grid cell `(sx, sy)` and local hex
+/// `(col, row)` — for click hit-testing (screen → nearest world) in the UI.
+pub fn sector_hex_parsec(sx: i32, sy: i32, col: i32, row: i32) -> (f64, f64) {
+    let (wc, wr) = world_hex(sx, sy, col, row);
+    hex_parsec(wc, wr)
+}
+
 pub fn sector_center(sx: i32, sy: i32) -> (f64, f64) {
     (
         (sx as f64 * SECTOR_W as f64 + 16.5) * PARSEC_SCALE_X as f64,

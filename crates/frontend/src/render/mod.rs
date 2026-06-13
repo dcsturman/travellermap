@@ -31,8 +31,8 @@ use crate::canvas::Canvas;
 
 // Public API (unchanged for `main.rs`).
 pub use common::{
-    fit_sector, home_view, visible_sectors, world_to_parsec, RenderOptions, ViewState, MAX_SCALE,
-    MIN_SCALE, WORLD_MIN_SCALE,
+    fit_sector, home_view, sector_hex_parsec, visible_sectors, world_to_parsec, RenderOptions,
+    ViewState, MAX_SCALE, MIN_SCALE, WORLD_MIN_SCALE,
 };
 
 use common::{

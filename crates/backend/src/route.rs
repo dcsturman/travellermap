@@ -67,24 +67,30 @@ impl WorldIndex {
     }
 }
 
-/// Resolve a `"Sector Name 0101"` endpoint to a world index, mirroring
-/// `RouteHandler.ResolveLocation`'s "sector + 4-digit hex" parsing. Returns the
-/// world's index in the [`WorldIndex`], or `None` if the sector/hex doesn't
-/// resolve to a known world.
+/// Resolve a route endpoint to a world index. Accepts either a
+/// `"Sector Name 0101"` reference (mirroring `RouteHandler.ResolveLocation`'s
+/// "sector + 4-digit hex" parsing) **or** a bare world name (case-insensitive,
+/// exact match). Returns the world's index in the [`WorldIndex`], or `None`.
 pub fn resolve_location(index: &WorldIndex, query: &str) -> Option<usize> {
     let q = query.trim();
-    // "<sector> <hex>" — split off the trailing 4-digit hex.
-    let (sector, hex) = q.rsplit_once(char::is_whitespace)?;
-    let sector = sector.trim();
-    let (col, row) = parse_hex(hex.trim())?;
-
-    // The world index keys by absolute coord; recover the sector's grid origin
-    // from any world already placed there, then compute the absolute coord.
-    // (Simpler: scan for a world whose sector name + local hex match.)
-    index
-        .worlds
-        .iter()
-        .position(|w| w.sector.eq_ignore_ascii_case(sector) && w.hex == hex_label(col, row))
+    if q.is_empty() {
+        return None;
+    }
+    // 1) "<sector> <hex>" — split off a trailing 4-digit hex and match it.
+    if let Some((sector, hex)) = q.rsplit_once(char::is_whitespace) {
+        let sector = sector.trim();
+        if let Some((col, row)) = parse_hex(hex.trim()) {
+            if let Some(i) = index
+                .worlds
+                .iter()
+                .position(|w| w.sector.eq_ignore_ascii_case(sector) && w.hex == hex_label(col, row))
+            {
+                return Some(i);
+            }
+        }
+    }
+    // 2) Bare world name (exact, case-insensitive) — "Regina", "Mora", …
+    index.worlds.iter().position(|w| w.name.eq_ignore_ascii_case(q))
 }
 
 /// Format a 1-based (col, row) back into a 4-digit hex label.

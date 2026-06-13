@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use tmap_core::astrometrics::parse_hex;
 use tmap_core::dto::{Overlays, RouteResult, SearchResult, SearchResults, SectorData, Universe};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
@@ -158,11 +159,14 @@ fn App() -> impl IntoView {
     let (version, set_version) = signal(0u32);
     let (index_ready, set_index_ready) = signal(false);
 
-    // Jump-route planner inputs (minimal trigger; full panel deferred).
+    // Jump-route planner state.
+    let route_open = RwSignal::new(false); // planner panel visible (squiggle toggle)
     let route_start = RwSignal::new(String::new());
     let route_end = RwSignal::new(String::new());
-    let route_jump = RwSignal::new(2i32);
+    let route_jump = RwSignal::new(0i32); // 0 = none chosen yet (a J-N pill picks it)
     let (route_status, set_route_status) = signal(String::new());
+    // Distinguish a click (set endpoint) from a drag (pan): remember press origin.
+    let down_pos = RwSignal::new(None::<(f64, f64)>);
 
     // Layer toggles (hamburger menu) — each redraws when flipped.
     let opt_galactic = RwSignal::new(true);
@@ -350,7 +354,9 @@ fn App() -> impl IntoView {
     //     devicePixelRatio to match the device-pixel drawing buffer. ---
 
     let on_down = move |ev: web_sys::MouseEvent| {
-        drag.set(Some((ev.client_x() as f64, ev.client_y() as f64)));
+        let p = (ev.client_x() as f64, ev.client_y() as f64);
+        drag.set(Some(p));
+        down_pos.set(Some(p));
     };
     let on_move = move |ev: web_sys::MouseEvent| {
         let Some((lx, ly)) = drag.get_untracked() else {
@@ -365,7 +371,60 @@ fn App() -> impl IntoView {
             }));
         }
     };
-    let on_up = move |_: web_sys::MouseEvent| drag.set(None);
+    // Click-to-set: hit-test a canvas click to the nearest loaded world (within
+    // ~1 hex) and fill the next empty endpoint field (start, then destination).
+    let fill_endpoint = move |px: (f64, f64)| {
+        let Some(cv) = canvas_ref.get_untracked() else { return };
+        let (w, h) = logical_dims(&cv);
+        let Some(v) = view.get_untracked() else { return };
+        let target = v.to_parsec(w, h, px);
+        let mut best: Option<(f64, String)> = None;
+        sectors.with_value(|loaded| {
+            for s in loaded.values() {
+                let Some(loc) = s.info.location else { continue };
+                for wld in &s.worlds {
+                    let Some((col, row)) = parse_hex(&wld.hex) else { continue };
+                    let (wx, wy) = render::sector_hex_parsec(loc.x, loc.y, col, row);
+                    let d = (wx - target.0).powi(2) + (wy - target.1).powi(2);
+                    if d < best.as_ref().map_or(f64::MAX, |(bd, _)| *bd) {
+                        let label = if wld.name.is_empty() {
+                            format!("{} {}", s.info.name, wld.hex)
+                        } else {
+                            wld.name.clone()
+                        };
+                        best = Some((d, label));
+                    }
+                }
+            }
+        });
+        let Some((d, label)) = best else { return };
+        if d > 0.9 * 0.9 {
+            return; // clicked empty space, not a world
+        }
+        if route_start.get_untracked().trim().is_empty() {
+            route_start.set(label);
+        } else if route_end.get_untracked().trim().is_empty() {
+            route_end.set(label);
+        } else {
+            route_start.set(label); // both set — restart the selection
+            route_end.set(String::new());
+        }
+    };
+    let on_up = move |ev: web_sys::MouseEvent| {
+        let up = (ev.client_x() as f64, ev.client_y() as f64);
+        let is_click = down_pos
+            .get_untracked()
+            .is_some_and(|(dx, dy)| (up.0 - dx).abs() < 4.0 && (up.1 - dy).abs() < 4.0);
+        drag.set(None);
+        down_pos.set(None);
+        if is_click && route_open.get_untracked() {
+            fill_endpoint(up);
+        }
+    };
+    let on_leave = move |_: web_sys::MouseEvent| {
+        drag.set(None);
+        down_pos.set(None);
+    };
 
     // --- search ---
     let on_search = move |ev: web_sys::Event| {
@@ -401,16 +460,14 @@ fn App() -> impl IntoView {
         set_view.set(Some(ViewState { scale, center }));
     };
 
-    // Compute a jump route from the two planner inputs and draw it. A minimal
-    // trigger — the full route-planner panel UI is a follow-up.
-    let on_route = move |_: web_sys::MouseEvent| {
-        let (s, e, j) = (
-            route_start.get_untracked(),
-            route_end.get_untracked(),
-            route_jump.get_untracked(),
-        );
+    // Compute the jump route at jump rating `j` from the two planner endpoints
+    // and draw it. Called by the J-1…J-6 pills (each picks its rating). `Copy`
+    // (captures only signals/stores), so it's reused across all six buttons.
+    let do_route = move |j: i32| {
+        route_jump.set(j);
+        let (s, e) = (route_start.get_untracked(), route_end.get_untracked());
         if s.trim().is_empty() || e.trim().is_empty() {
-            set_route_status.set("Enter start & end, e.g. 'Spinward Marches 1910'".into());
+            set_route_status.set("Set start & destination — type a world name or click the map.".into());
             return;
         }
         set_route_status.set("Computing route…".into());
@@ -432,6 +489,25 @@ fn App() -> impl IntoView {
             }
         });
     };
+    // Clear the planner (✕): wipe endpoints + the drawn route.
+    let clear_route = move || {
+        route_start.set(String::new());
+        route_end.set(String::new());
+        route_jump.set(0);
+        set_route_status.set(String::new());
+        route.set_value(None);
+        set_version.update(|v| *v += 1);
+    };
+    // Swap start ⇄ destination (⇅) and recompute if a jump is already chosen.
+    let swap_route = move || {
+        let (s, e) = (route_start.get_untracked(), route_end.get_untracked());
+        route_start.set(e);
+        route_end.set(s);
+        let j = route_jump.get_untracked();
+        if j > 0 {
+            do_route(j);
+        }
+    };
 
     // Home → the charted-space overview.
     let on_home = move |_: web_sys::MouseEvent| {
@@ -446,11 +522,12 @@ fn App() -> impl IntoView {
         <main style="margin:0; padding:0; overflow:hidden; background:#000;">
             <canvas node_ref=canvas_ref
                     style="position:fixed; top:0; left:0; width:100vw; height:100vh; \
-                           display:block; cursor:grab; touch-action:none;"
+                           display:block; touch-action:none;"
+                    style:cursor=move || if route_open.get() { "crosshair" } else { "grab" }
                     on:mousedown=on_down
                     on:mousemove=on_move
                     on:mouseup=on_up
-                    on:mouseleave=on_up
+                    on:mouseleave=on_leave
                     on:wheel=on_wheel></canvas>
             <div style="position:fixed; top:10px; left:12px; width:260px; \
                         font:14px system-ui,sans-serif; color:#cfd6e6;">
@@ -485,46 +562,55 @@ fn App() -> impl IntoView {
                     {move || status.get()}
                 </div>
 
-                // --- minimal jump-route planner (full panel deferred) ---
-                <div style="margin-top:10px; padding:10px; border-radius:6px; \
-                            background:rgba(10,12,20,0.92); border:1px solid #2a3145;">
-                    <div style="font-weight:700; color:#aab3c8; margin-bottom:6px;">
-                        "JUMP ROUTE"
+            </div>
+            // --- jump-route planner panel (toggled by the route button) ---
+            <Show when=move || route_open.get()>
+                <div style="position:fixed; top:58px; left:12px; width:460px; \
+                            max-width:calc(100vw - 24px); box-sizing:border-box; \
+                            padding:18px 22px 16px; border-radius:14px; background:#fff; \
+                            box-shadow:0 8px 30px rgba(0,0,0,0.55); \
+                            font:16px system-ui,sans-serif; color:#222;">
+                    <div style="display:flex; align-items:center; gap:8px; \
+                                border-bottom:1px solid #dadada; padding:4px 0;">
+                        <input type="text" placeholder="Start (type or click map)"
+                               prop:value=move || route_start.get()
+                               on:input=move |ev| route_start.set(event_target_value(&ev))
+                               style="flex:1; min-width:0; border:none; outline:none; \
+                                      background:transparent; color:#222; \
+                                      font:300 22px system-ui,sans-serif; padding:8px 2px;" />
+                        <button title="Clear" on:click=move |_| clear_route()
+                                style="border:none; background:transparent; cursor:pointer; \
+                                       font-size:22px; color:#888; padding:0 6px; line-height:1;">"✕"</button>
                     </div>
-                    <input type="text" placeholder="Start, e.g. Spinward Marches 1910"
-                           prop:value=move || route_start.get()
-                           on:input=move |ev| route_start.set(event_target_value(&ev))
-                           style="width:100%; box-sizing:border-box; margin-bottom:5px; \
-                                  padding:6px 8px; border-radius:5px; border:1px solid #2a3145; \
-                                  background:rgba(6,8,14,0.9); color:#e6ecf7; outline:none;" />
-                    <input type="text" placeholder="End, e.g. Spinward Marches 2110"
-                           prop:value=move || route_end.get()
-                           on:input=move |ev| route_end.set(event_target_value(&ev))
-                           style="width:100%; box-sizing:border-box; margin-bottom:5px; \
-                                  padding:6px 8px; border-radius:5px; border:1px solid #2a3145; \
-                                  background:rgba(6,8,14,0.9); color:#e6ecf7; outline:none;" />
-                    <div style="display:flex; gap:6px; align-items:center;">
-                        <label style="color:#9aa3b8;">"Jump"</label>
-                        <input type="number" min="1" max="12"
-                               prop:value=move || route_jump.get().to_string()
-                               on:input=move |ev| {
-                                   if let Ok(j) = event_target_value(&ev).parse::<i32>() {
-                                       route_jump.set(j.clamp(1, 12));
-                                   }
-                               }
-                               style="width:52px; padding:5px 6px; border-radius:5px; \
-                                      border:1px solid #2a3145; background:rgba(6,8,14,0.9); \
-                                      color:#e6ecf7; outline:none;" />
-                        <button on:click=on_route
-                                style="flex:1; padding:6px 8px; border:none; border-radius:5px; \
-                                       background:#2a6fae; color:#eef4ff; font-weight:600; \
-                                       cursor:pointer;">"Route"</button>
+                    <div style="display:flex; align-items:center; gap:8px; margin-top:8px; \
+                                border-bottom:1px solid #dadada; padding:4px 0;">
+                        <input type="text" placeholder="Destination (type or click map)"
+                               prop:value=move || route_end.get()
+                               on:input=move |ev| route_end.set(event_target_value(&ev))
+                               style="flex:1; min-width:0; border:none; outline:none; \
+                                      background:transparent; color:#222; \
+                                      font:300 22px system-ui,sans-serif; padding:8px 2px;" />
+                        <button title="Swap start & destination" on:click=move |_| swap_route()
+                                style="border:none; background:transparent; cursor:pointer; \
+                                       font-size:20px; color:#444; padding:0 6px; line-height:1;">"⇅"</button>
                     </div>
-                    <div style="margin-top:6px; min-height:1em; color:#8fd0ff;">
+                    <div style="display:flex; gap:10px; margin-top:18px;">
+                        {(1..=6).map(|n| view! {
+                            <button on:click=move |_| do_route(n)
+                                    style:background=move || if route_jump.get() == n { "#e32736" } else { "#fff" }
+                                    style:color=move || if route_jump.get() == n { "#fff" } else { "#333" }
+                                    style="flex:1; padding:11px 0; border:1px solid #ccc; \
+                                           border-radius:22px; cursor:pointer; \
+                                           font:600 16px system-ui,sans-serif;">
+                                {format!("J-{n}")}
+                            </button>
+                        }).collect_view()}
+                    </div>
+                    <div style="margin-top:12px; min-height:1.2em; color:#555; font-size:14px;">
                         {move || route_status.get()}
                     </div>
                 </div>
-            </div>
+            </Show>
             <div style="position:fixed; bottom:0; left:0; right:0; pointer-events:none; \
                         text-align:center; padding:5px 0; \
                         font:12px system-ui,sans-serif; text-shadow:0 1px 3px #000; \
@@ -542,6 +628,9 @@ fn App() -> impl IntoView {
             <div style="position:fixed; top:10px; right:12px; display:flex; gap:6px;">
                 <button on:click=on_home title="Home — charted-space overview"
                         style=BTN_STYLE>"⌂"</button>
+                <button title="Jump route" style=BTN_STYLE
+                        style:background=move || if route_open.get() { "#e32736" } else { "rgba(40,44,58,0.92)" }
+                        on:click=move |_| route_open.update(|o| *o = !*o)>"↝"</button>
                 <button title="Map key / legend" style=BTN_STYLE
                         on:click=move |_| panel.update(|p| *p = if *p == 1 { 0 } else { 1 })>
                     <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"
