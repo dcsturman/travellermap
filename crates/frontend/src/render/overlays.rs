@@ -8,16 +8,12 @@ use tmap_core::dto::{Overlays, VectorObject};
 use crate::canvas::{Canvas, TextAlign};
 
 use super::common::{
-    hex_parsec, on_screen, RenderOptions, ViewState, C_BORDER, C_RIFT, C_ROUTE, DEFAULT_FONT,
+    hex_parsec, on_screen, RenderOptions, ViewState, C_BORDER, C_RED, C_RIFT, C_ROUTE, DEFAULT_FONT,
 };
 
 pub(crate) fn draw_overlays(c: &impl Canvas, view: &ViewState, w: f64, h: f64, ov: &Overlays, opts: RenderOptions) {
-    // Translucent polity blobs first, so the red border strokes sit on top.
-    if opts.borders {
-        for v in &ov.borders {
-            fill_region(c, view, w, h, v);
-        }
-    }
+    // The reference strokes macro borders red (no fill) at macro zoom; the
+    // filled polity look comes from the micro-border layer at scale >= 4.
     for v in &ov.rifts {
         draw_vector(c, view, w, h, v, C_RIFT, 1.0, false, &[]);
     }
@@ -44,56 +40,11 @@ pub(crate) fn draw_overlays(c: &impl Canvas, view: &ViewState, w: f64, h: f64, o
     // not in the `Overlays` stream yet (only borders/routes/rifts/labels).
 }
 
-/// Fill color for a polity blob, keyed off the vector's `Name` (case-insensitive
-/// substring). Major empires get their canonical hue; unnamed/client regions get
-/// a neutral gray. `is_major` distinguishes the two for label styling.
-fn polity_fill_color(name: &str) -> &'static str {
-    let n = name.to_lowercase();
-    if n.contains("imperium") {
-        "#E32736"
-    } else if n.contains("aslan") {
-        "#ff8c00"
-    } else if n.contains("zhodani") {
-        "#3a6ea5"
-    } else if n.contains("vargr") {
-        "#d2a24c"
-    } else if n.contains("solomani") {
-        "#5aa02c"
-    } else if n.contains("hive") || n.contains("hiver") {
-        "#9b59b6"
-    } else if n.contains("kkree") || n.contains("k'kree") || n.contains("two thousand") {
-        "#2e8b57"
-    } else {
-        "#8a8f99" // client states / unnamed
-    }
-}
-
-/// Is this a major empire (vs. a minor/client region)? Drives label styling.
-fn is_major_polity(name: &str) -> bool {
-    polity_fill_color(name) != "#8a8f99"
-}
-
-/// World-space vector point → screen, matching `draw_vector`'s transform.
+/// World-space vector point → screen, matching the reference vector transform.
 fn vec_point(view: &ViewState, w: f64, h: f64, v: &VectorObject, px: f32, py: f32) -> (f64, f64) {
     let wx = (px - v.origin.0) * v.scale.0;
     let wy = (py - v.origin.1) * v.scale.1;
     view.to_screen(w, h, (wx as f64 * PARSEC_SCALE_X as f64, wy as f64))
-}
-
-/// Fill a polity's closed sub-paths as one translucent blob (drawn behind the
-/// stroked border). Open sub-paths (none expected for closed polity polygons)
-/// are skipped.
-fn fill_region(c: &impl Canvas, view: &ViewState, w: f64, h: f64, v: &VectorObject) {
-    let polys: Vec<Vec<(f64, f64)>> = v
-        .paths
-        .iter()
-        .filter(|p| p.closed && p.points.len() >= 3)
-        .map(|p| p.points.iter().map(|&(px, py)| vec_point(view, w, h, v, px, py)).collect())
-        .collect();
-    if polys.is_empty() {
-        return;
-    }
-    c.fill_polygons(&polys, polity_fill_color(&v.name), 0.15);
 }
 
 fn draw_vector(
@@ -117,26 +68,36 @@ fn draw_vector(
     }
 }
 
-/// Region name: major empires in bold ALL-CAPS white, minor/client regions in
-/// italic non-caps red. Multi-line on `\n`, centered at the vector's label hex.
+/// Macro name size (px) for a polity/rift vector, ported from `macroNames`:
+/// `Font` 8/1.4 parsec Bold for **major** (`NamesMajor`), `SmallFont` 5/1.4
+/// parsec Regular for **minor**. Scaled by zoom, with a small floor so the
+/// label stays legible at the bottom of the macro range.
+fn macro_name_px(major: bool, scale: f64) -> f64 {
+    let parsec = if major { 8.0 / 1.4 } else { 5.0 / 1.4 };
+    (parsec * scale).max(if major { 10.0 } else { 8.0 })
+}
+
+/// Region name from a polity `VectorObject`, ported from `DrawMacroNames`:
+/// **major** polities (`NamesMajor`) → bold ALL-CAPS white (`textColor`);
+/// **minor**/client regions (`NamesMinor`) → regular red (`textHighlightColor`),
+/// original case. Only vectors carrying a `NamesMask` flag are labeled.
 fn draw_region_label(c: &impl Canvas, view: &ViewState, w: f64, h: f64, v: &VectorObject) {
-    if v.name.is_empty() {
-        return; // unnamed client-state regions get no major label
+    let mo = v.map_options.as_deref().unwrap_or("");
+    if v.name.is_empty() || !mo.contains("Names") {
+        return;
     }
     let Some((lx, ly)) = v.label else { return };
     let (sx, sy) = view.to_screen(w, h, (lx as f64 * PARSEC_SCALE_X as f64, ly as f64));
     if !on_screen(sx, sy, w, h, 220.0) {
         return;
     }
-    let major = is_major_polity(&v.name);
-    let (size, font, color) = if major {
-        let size = (1.1 * view.scale).clamp(13.0, 30.0);
-        (size, format!("700 {}px {DEFAULT_FONT}", size as i32), "rgba(245,247,255,0.92)")
+    let major = mo.contains("NamesMajor");
+    let size = macro_name_px(major, view.scale);
+    let (font, color, raw) = if major {
+        (format!("700 {}px {DEFAULT_FONT}", size as i32), "#ffffff", v.name.to_uppercase())
     } else {
-        let size = (0.85 * view.scale).clamp(11.0, 20.0);
-        (size, format!("italic 600 {}px {DEFAULT_FONT}", size as i32), "rgba(227,39,54,0.85)")
+        (format!("{}px {DEFAULT_FONT}", size as i32), C_RED, v.name.clone())
     };
-    let raw = if major { v.name.to_uppercase() } else { v.name.clone() };
     let lines: Vec<&str> = raw.split('\n').map(str::trim).collect();
     let top = sy - (lines.len() as f64 - 1.0) * size * 0.5;
     for (i, line) in lines.iter().enumerate() {
@@ -144,9 +105,11 @@ fn draw_region_label(c: &impl Canvas, view: &ViewState, w: f64, h: f64, v: &Vect
     }
 }
 
-/// Rift name (Great Rift, …): dim gray, rotated ~35° like the reference.
+/// Rift name (Great Rift, …), ported from `DrawMacroNames`: same major/minor
+/// font + color as regions, but rotated 35°.
 fn draw_rift_label(c: &impl Canvas, view: &ViewState, w: f64, h: f64, v: &VectorObject) {
-    if v.name.is_empty() {
+    let mo = v.map_options.as_deref().unwrap_or("");
+    if v.name.is_empty() || !mo.contains("Names") {
         return;
     }
     let Some((lx, ly)) = v.label else { return };
@@ -154,10 +117,14 @@ fn draw_rift_label(c: &impl Canvas, view: &ViewState, w: f64, h: f64, v: &Vector
     if !on_screen(sx, sy, w, h, 220.0) {
         return;
     }
-    let size = (0.9 * view.scale).clamp(12.0, 24.0);
-    let font = format!("600 {}px {DEFAULT_FONT}", size as i32);
-    let rot = 35.0_f64.to_radians();
-    c.fill_text_rotated(&v.name.replace('\n', " "), sx, sy, "rgba(150,155,175,0.8)", &font, rot, 1.0);
+    let major = mo.contains("NamesMajor");
+    let size = macro_name_px(major, view.scale);
+    let (font, color) = if major {
+        (format!("700 {}px {DEFAULT_FONT}", size as i32), "#ffffff")
+    } else {
+        (format!("{}px {DEFAULT_FONT}", size as i32), C_RED)
+    };
+    c.fill_text_rotated(&v.name.replace('\n', " "), sx, sy, color, &font, 35.0_f64.to_radians(), 1.0);
 }
 
 /// Capitals + homeworlds (`Overlays.labels`): a Wheat dot at the world hex with
