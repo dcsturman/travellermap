@@ -20,6 +20,7 @@ mod glyph;
 mod render;
 mod route_print;
 mod world_panel;
+mod world_print;
 use render::ViewState;
 use world_panel::{subsector_letter, SelectedWorld, WorldPanel};
 
@@ -47,6 +48,22 @@ fn main() {
 
 fn win() -> web_sys::Window {
     web_sys::window().expect("no window")
+}
+
+/// Open a self-printing HTML document in a new tab via a Blob URL. Blob URLs are
+/// reliable across browsers where top-level `document.write`/`data:` are
+/// flaky/blocked; the document self-prints on load (see the print builders).
+fn open_print_html(html: &str) {
+    if html.is_empty() {
+        return;
+    }
+    let parts = js_sys::Array::new();
+    parts.push(&wasm_bindgen::JsValue::from_str(html));
+    let bag = web_sys::BlobPropertyBag::new();
+    bag.set_type("text/html");
+    let Ok(blob) = web_sys::Blob::new_with_str_sequence_and_options(&parts, &bag) else { return };
+    let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob) else { return };
+    let _ = win().open_with_url_and_target(&url, "_blank");
 }
 
 /// Strip HTML tags from a credits string (roxmltree already decoded entities),
@@ -661,16 +678,9 @@ fn App() -> impl IntoView {
     // the reference print/route.html) and let it print itself.
     let do_print = move |_: web_sys::MouseEvent| {
         let html = route.with(|r| r.as_ref().map(|r| route_print::build_route_print_html(r, route_jump.get_untracked())));
-        let Some(html) = html.filter(|h| !h.is_empty()) else { return };
-        // Open the sheet as a Blob URL — reliable across browsers (top-level
-        // `document.write`/`data:` are flaky/blocked); the doc self-prints on load.
-        let parts = js_sys::Array::new();
-        parts.push(&wasm_bindgen::JsValue::from_str(&html));
-        let bag = web_sys::BlobPropertyBag::new();
-        bag.set_type("text/html");
-        let Ok(blob) = web_sys::Blob::new_with_str_sequence_and_options(&parts, &bag) else { return };
-        let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob) else { return };
-        let _ = win().open_with_url_and_target(&url, "_blank");
+        if let Some(html) = html {
+            open_print_html(&html);
+        }
     };
 
     // Home → the charted-space overview.
@@ -869,6 +879,11 @@ fn App() -> impl IntoView {
                     route.set(None);
                     route_open.set(true);
                     selected.set(None);
+                }
+                on_print=move |()| {
+                    if let Some(sel) = selected.get_untracked() {
+                        open_print_html(&world_print::build_world_print_html(&sel));
+                    }
                 } />
             // --- bottom pane (mirrors the reference #bottom-pane): red stripe,
             //     the per-sector data-source credit (or Mongoose copyright) on the

@@ -215,6 +215,7 @@ pub fn WorldPanel(
     selected: RwSignal<Option<SelectedWorld>>,
     #[prop(into)] on_close: Callback<()>,
     #[prop(into)] on_plan_route: Callback<String>,
+    #[prop(into)] on_print: Callback<()>,
 ) -> impl IntoView {
     let expanded = RwSignal::new(true);
 
@@ -264,6 +265,11 @@ pub fn WorldPanel(
                                            border:1px solid #2a3145; background:rgba(40,44,58,0.7); \
                                            color:#cdd5e6; font:600 12px system-ui;">
                                 "Jump Route"</button>
+                            <button on:click=move |_| on_print.run(()) title="Print data sheet"
+                                    style="flex:none; width:34px; border-radius:15px; cursor:pointer; \
+                                           border:1px solid #2a3145; background:rgba(40,44,58,0.7); \
+                                           color:#cdd5e6; font:600 13px system-ui;">
+                                "🖨"</button>
                             <button on:click=move |_| expanded.update(|e| *e = !*e)
                                     title="Toggle details"
                                     style="flex:none; width:34px; border-radius:15px; cursor:pointer; \
