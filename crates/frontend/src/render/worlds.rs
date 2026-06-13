@@ -43,6 +43,59 @@ pub(crate) fn clear_sector_dots() {
     SECTOR_DOTS.with(|c| c.borrow_mut().clear());
 }
 
+/// A world with an unknown UWP renders a special glyph instead of a disc/UWP
+/// (reference `World.IsPlaceholder`).
+fn is_placeholder(world: &World) -> bool {
+    world.uwp == "???????-?" || world.uwp == "XXXXXXX-X"
+}
+
+/// A placeholder that is also a deep-space anomaly/station (reference
+/// `World.IsAnomaly` = `HasCode("{Anomaly}")`) — draws the red crosshair.
+fn is_anomaly(world: &World) -> bool {
+    world.codes().any(|c| c == "{Anomaly}")
+}
+
+/// Placeholder / anomaly worlds: a `*` (unknown world — white, Georgia) or `⌖`
+/// U+2316 POSITION INDICATOR (deep-space anomaly/station — red) centered in the
+/// hex, standing in for the disc. Ported from the reference `placeholder` /
+/// `anomaly` style elements (`content`/font/color/position). Drawn whenever
+/// worlds are visible (the glyph replaces the dot at every detail tier).
+pub(crate) fn draw_placeholder_glyphs(canvas: &Canvas2d, view: &ViewState, w: f64, h: f64, sectors: &[&SectorData]) {
+    let ctx = &canvas.ctx;
+    let s = view.scale;
+    let cs = s * CONTENT_SCALE;
+    // Reference FontInfo sizes are 0.6 parsec (same convention as our other
+    // glyph fonts, ~size·cs px).
+    let star_font = format!("{}px Georgia, 'Times New Roman', serif", (0.6 * cs).max(6.0) as i32);
+    let anomaly_font = format!("{}px 'Arial Unicode MS', 'Segoe UI Symbol', sans-serif", (0.6 * cs).max(6.0) as i32);
+    ctx.set_text_align("center");
+    ctx.set_text_baseline("middle");
+    for sector in sectors {
+        let Some(loc) = sector.info.location else { continue };
+        for world in &sector.worlds {
+            if !is_placeholder(world) {
+                continue;
+            }
+            let Some((col, row)) = parse_hex(&world.hex) else { continue };
+            let (wc, wr) = world_hex(loc.x, loc.y, col, row);
+            let (x, y) = view.to_screen(w, h, hex_parsec(wc, wr));
+            if !on_screen(x, y, w, h, cs) {
+                continue;
+            }
+            // Placeholders are rare, so set state per glyph (no batching needed).
+            if is_anomaly(world) {
+                ctx.set_font(&anomaly_font);
+                ctx.set_fill_style_str(C_RED);
+                let _ = ctx.fill_text("\u{2316}", x, y); // position (0, 0)
+            } else {
+                ctx.set_font(&star_font);
+                ctx.set_fill_style_str("#ffffff");
+                let _ = ctx.fill_text("*", x, y + 0.17 * s); // position (0, 0.17)
+            }
+        }
+    }
+}
+
 fn build_sector_dots(sector: &SectorData, more_colors: bool) -> SectorDots {
     use std::f64::consts::PI;
     let mut discs: HashMap<String, Path2d> = HashMap::new();
@@ -55,6 +108,11 @@ fn build_sector_dots(sector: &SectorData, more_colors: bool) -> SectorDots {
             let _ = p.arc(cx, cy, DOT_R, 0.0, 2.0 * PI);
         };
         for world in &sector.worlds {
+            // Placeholder/anomaly worlds get a special glyph instead of a disc
+            // (drawn by `draw_placeholder_glyphs`), so skip their dot geometry.
+            if is_placeholder(world) {
+                continue;
+            }
             let Some((col, row)) = parse_hex(&world.hex) else { continue };
             let (wc, wr) = world_hex(loc.x, loc.y, col, row);
             let (cx, cy) = hex_parsec(wc, wr);
@@ -280,6 +338,9 @@ pub(crate) fn draw_world_glyphs(canvas: &Canvas2d, view: &ViewState, w: f64, h: 
         ctx.set_text_align("center");
         ctx.set_fill_style_str("#c9d2e4");
         for (world, x, y) in &vis {
+            if is_placeholder(world) {
+                continue; // no "???????-?" line — the glyph stands in for it
+            }
             let _ = ctx.fill_text(&world.uwp, *x, *y + uwp_y * s);
         }
     }
@@ -290,6 +351,9 @@ pub(crate) fn draw_world_glyphs(canvas: &Canvas2d, view: &ViewState, w: f64, h: 
         ctx.set_text_align("left");
         ctx.set_fill_style_str("#aab3c8");
         for (world, x, y) in &vis {
+            if is_placeholder(world) {
+                continue;
+            }
             if !world.allegiance.is_empty() && world.allegiance != "--" {
                 let _ = ctx.fill_text(&world.allegiance, *x + 0.20 * s, *y + 0.08 * s);
             }

@@ -148,6 +148,9 @@ pub fn draw(
         // detail scale (the reference's in-hex disc), so always drawn from the
         // batched, cached per-sector dot paths — a few fills, not a call/world.
         worlds::draw_world_dots(&c, &view, w, h, dpr, sectors, opts.more_world_colors);
+        // Placeholder (`*`) / anomaly (`⌖`) glyphs stand in for the disc on
+        // unknown-UWP worlds and deep-space stations.
+        worlds::draw_placeholder_glyphs(&c, &view, w, h, sectors);
         // At basic scale and up, add the per-world text + small glyphs (hex#,
         // starport, gas giant, bases, UWP, allegiance, name) in state-batched
         // passes: canvas font/fill/align set once per pass, not once per glyph.
