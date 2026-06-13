@@ -36,7 +36,7 @@ pub use common::{
 };
 
 use common::{
-    hex_vertex_r, jump_hexes, MACRO_MAX_SCALE, MACRO_WORLDS_MAX, MACRO_WORLDS_MIN,
+    hex_vertex_r, jump_hexes, MACRO_LABEL_MAX_SCALE, MACRO_MAX_SCALE, MACRO_WORLDS_MIN,
     PARSEC_GRID_MIN_SCALE, ROUTE_MIN_SCALE, SECTOR_GRID_MIN, SECTOR_H, SECTOR_NAME_MAX,
     SECTOR_NAME_MIN, SECTOR_W, SUBSECTOR_GRID_MIN, SUBSECTOR_H, SUBSECTOR_NAME_MAX,
     SUBSECTOR_NAME_MIN, SUBSECTOR_W, WORLD_BASIC_SCALE, HEX_VR,
@@ -122,15 +122,17 @@ pub fn draw(
                 overlays::draw_overlays(&c, &view, w, h, ov, opts);
             }
         }
-        // Capitals + homeworlds (Worlds.xml) over the macro view (scale 0.5–4).
-        if opts.important_worlds && (MACRO_WORLDS_MIN..=MACRO_WORLDS_MAX).contains(&view.scale) {
+        // Capitals + homeworlds (Worlds.xml): red dot+name labels. Kept visible
+        // from the macro view up through the micro-overview (sector-name band),
+        // so they persist as you zoom in past 4 — matching the reference, which
+        // shows them alongside sector names + micro borders (see MACRO_LABEL_MAX).
+        if opts.important_worlds && (MACRO_WORLDS_MIN..=MACRO_LABEL_MAX_SCALE).contains(&view.scale) {
             if let Some(ov) = overlays {
                 overlays::draw_world_labels(&c, &view, w, h, ov);
             }
         }
-        // Minor region labels (minor_labels.tab) — red region names over the
-        // macro view (MacroLabelMinScale 1/2 … MacroLabelMaxScale 4).
-        if opts.region_names && (MACRO_WORLDS_MIN..=MACRO_WORLDS_MAX).contains(&view.scale) {
+        // Minor region labels (minor_labels.tab) — red region names, same band.
+        if opts.region_names && (MACRO_WORLDS_MIN..=MACRO_LABEL_MAX_SCALE).contains(&view.scale) {
             if let Some(ov) = overlays {
                 overlays::draw_minor_labels(&c, &view, w, h, ov);
             }

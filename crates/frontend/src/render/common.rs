@@ -24,7 +24,14 @@ pub(crate) const ROUTE_MIN_SCALE: f64 = 8.0; // routes (RouteMinScale)
 pub(crate) const PARSEC_GRID_MIN_SCALE: f64 = 16.0; // per-parsec hex grid (ParsecMinScale)
 pub(crate) const STAR_MIN_SCALE: f64 = 3.5; // procedural star field
 pub(crate) const MACRO_WORLDS_MIN: f64 = 0.5; // capitals/homeworlds (MacroWorldsMinScale)
-pub(crate) const MACRO_WORLDS_MAX: f64 = 4.0; // capitals/homeworlds (MacroWorldsMaxScale)
+// The reference caps macro labels at scale 4 (MacroWorldsMaxScale), but renders
+// at quantized tile
+// scales so a single tile-scale-4 render (capitals + micro borders both visible)
+// is shown across a range of actual zooms. Our client zooms continuously, so to
+// keep the red capital/region labels visible through the micro-overview (where
+// sector names + micro borders show, like the reference), extend their upper
+// bound to the sector-name band's top.
+pub(crate) const MACRO_LABEL_MAX_SCALE: f64 = 16.0;
 pub(crate) const SECTOR_GRID_MIN: f64 = 0.5; // sector boundary grid
 pub(crate) const SUBSECTOR_GRID_MIN: f64 = 8.0; // subsector boundary grid
 pub(crate) const SECTOR_NAME_MIN: f64 = 1.0;
