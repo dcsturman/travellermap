@@ -656,12 +656,38 @@ fn build_sector_bytes(
         border_styles.entry(k).or_insert(v);
     }
 
+    // Sector-local allegiance names (preferred over the global stock table when
+    // labeling a border with no explicit `Label`), from both metadata sources.
+    let mut alleg_names = tmap_core::parse::sector_allegiances(&meta_xml);
+    for (k, v) in tmap_core::parse::sector_allegiances(&inline) {
+        alleg_names.entry(k).or_insert(v);
+    }
+
     for b in &mut borders {
         if let Some(loc) = location {
             b.region = border_region(&b.hexes, loc.x, loc.y);
         }
         if b.color.is_none() {
             b.color = border_styles.get(&b.allegiance).cloned();
+        }
+        // Reference `Border.GetLabel`: with no explicit label, fall back to the
+        // allegiance name (sector-local first, then the global stock table). Only
+        // when the border has a placement (`LabelPosition`) and is not suppressed.
+        if b.label.is_none() && b.label_position.is_some() && !b.allegiance.is_empty() {
+            b.label = alleg_names
+                .get(&b.allegiance)
+                .cloned()
+                .or_else(|| tmap_core::world_util::allegiance_name(&b.allegiance));
+        }
+    }
+
+    // Standalone hand-placed labels ("Outrim Void", …) from both sources.
+    let mut labels = tmap_core::parse::sector_labels(&meta_xml);
+    let mut seen_labels: HashSet<(String, String)> =
+        labels.iter().map(|l| (l.text.clone(), l.hex.clone())).collect();
+    for l in tmap_core::parse::sector_labels(&inline) {
+        if seen_labels.insert((l.text.clone(), l.hex.clone())) {
+            labels.push(l);
         }
     }
 
@@ -692,6 +718,7 @@ fn build_sector_bytes(
         worlds,
         borders,
         routes,
+        labels,
     };
     serde_json::to_vec(&data).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }

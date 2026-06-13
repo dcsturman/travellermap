@@ -536,23 +536,72 @@ fn sophont_name(code: &str) -> Option<String> {
 
 /// Allegiance code → full display name, from `res/t5ss/allegiance_codes.tab`
 /// (`Code <tab> Legacy <tab> BaseCode <tab> Name <tab> Location`, skip header).
+///
+/// Mirrors the reference `SecondSurvey.GetStockAllegianceFromCode` priority so
+/// **base/legacy** codes used by sector borders (e.g. `As`, `Im`, `So`, `Zh`)
+/// resolve, not just full T5 codes: T5 code → legacy→T5 overrides → hardcoded
+/// legacy stock (no generic T5 code) → Legacy-column fallback.
 pub fn allegiance_name(code: &str) -> Option<String> {
-    static TABLE: OnceLock<HashMap<String, String>> = OnceLock::new();
-    let table = TABLE.get_or_init(|| {
+    static T5: OnceLock<HashMap<String, String>> = OnceLock::new();
+    static LEGACY: OnceLock<HashMap<String, String>> = OnceLock::new();
+    let raw = include_str!("../../../res/t5ss/allegiance_codes.tab");
+    // T5 code (col 0) → name.
+    let t5 = T5.get_or_init(|| {
         let mut m = HashMap::new();
-        let raw = include_str!("../../../res/t5ss/allegiance_codes.tab");
         for line in raw.lines().skip(1) {
             let cols: Vec<&str> = line.split('\t').collect();
             if cols.len() >= 4 {
-                let (code, name) = (cols[0].trim(), cols[3].trim());
-                if !code.is_empty() && !name.is_empty() {
-                    m.insert(code.to_string(), name.to_string());
+                let (c, name) = (cols[0].trim(), cols[3].trim());
+                if !c.is_empty() && !name.is_empty() {
+                    m.insert(c.to_string(), name.to_string());
                 }
             }
         }
         m
     });
-    table.get(code).cloned()
+    if let Some(name) = t5.get(code) {
+        return Some(name.clone());
+    }
+    // Legacy → T5 overrides (reference `s_legacyAllegianceToT5Overrides`).
+    let override_t5 = match code {
+        "J-" | "Jp" | "Ju" => Some("JuPr"),
+        "Na" => Some("NaHu"),
+        "So" => Some("SoCf"),
+        "Va" => Some("NaVa"),
+        "Zh" => Some("ZhCo"),
+        "??" | "--" => Some("XXXX"),
+        _ => None,
+    };
+    if let Some(name) = override_t5.and_then(|t| t5.get(t)) {
+        return Some(name.clone());
+    }
+    // Hardcoded legacy stock — major polities with no generic T5 code
+    // (reference `s_legacyAllegiances`).
+    if let Some(name) = match code {
+        "As" => Some("Aslan Hierate"),
+        "Dr" => Some("Droyne"),
+        "Im" => Some("Third Imperium"),
+        "Kk" => Some("The Two Thousand Worlds"),
+        _ => None,
+    } {
+        return Some(name.to_string());
+    }
+    // Legacy-column (col 1) → name, first occurrence wins (matches the
+    // reference `GroupBy(LegacyCode).First()`).
+    let legacy = LEGACY.get_or_init(|| {
+        let mut m = HashMap::new();
+        for line in raw.lines().skip(1) {
+            let cols: Vec<&str> = line.split('\t').collect();
+            if cols.len() >= 4 {
+                let (lc, name) = (cols[1].trim(), cols[3].trim());
+                if !lc.is_empty() && !name.is_empty() {
+                    m.entry(lc.to_string()).or_insert_with(|| name.to_string());
+                }
+            }
+        }
+        m
+    });
+    legacy.get(code).cloned()
 }
 
 // ── Decoded output types ─────────────────────────────────────────────────────
@@ -1059,6 +1108,11 @@ mod tests {
         assert_eq!(allegiance_name("ImDd").as_deref(), Some("Third Imperium, Domain of Deneb"));
         assert_eq!(allegiance_name("ZhCo").as_deref(), Some("Zhodani Consulate"));
         assert_eq!(allegiance_name("ZZZZ"), None);
+        // Base/legacy codes used by sector borders must resolve too.
+        assert_eq!(allegiance_name("As").as_deref(), Some("Aslan Hierate")); // hardcoded stock
+        assert_eq!(allegiance_name("Im").as_deref(), Some("Third Imperium"));
+        assert_eq!(allegiance_name("So").as_deref(), Some("Solomani Confederation")); // legacy override
+        assert_eq!(allegiance_name("Zh").as_deref(), Some("Zhodani Consulate"));
     }
 
     #[test]

@@ -12,7 +12,8 @@
 
 use crate::astrometrics::Coord;
 use crate::dto::{
-    Border, MapLabel, Route, SectorIndexEntry, SubPath, Subsector, VectorObject, World,
+    Border, MapLabel, Route, SectorIndexEntry, SectorLabel, SubPath, Subsector, VectorObject,
+    World,
 };
 use base64::Engine;
 use regex::Regex;
@@ -498,9 +499,14 @@ pub fn sector_borders(xml: &str) -> Vec<Border> {
         return Vec::new();
     };
     doc.descendants()
-        .filter(|n| n.has_tag_name("Border"))
+        // `<Region>` extends `<Border>` in the reference model (a labeled area
+        // with no allegiance), so both feed the same micro-border layer.
+        .filter(|n| n.has_tag_name("Border") || n.has_tag_name("Region"))
         .filter_map(|n| {
-            let allegiance = n.attribute("Allegiance")?.trim().to_owned();
+            // `Region` may omit `Allegiance`; treat it as empty (no fill color
+            // lookup, label-only).
+            let allegiance =
+                n.attribute("Allegiance").map(|s| s.trim().to_owned()).unwrap_or_default();
             let hexes: Vec<String> = n
                 .text()
                 .unwrap_or("")
@@ -511,16 +517,82 @@ pub fn sector_borders(xml: &str) -> Vec<Border> {
             if hexes.is_empty() {
                 return None;
             }
+            // `ShowLabel` defaults true; when false, suppress the label entirely
+            // by dropping its position (the backend resolves the text from
+            // `label_position`).
+            let show_label = !attr_is_false(n, "ShowLabel");
+            let label_position =
+                show_label.then(|| n.attribute("LabelPosition").map(str::to_owned)).flatten();
+            let ox = n.attribute("LabelOffsetX").and_then(|s| s.parse().ok()).unwrap_or(0.0);
+            let oy = n.attribute("LabelOffsetY").and_then(|s| s.parse().ok()).unwrap_or(0.0);
             Some(Border {
                 allegiance,
                 hexes,
                 region: Vec::new(),
                 color: n.attribute("Color").map(str::to_owned),
-                label: n.attribute("Label").map(str::to_owned),
-                label_position: n.attribute("LabelPosition").map(str::to_owned),
+                label: show_label.then(|| n.attribute("Label").map(str::to_owned)).flatten(),
+                label_position,
+                wrap_label: attr_is_true(n, "WrapLabel"),
+                label_offset: (ox, oy),
             })
         })
         .collect()
+}
+
+/// Standalone hand-placed `<Label Hex= Color= Size= Wrap=>text</Label>` elements
+/// from sector metadata (e.g. "Outrim Void"). Color/Size/Wrap default to amber /
+/// medium / no-wrap, matching the reference `Label` class.
+pub fn sector_labels(xml: &str) -> Vec<SectorLabel> {
+    let Ok(doc) = roxmltree::Document::parse(xml) else {
+        return Vec::new();
+    };
+    doc.descendants()
+        .filter(|n| n.has_tag_name("Label"))
+        .filter_map(|n| {
+            let hex = n.attribute("Hex")?.trim().to_owned();
+            if hex.len() != 4 || !hex.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            let text = n.text().map(str::trim).filter(|s| !s.is_empty())?.to_owned();
+            let ox = n.attribute("OffsetX").and_then(|s| s.parse().ok()).unwrap_or(0.0);
+            let oy = n.attribute("OffsetY").and_then(|s| s.parse().ok()).unwrap_or(0.0);
+            Some(SectorLabel {
+                text,
+                hex,
+                color: n.attribute("Color").map(str::to_owned),
+                size: n.attribute("Size").map(str::to_owned),
+                wrap: attr_is_true(n, "Wrap"),
+                offset: (ox, oy),
+            })
+        })
+        .collect()
+}
+
+/// Sector-local allegiance code → name table (`<Allegiance Code="…">Name</…>`).
+/// The reference prefers this over the global stock table when labeling borders.
+pub fn sector_allegiances(xml: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    let Ok(doc) = roxmltree::Document::parse(xml) else {
+        return map;
+    };
+    for n in doc.descendants().filter(|n| n.has_tag_name("Allegiance")) {
+        if let (Some(code), Some(name)) =
+            (n.attribute("Code"), n.text().map(str::trim).filter(|s| !s.is_empty()))
+        {
+            map.insert(code.trim().to_owned(), name.to_owned());
+        }
+    }
+    map
+}
+
+/// `attr == "true"` (case-insensitive), default false.
+fn attr_is_true(n: roxmltree::Node, name: &str) -> bool {
+    n.attribute(name).is_some_and(|v| v.eq_ignore_ascii_case("true"))
+}
+
+/// `attr == "false"` (case-insensitive), default false (so absent → not-false).
+fn attr_is_false(n: roxmltree::Node, name: &str) -> bool {
+    n.attribute(name).is_some_and(|v| v.eq_ignore_ascii_case("false"))
 }
 
 /// Per-sector border colors from the embedded `<Stylesheet>` (CSS-like:

@@ -80,13 +80,17 @@ pub(crate) fn draw_subsector_names(c: &impl Canvas, view: &ViewState, w: f64, h:
     }
 }
 
-/// Border labels ("Third Imperium", …) — amber, at the label-position hex,
-/// wrapped on spaces, horizontal (`microBorders.textColor`/`textStyle`).
+/// Border/region labels ("Third Imperium", "Florian League", …) — amber, at the
+/// label-position hex (`microBorders.textColor`/`textStyle`). The text comes from
+/// the border's explicit `Label` or, lacking one, its allegiance name (resolved
+/// backend-side). Bold; size = `microBorders` font (0.25 parsec, floored so it
+/// stays legible at the scale-16 minimum, matching the reference's special case).
+/// Only wrapped when the border is flagged `WrapLabel`.
 pub(crate) fn draw_border_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f64, sector: &SectorData) {
     let Some(loc) = sector.info.location else {
         return;
     };
-    let size = (0.5 * view.scale).clamp(11.0, 64.0);
+    let size = micro_label_px(0.25, view.scale);
     let font = format!("700 {}px {DEFAULT_FONT}", size as i32);
     for border in &sector.borders {
         let (Some(label), Some(pos)) = (&border.label, &border.label_position) else {
@@ -96,16 +100,86 @@ pub(crate) fn draw_border_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f
             continue;
         };
         let (wc, wr) = world_hex(loc.x, loc.y, col, row);
-        let (x, y) = view.to_screen(w, h, hex_parsec(wc, wr));
+        let (px, py) = hex_parsec(wc, wr);
+        // Label nudge: ±0.7 parsec per offset unit (reference LabelOffsetX/Y).
+        let (px, py) = (px + border.label_offset.0 as f64 * 0.7, py - border.label_offset.1 as f64 * 0.7);
+        let (x, y) = view.to_screen(w, h, (px, py));
         if !on_screen(x, y, w, h, size * 4.0) {
             continue;
         }
-        let lines: Vec<&str> = label.split_whitespace().collect();
-        let top = y - (lines.len() as f64 - 1.0) * size * 0.55;
-        for (i, line) in lines.iter().enumerate() {
-            c.fill_text(line, x, top + i as f64 * size * 1.1, C_AMBER, &font, TextAlign::Center);
+        let lines = if border.wrap_label { wrap_label_text(label) } else { vec![label.clone()] };
+        draw_label_lines(c, &lines, x, y, size, C_AMBER, &font);
+    }
+}
+
+/// Standalone hand-placed labels (`<Label>`: "Outrim Void", "Strend Cluster", …) —
+/// drawn in the label's own color (default amber) at its `Size` font (small
+/// 0.15 / medium 0.25 / large 0.75 parsec, bold). Wrapped only when flagged.
+pub(crate) fn draw_sector_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f64, sector: &SectorData) {
+    let Some(loc) = sector.info.location else {
+        return;
+    };
+    for label in &sector.labels {
+        let Some((col, row)) = parse_hex(&label.hex) else {
+            continue;
+        };
+        let parsec = match label.size.as_deref() {
+            Some("small") => 0.15,
+            Some("large") => 0.75,
+            _ => 0.25,
+        };
+        let size = micro_label_px(parsec, view.scale);
+        let font = format!("700 {}px {DEFAULT_FONT}", size as i32);
+        let (wc, wr) = world_hex(loc.x, loc.y, col, row);
+        let (px, py) = hex_parsec(wc, wr);
+        let (px, py) = (px + label.offset.0 as f64 * 0.7, py - label.offset.1 as f64 * 0.7);
+        let (x, y) = view.to_screen(w, h, (px, py));
+        if !on_screen(x, y, w, h, size * 4.0) {
+            continue;
+        }
+        let color = label.color.as_deref().unwrap_or(C_AMBER);
+        let lines = if label.wrap { wrap_label_text(&label.text) } else { vec![label.text.clone()] };
+        draw_label_lines(c, &lines, x, y, size, color, &font);
+    }
+}
+
+/// Micro-label font px from a parsec size: `parsec × scale`, floored so the text
+/// stays legible at the scale-16 minimum (the reference bumps the font to 0.6
+/// parsec at exactly that scale; we approximate with a flat floor).
+fn micro_label_px(parsec: f64, scale: f64) -> f64 {
+    (parsec * scale).max(9.0)
+}
+
+/// Center a (possibly multi-line) label vertically on its anchor and draw it.
+fn draw_label_lines(c: &impl Canvas, lines: &[String], x: f64, y: f64, size: f64, color: &str, font: &str) {
+    let top = y - (lines.len() as f64 - 1.0) * size * 0.55;
+    for (i, line) in lines.iter().enumerate() {
+        c.fill_text(line, x, top + i as f64 * size * 1.1, color, font, TextAlign::Center);
+    }
+}
+
+/// Wrap a label at runs of whitespace **not** followed by a lowercase letter —
+/// the reference `WRAP_REGEX` (`\s+(?![a-z])`). So "Confederation of Duncinae"
+/// breaks before "Duncinae" but not before "of".
+fn wrap_label_text(text: &str) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for (i, word) in text.split_whitespace().enumerate() {
+        let starts_lower = word.chars().next().is_some_and(|ch| ch.is_ascii_lowercase());
+        if i == 0 {
+            cur.push_str(word);
+        } else if starts_lower {
+            cur.push(' ');
+            cur.push_str(word);
+        } else {
+            lines.push(std::mem::take(&mut cur));
+            cur.push_str(word);
         }
     }
+    if !cur.is_empty() {
+        lines.push(cur);
+    }
+    lines
 }
 
 /// Screen-fixed COREWARD / RIMWARD / SPINWARD / TRAILING compass labels at the

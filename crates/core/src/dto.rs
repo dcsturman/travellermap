@@ -122,6 +122,38 @@ pub struct Border {
     pub label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label_position: Option<String>,
+    /// Wrap the label at whitespace-not-before-lowercase (reference `WrapLabel`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub wrap_label: bool,
+    /// Label nudge in hex units (applied as `×0.7` parsec), reference
+    /// `LabelOffsetX`/`LabelOffsetY`.
+    #[serde(default, skip_serializing_if = "is_zero2")]
+    pub label_offset: (f32, f32),
+}
+
+/// A hand-placed standalone region/area label from sector metadata
+/// (`<Label Hex= Color= Size= Wrap=>text</Label>`), e.g. "Outrim Void".
+/// Distinct from a border label — it has no allegiance region, just a position.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SectorLabel {
+    pub text: String,
+    /// 4-digit hex within the sector.
+    pub hex: String,
+    /// Explicit color (`Color` attr); `None` → the default amber.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    /// `"small"` | `"large"` | `None` (medium) — picks the font size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub wrap: bool,
+    #[serde(default, skip_serializing_if = "is_zero2")]
+    pub offset: (f32, f32),
+}
+
+/// Serde skip helper: a `(0.0, 0.0)` offset is the common case.
+fn is_zero2(v: &(f32, f32)) -> bool {
+    v.0 == 0.0 && v.1 == 0.0
 }
 
 /// A trade/communication route segment between two hexes. Offsets are in
@@ -152,6 +184,9 @@ pub struct SectorData {
     pub borders: Vec<Border>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub routes: Vec<Route>,
+    /// Hand-placed standalone labels (`<Label>`), e.g. "Outrim Void".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<SectorLabel>,
 }
 
 /// One entry in the universe index: a sector's identity and grid position,

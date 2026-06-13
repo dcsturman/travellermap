@@ -196,10 +196,13 @@ pub fn draw(
             worlds::draw_world_glyphs(&c, &view, w, h, sectors);
         }
         mark("worlds", &mut marks);
-        // Border labels ("Third Imperium") once names are legible.
+        // Border/region labels ("Third Imperium", "Florian League") and
+        // hand-placed area labels ("Outrim Void") — micro names, amber, from
+        // MicroNameMinScale (16) up (reference `showMicroNames`).
         if opts.region_names && view.scale >= 16.0 {
             for sector in sectors {
                 labels::draw_border_labels(&c, &view, w, h, sector);
+                labels::draw_sector_labels(&c, &view, w, h, sector);
             }
         }
     }
