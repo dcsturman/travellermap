@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use tmap_core::astrometrics::{parse_hex, PARSEC_SCALE_X};
-use tmap_core::dto::{Overlays, RouteResult, SearchResult, SearchResults, SectorData, Universe};
+use tmap_core::dto::{Overlays, RouteResult, SearchResult, SearchResults, SectorData, Universe, World};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::HtmlCanvasElement;
@@ -19,7 +19,9 @@ mod canvas;
 mod glyph;
 mod render;
 mod route_print;
+mod world_panel;
 use render::ViewState;
+use world_panel::{subsector_letter, SelectedWorld, WorldPanel};
 
 const MILIEU: &str = "M1105";
 /// Where the map opens — Spinward Marches grid coords.
@@ -198,6 +200,12 @@ fn App() -> impl IntoView {
     let route_start = RwSignal::new(String::new());
     let route_end = RwSignal::new(String::new());
     let route_jump = RwSignal::new(0i32); // 0 = none chosen yet (a J-N pill picks it)
+
+    // World detail panel: the clicked world (overview-LOD until the on-demand
+    // `?lod=full` fetch upgrades it), plus a per-sector full-LOD cache so a
+    // second click on the same sector skips the round-trip.
+    let selected = RwSignal::new(None::<SelectedWorld>);
+    let full_sectors = StoredValue::new(HashMap::<(i32, i32), SectorData>::new());
     let (route_status, set_route_status) = signal(String::new());
     // Distinguish a click (set endpoint) from a drag (pan): remember press origin.
     let down_pos = RwSignal::new(None::<(f64, f64)>);
@@ -444,6 +452,79 @@ fn App() -> impl IntoView {
             route_end.set(String::new());
         }
     };
+    // Click-to-select: hit-test a canvas click to the nearest loaded world and
+    // open the detail panel for it. Mirrors `fill_endpoint`'s hit-test but keeps
+    // the whole `World` (+ sector context), then fetches the sector at `?lod=full`
+    // on demand to fill in the stellar/Ix/Ex/Cx/… fields the overview LOD omits.
+    let select_world = move |px: (f64, f64)| {
+        let Some(cv) = canvas_ref.get_untracked() else { return };
+        let (w, h) = logical_dims(&cv);
+        let Some(v) = view.get_untracked() else { return };
+        let target = v.to_parsec(w, h, px);
+        // (dist², world, sector name, sector coord, subsector name)
+        let mut best: Option<(f64, World, String, (i32, i32), String)> = None;
+        sectors.with_value(|loaded| {
+            for s in loaded.values() {
+                let Some(loc) = s.info.location else { continue };
+                for wld in &s.worlds {
+                    let Some((col, row)) = parse_hex(&wld.hex) else { continue };
+                    let (wx, wy) = render::sector_hex_parsec(loc.x, loc.y, col, row);
+                    let d = (wx - target.0).powi(2) + (wy - target.1).powi(2);
+                    if d < best.as_ref().map_or(f64::MAX, |b| b.0) {
+                        let letter = subsector_letter(col, row);
+                        let sub = s
+                            .info
+                            .subsectors
+                            .iter()
+                            .find(|ss| ss.index.chars().next() == Some(letter))
+                            .map(|ss| ss.name.clone())
+                            .unwrap_or_else(|| format!("Subsector {letter}"));
+                        best = Some((d, wld.clone(), s.info.name.clone(), (loc.x, loc.y), sub));
+                    }
+                }
+            }
+        });
+        let Some((d, world, sector_name, sector_coord, subsector)) = best else { return };
+        if d > 0.9 * 0.9 {
+            selected.set(None); // clicked empty space → dismiss the panel
+            return;
+        }
+        let hex = world.hex.clone();
+        // If we already have the full sector cached, upgrade the world up front.
+        let full_world = full_sectors
+            .with_value(|fs| fs.get(&sector_coord).and_then(|s| s.worlds.iter().find(|w| w.hex == hex).cloned()));
+        let already_full = full_world.is_some();
+        selected.set(Some(SelectedWorld {
+            world: full_world.unwrap_or(world),
+            sector_name: sector_name.clone(),
+            sector_coord,
+            subsector,
+            full: already_full,
+        }));
+        if already_full {
+            return;
+        }
+        // Fetch the clicked sector at full LOD, then upgrade the selected world in
+        // place (only if the user hasn't since clicked elsewhere).
+        let encoded = String::from(js_sys::encode_uri_component(&sector_name));
+        spawn_local(async move {
+            let url = format!("/api/sector/{MILIEU}/{encoded}?lod=full");
+            let Ok(full) = fetch_json::<SectorData>(&url).await else { return };
+            if let Some(fw) = full.worlds.iter().find(|w| w.hex == hex).cloned() {
+                selected.update(|cur| {
+                    if let Some(c) = cur {
+                        if c.sector_coord == sector_coord && c.world.hex == hex {
+                            c.world = fw;
+                            c.full = true;
+                        }
+                    }
+                });
+            }
+            full_sectors.update_value(|fs| {
+                fs.insert(sector_coord, full);
+            });
+        });
+    };
     let on_up = move |ev: web_sys::MouseEvent| {
         let up = (ev.client_x() as f64, ev.client_y() as f64);
         let is_click = down_pos
@@ -451,8 +532,15 @@ fn App() -> impl IntoView {
             .is_some_and(|(dx, dy)| (up.0 - dx).abs() < 4.0 && (up.1 - dy).abs() < 4.0);
         drag.set(None);
         down_pos.set(None);
-        if is_click && route_open.get_untracked() {
+        if !is_click {
+            return;
+        }
+        // Route mode wins (it's the explicit modal toggle); otherwise a click
+        // selects a world for the detail panel.
+        if route_open.get_untracked() {
             fill_endpoint(up);
+        } else {
+            select_world(up);
         }
     };
     let on_leave = move |_: web_sys::MouseEvent| {
@@ -771,6 +859,17 @@ fn App() -> impl IntoView {
                     </div>
                 </div>
             </Show>
+            // --- world detail panel (click a world → its T5 data sheet) ---
+            <WorldPanel
+                selected=selected
+                on_close=move |()| selected.set(None)
+                on_plan_route=move |label: String| {
+                    route_start.set(label);
+                    route_end.set(String::new());
+                    route.set(None);
+                    route_open.set(true);
+                    selected.set(None);
+                } />
             // --- bottom pane (mirrors the reference #bottom-pane): red stripe,
             //     the per-sector data-source credit (or Mongoose copyright) on the
             //     left, the TRAVELLER® wordmark on the right. ---
