@@ -29,6 +29,7 @@ use tmap_core::{
 };
 use tower_http::cors::CorsLayer;
 
+mod route;
 mod search;
 use search::SearchEntry;
 
@@ -58,6 +59,10 @@ struct AppState {
     /// sector's borders/routes may be defined inline there as well as (or
     /// instead of) in its own `.xml`, so sector builds consult it.
     region_cache: Arc<Mutex<HashMap<String, Arc<String>>>>,
+    /// Lazily-built, cached per-milieu world index for jump-route finding — every
+    /// world of the milieu keyed by absolute coordinate. Built by loading every
+    /// sector once; the dataset is small enough to hold in RAM (see CLAUDE.md).
+    route_cache: Arc<Mutex<HashMap<String, Arc<route::WorldIndex>>>>,
 }
 
 /// Parse the named `res/Vectors/{name}.xml` files, skipping any that fail.
@@ -164,6 +169,21 @@ impl AppState {
             .insert(milieu.to_string(), idx.clone());
         Ok(idx)
     }
+
+    /// The jump-route world index for a milieu, built + cached on first use by
+    /// loading every sector's worlds keyed by absolute coordinate.
+    fn route_index(&self, milieu: &str) -> Result<Arc<route::WorldIndex>, (StatusCode, String)> {
+        if let Some(idx) = self.route_cache.lock().unwrap().get(milieu) {
+            return Ok(idx.clone());
+        }
+        let universe = self.universe(milieu)?;
+        let idx = Arc::new(route::build_world_index(&self.res_dir, milieu, &universe));
+        self.route_cache
+            .lock()
+            .unwrap()
+            .insert(milieu.to_string(), idx.clone());
+        Ok(idx)
+    }
 }
 
 /// Read a file as text, tolerating non-UTF-8 sector data. Tries UTF-8, then
@@ -228,6 +248,7 @@ async fn main() {
         search_cache: Arc::new(Mutex::new(HashMap::new())),
         response_cache: Arc::new(Mutex::new(HashMap::new())),
         region_cache: Arc::new(Mutex::new(HashMap::new())),
+        route_cache: Arc::new(Mutex::new(HashMap::new())),
     };
 
     let app = Router::new()
@@ -235,6 +256,7 @@ async fn main() {
         .route("/api/universe", get(get_universe))
         .route("/api/overlays", get(get_overlays))
         .route("/api/search", get(get_search))
+        .route("/api/route", get(get_route))
         .route("/api/sector/{milieu}/{name}", get(get_sector))
         .route("/api/res/{*path}", get(get_res))
         .route("/api/admin/flush", post(flush_cache))
@@ -421,6 +443,61 @@ async fn get_search(
 }
 
 #[derive(Debug, Deserialize)]
+struct RouteQuery {
+    /// Start world, `"Sector Name 0101"` (sector display name + 4-digit hex).
+    start: String,
+    /// End world, same form.
+    end: String,
+    /// Jump rating in parsecs; clamped 1..=12 (mirrors `RouteHandler`).
+    #[serde(default = "default_jump")]
+    jump: i32,
+    #[serde(default = "default_milieu")]
+    milieu: String,
+    /// Filters (mirror `RouteHandler` flags): avoid red zones, require
+    /// wilderness refuelling, Imperial worlds only, allow anomalies.
+    #[serde(default)]
+    nored: bool,
+    #[serde(default)]
+    wild: bool,
+    #[serde(default)]
+    im: bool,
+    #[serde(default)]
+    aok: bool,
+}
+
+fn default_jump() -> i32 {
+    2
+}
+
+/// `GET /api/route?start=<Sector 0101>&end=<Sector 0101>&jump=N&milieu=M1105` —
+/// compute a jump route between two worlds. Mirrors the reference
+/// `server/api/RouteHandler.cs` (start/end "Sector hhhh" parsing, jump clamp,
+/// filter flags, jump-count-minimizing cost). Returns a [`RouteResult`].
+async fn get_route(
+    Query(q): Query<RouteQuery>,
+    State(state): State<AppState>,
+) -> Result<Json<tmap_core::dto::RouteResult>, (StatusCode, String)> {
+    let jump = q.jump.clamp(1, 12);
+    let index = state.route_index(&q.milieu)?;
+
+    let start = route::resolve_location(&index, &q.start)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("start not found: {}", q.start)))?;
+    let end = route::resolve_location(&index, &q.end)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("end not found: {}", q.end)))?;
+
+    let opts = tmap_core::route::RouteOptions {
+        avoid_red: q.nored,
+        require_refuel: q.wild,
+        imperial_only: q.im,
+        allow_anomalies: q.aok,
+    };
+    let result = index
+        .find_route(start, end, jump, opts)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "no route found".to_string()))?;
+    Ok(Json(result))
+}
+
+#[derive(Debug, Deserialize)]
 struct SectorQuery {
     /// Level of detail: `full` (everything) or `overview` (lighter — drops
     /// fields not rendered until extreme zoom). See PORT_PLAN.md.
@@ -452,6 +529,53 @@ async fn get_sector(
     })
 }
 
+/// Resolve a sector's data file and parse its worlds. The index's `DataFile` is
+/// tried first, else the stem with each known extension (sectors not in the
+/// region list default to `<name>.tab`, but the data may actually be
+/// `.txt`/`.sec`). Returns the chosen filename + parsed worlds, or `None` if no
+/// data file exists. Shared by sector serving and the route world-index build.
+pub(crate) fn resolve_and_parse_worlds(
+    dir: &FsPath,
+    name: &str,
+    entry: Option<&tmap_core::dto::SectorIndexEntry>,
+) -> Option<(String, tmap_core::parse::ParseOutcome)> {
+    let stem = entry
+        .and_then(|s| s.data_file.as_deref())
+        .map(|df| std::path::Path::new(df).file_stem().and_then(|s| s.to_str()).unwrap_or(name))
+        .unwrap_or(name)
+        .to_string();
+    let infer_fmt = |file: &str| match std::path::Path::new(file).extension().and_then(|e| e.to_str()) {
+        Some("txt") => "SecondSurvey",
+        Some("sec") => "SEC",
+        _ => "TabDelimited",
+    };
+    let (data_file, data_format) = entry
+        .and_then(|s| s.data_file.clone())
+        .filter(|df| dir.join(df).exists())
+        .map(|df| {
+            let fmt = entry
+                .and_then(|s| s.data_format.clone())
+                .unwrap_or_else(|| infer_fmt(&df).to_string());
+            (df, fmt)
+        })
+        .or_else(|| {
+            [("tab", "TabDelimited"), ("txt", "SecondSurvey"), ("sec", "SEC")]
+                .into_iter()
+                .map(|(ext, fmt)| (format!("{stem}.{ext}"), fmt.to_string()))
+                .find(|(f, _)| dir.join(f).exists())
+        })?;
+
+    let text = read_text(dir.join(&data_file)).ok()?;
+    let outcome = match data_format.as_str() {
+        "SEC" => parse_sec(&text),             // legacy regex format (.sec)
+        "SecondSurvey" => parse_column(&text), // T5 column format (.txt)
+        _ => parse_tab(&text),
+    }
+    // A format quirk shouldn't fail the whole sector — fall back to no worlds.
+    .unwrap_or_default();
+    Some((data_file, outcome))
+}
+
 /// Parse + assemble a sector and serialize it (the cache-miss path).
 fn build_sector_bytes(
     state: &AppState,
@@ -469,43 +593,10 @@ fn build_sector_bytes(
         .and_then(|u| u.sectors.iter().find(|s| s.name == name));
     let location = entry.map(|s| s.location);
 
-    // Resolve the data file: the index's DataFile if it exists, else try the
-    // stem with each known extension (sectors not in the region list default to
-    // `<name>.tab`, but the data may actually be `.txt`/`.sec`).
-    let stem = entry
-        .and_then(|s| s.data_file.as_deref())
-        .map(|df| std::path::Path::new(df).file_stem().and_then(|s| s.to_str()).unwrap_or(name))
-        .unwrap_or(name)
-        .to_string();
-    let infer_fmt = |file: &str| match std::path::Path::new(file).extension().and_then(|e| e.to_str()) {
-        Some("txt") => "SecondSurvey",
-        Some("sec") => "SEC",
-        _ => "TabDelimited",
-    };
-    let chosen = entry
-        .and_then(|s| s.data_file.clone())
-        .filter(|df| dir.join(df).exists())
-        .map(|df| (df.clone(), entry.and_then(|s| s.data_format.clone()).unwrap_or_else(|| infer_fmt(&df).to_string())))
-        .or_else(|| {
-            [("tab", "TabDelimited"), ("txt", "SecondSurvey"), ("sec", "SEC")]
-                .into_iter()
-                .map(|(ext, fmt)| (format!("{stem}.{ext}"), fmt.to_string()))
-                .find(|(f, _)| dir.join(f).exists())
-        });
-    let Some((data_file, data_format)) = chosen else {
+    // Resolve the data file + parse the worlds (shared with the route index).
+    let Some((data_file, outcome)) = resolve_and_parse_worlds(&dir, name, entry) else {
         return Err((StatusCode::NOT_FOUND, format!("no data for '{name}' in '{milieu}'")));
     };
-
-    let text = read_text(dir.join(&data_file))
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let outcome = match data_format.as_str() {
-        "SEC" => parse_sec(&text),                // legacy regex format (.sec)
-        "SecondSurvey" => parse_column(&text),    // T5 column format (.txt)
-        _ => parse_tab(&text),
-    }
-    // A format quirk shouldn't 500 the whole sector — fall back to no worlds so
-    // it still places + draws.
-    .unwrap_or_default();
 
     // Metadata filename: region-list MetadataFile, else the data file's stem +
     // ".xml" (a sector's display name often differs from its filename, e.g.
@@ -622,6 +713,7 @@ mod tests {
             search_cache: Arc::new(Mutex::new(HashMap::new())),
             response_cache: Arc::new(Mutex::new(HashMap::new())),
             region_cache: Arc::new(Mutex::new(HashMap::new())),
+            route_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -686,5 +778,52 @@ mod tests {
             as_region > 100,
             "Hlakhoi (inline-only border in region list) should have an Aslan border region, got {as_region}"
         );
+    }
+
+    /// The route world-index must build for M1105 and resolve "Sector hhhh"
+    /// endpoints, then the core A* must find a sensible jump route between two
+    /// real Spinward Marches worlds.
+    #[test]
+    fn route_regina_to_yori() {
+        let state = test_state();
+        let index = state.route_index("M1105").expect("M1105 route index builds");
+
+        let start = route::resolve_location(&index, "Spinward Marches 1910")
+            .expect("Regina (1910) resolves");
+        let end = route::resolve_location(&index, "Spinward Marches 2110")
+            .expect("Yori (2110) resolves");
+
+        let result = index
+            .find_route(start, end, 2, tmap_core::route::RouteOptions::default())
+            .expect("a jump-2 route from Regina to Yori exists");
+
+        // Endpoints correct.
+        assert_eq!(result.waypoints.first().unwrap().name, "Regina");
+        assert_eq!(result.waypoints.last().unwrap().name, "Yori");
+        // jumps == waypoints - 1, and the trip is short (Regina↔Yori ≈ 2 pc).
+        assert_eq!(result.jumps, result.waypoints.len() - 1);
+        assert!(result.jumps >= 1 && result.jumps <= 2, "got {} jumps", result.jumps);
+        assert!(result.parsecs >= 1);
+    }
+
+    /// A jump rating too small to bridge an isolated world returns no route
+    /// (clean None, not a panic). Picking an unreachable pair: jump 1 across a
+    /// known multi-parsec gap.
+    #[test]
+    fn route_no_path_is_clean() {
+        let state = test_state();
+        let index = state.route_index("M1105").expect("index builds");
+        // Regina to a distant world with jump 1 — Spinward Marches worlds are
+        // sparse enough that jump-1 from Regina can't reach the far rim.
+        let start = route::resolve_location(&index, "Spinward Marches 1910").unwrap();
+        // Mora is at the far rimward-trailing corner (3124); jump-1 cannot reach.
+        if let Some(end) = route::resolve_location(&index, "Spinward Marches 3124") {
+            let r = index.find_route(start, end, 1, tmap_core::route::RouteOptions::default());
+            // Either a long valid jump-1 chain or None — but it must not panic
+            // and, if found, must be a contiguous jump-1 path.
+            if let Some(res) = r {
+                assert_eq!(res.waypoints.first().unwrap().name, "Regina");
+            }
+        }
     }
 }

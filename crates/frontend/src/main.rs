@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use tmap_core::dto::{Overlays, SearchResult, SearchResults, SectorData, Universe};
+use tmap_core::dto::{Overlays, RouteResult, SearchResult, SearchResults, SectorData, Universe};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::HtmlCanvasElement;
@@ -129,6 +129,15 @@ async fn fetch_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T, Stri
     resp.json::<T>().await.map_err(|e| e.to_string())
 }
 
+/// Fetch a computed jump route from the backend `/api/route` endpoint. `start`
+/// and `end` are `"Sector Name 0101"` strings; `jump` is the drive rating.
+async fn fetch_route(start: &str, end: &str, jump: i32) -> Result<RouteResult, String> {
+    let s = String::from(js_sys::encode_uri_component(start));
+    let e = String::from(js_sys::encode_uri_component(end));
+    let url = format!("/api/route?start={s}&end={e}&jump={jump}&milieu={MILIEU}");
+    fetch_json::<RouteResult>(&url).await
+}
+
 #[component]
 fn App() -> impl IntoView {
     let canvas_ref = NodeRef::<leptos::html::Canvas>::new();
@@ -145,8 +154,15 @@ fn App() -> impl IntoView {
     let inflight = StoredValue::new(HashSet::<(i32, i32)>::new());
     let failed = StoredValue::new(HashSet::<(i32, i32)>::new()); // sectors that errored — don't retry
     let overlays = StoredValue::new(None::<Overlays>);
+    let route = StoredValue::new(None::<RouteResult>); // computed jump route to draw
     let (version, set_version) = signal(0u32);
     let (index_ready, set_index_ready) = signal(false);
+
+    // Jump-route planner inputs (minimal trigger; full panel deferred).
+    let route_start = RwSignal::new(String::new());
+    let route_end = RwSignal::new(String::new());
+    let route_jump = RwSignal::new(2i32);
+    let (route_status, set_route_status) = signal(String::new());
 
     // Layer toggles (hamburger menu) — each redraws when flipped.
     let opt_galactic = RwSignal::new(true);
@@ -322,7 +338,9 @@ fn App() -> impl IntoView {
                 .collect();
             overlays.with_value(|ov| {
                 index.with_value(|idx| {
-                    render::draw(&canvas_el, &refs, ov.as_ref(), idx, v, opts);
+                    route.with_value(|r| {
+                        render::draw(&canvas_el, &refs, ov.as_ref(), idx, v, opts, r.as_ref());
+                    });
                 });
             });
         });
@@ -383,6 +401,38 @@ fn App() -> impl IntoView {
         set_view.set(Some(ViewState { scale, center }));
     };
 
+    // Compute a jump route from the two planner inputs and draw it. A minimal
+    // trigger — the full route-planner panel UI is a follow-up.
+    let on_route = move |_: web_sys::MouseEvent| {
+        let (s, e, j) = (
+            route_start.get_untracked(),
+            route_end.get_untracked(),
+            route_jump.get_untracked(),
+        );
+        if s.trim().is_empty() || e.trim().is_empty() {
+            set_route_status.set("Enter start & end, e.g. 'Spinward Marches 1910'".into());
+            return;
+        }
+        set_route_status.set("Computing route…".into());
+        spawn_local(async move {
+            match fetch_route(&s, &e, j).await {
+                Ok(r) => {
+                    set_route_status.set(format!("{} jumps · {} pc", r.jumps, r.parsecs));
+                    // Center the view on the route's start so it's visible.
+                    if let Some(wp) = r.waypoints.first() {
+                        set_view.set(Some(ViewState {
+                            scale: 32.0,
+                            center: render::world_to_parsec(wp.coord.x, wp.coord.y),
+                        }));
+                    }
+                    route.set_value(Some(r));
+                    set_version.update(|v| *v += 1);
+                }
+                Err(err) => set_route_status.set(format!("No route: {err}")),
+            }
+        });
+    };
+
     // Home → the charted-space overview.
     let on_home = move |_: web_sys::MouseEvent| {
         if let Some(cv) = canvas_ref.get_untracked() {
@@ -433,6 +483,46 @@ fn App() -> impl IntoView {
                 </div>
                 <div style="margin-top:6px; opacity:0.7; text-shadow:0 1px 3px #000;">
                     {move || status.get()}
+                </div>
+
+                // --- minimal jump-route planner (full panel deferred) ---
+                <div style="margin-top:10px; padding:10px; border-radius:6px; \
+                            background:rgba(10,12,20,0.92); border:1px solid #2a3145;">
+                    <div style="font-weight:700; color:#aab3c8; margin-bottom:6px;">
+                        "JUMP ROUTE"
+                    </div>
+                    <input type="text" placeholder="Start, e.g. Spinward Marches 1910"
+                           prop:value=move || route_start.get()
+                           on:input=move |ev| route_start.set(event_target_value(&ev))
+                           style="width:100%; box-sizing:border-box; margin-bottom:5px; \
+                                  padding:6px 8px; border-radius:5px; border:1px solid #2a3145; \
+                                  background:rgba(6,8,14,0.9); color:#e6ecf7; outline:none;" />
+                    <input type="text" placeholder="End, e.g. Spinward Marches 2110"
+                           prop:value=move || route_end.get()
+                           on:input=move |ev| route_end.set(event_target_value(&ev))
+                           style="width:100%; box-sizing:border-box; margin-bottom:5px; \
+                                  padding:6px 8px; border-radius:5px; border:1px solid #2a3145; \
+                                  background:rgba(6,8,14,0.9); color:#e6ecf7; outline:none;" />
+                    <div style="display:flex; gap:6px; align-items:center;">
+                        <label style="color:#9aa3b8;">"Jump"</label>
+                        <input type="number" min="1" max="12"
+                               prop:value=move || route_jump.get().to_string()
+                               on:input=move |ev| {
+                                   if let Ok(j) = event_target_value(&ev).parse::<i32>() {
+                                       route_jump.set(j.clamp(1, 12));
+                                   }
+                               }
+                               style="width:52px; padding:5px 6px; border-radius:5px; \
+                                      border:1px solid #2a3145; background:rgba(6,8,14,0.9); \
+                                      color:#e6ecf7; outline:none;" />
+                        <button on:click=on_route
+                                style="flex:1; padding:6px 8px; border:none; border-radius:5px; \
+                                       background:#2a6fae; color:#eef4ff; font-weight:600; \
+                                       cursor:pointer;">"Route"</button>
+                    </div>
+                    <div style="margin-top:6px; min-height:1em; color:#8fd0ff;">
+                        {move || route_status.get()}
+                    </div>
                 </div>
             </div>
             <div style="position:fixed; bottom:0; left:0; right:0; pointer-events:none; \

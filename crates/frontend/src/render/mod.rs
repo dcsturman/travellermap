@@ -23,7 +23,7 @@ mod worlds;
 
 use std::collections::HashMap;
 
-use tmap_core::dto::{Overlays, SectorData};
+use tmap_core::dto::{Overlays, RouteResult, SectorData};
 use wasm_bindgen::JsCast;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
@@ -60,6 +60,7 @@ pub fn draw(
     sector_index: &HashMap<(i32, i32), String>,
     view: ViewState,
     opts: RenderOptions,
+    route: Option<&RouteResult>,
 ) {
     let Some(ctx) = canvas
         .get_context("2d")
@@ -169,6 +170,11 @@ pub fn draw(
     // Dim sectors not flagged Official/Preserve/InReview (opt-in appearance).
     if opts.dim_unofficial {
         status::draw_dim_overlay(&c, &view, w, h, sectors);
+    }
+
+    // A computed jump route (from `/api/route`), highlighted over the map.
+    if let Some(r) = route {
+        routes::draw_jump_route(&c, &view, w, h, r);
     }
 
     // Compass labels last, on top of everything, at every zoom.

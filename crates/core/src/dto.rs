@@ -252,3 +252,45 @@ pub struct SearchResults {
     pub query: String,
     pub results: Vec<SearchResult>,
 }
+
+/// A jump-route request (mirrors the reference `RouteHandler` query params).
+/// `start`/`end` are `"Sector Name 0101"` strings the backend resolves to
+/// worlds; the algorithm itself works on resolved [`Coord`]s.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RouteRequest {
+    pub start: String,
+    pub end: String,
+    /// Jump range in parsecs (the ship's jump drive rating). Clamped 1..=12.
+    pub jump: i32,
+    pub milieu: String,
+}
+
+/// One stop along a computed jump route — a world the route passes through.
+/// Mirrors the reference `RouteStop` payload (name + location), plus the
+/// absolute [`Coord`] the client needs to draw the polyline directly.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RouteWaypoint {
+    pub name: String,
+    /// Four-digit hex label within its sector, e.g. `"0101"`.
+    pub hex: String,
+    /// Absolute world coordinate (parsec offsets), for client-side drawing.
+    pub coord: Coord,
+    /// Sector display name the world belongs to.
+    pub sector: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub uwp: String,
+    /// Travel zone (`"A"`/`"R"`/empty).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub zone: String,
+}
+
+/// The result of a jump-route search: an ordered list of waypoints from start
+/// to end, plus aggregate stats.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RouteResult {
+    pub waypoints: Vec<RouteWaypoint>,
+    /// Number of jumps taken (= `waypoints.len() - 1`).
+    pub jumps: usize,
+    /// Total path length in parsecs (sum of per-jump hex distances).
+    pub parsecs: i32,
+}
