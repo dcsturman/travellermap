@@ -265,10 +265,30 @@ async fn fetch_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T, Stri
 
 /// Fetch a computed jump route from the backend `/api/route` endpoint. `start`
 /// and `end` are `"Sector Name 0101"` strings; `jump` is the drive rating.
-async fn fetch_route(start: &str, end: &str, jump: i32, milieu: &str) -> Result<RouteResult, String> {
+async fn fetch_route(
+    start: &str,
+    end: &str,
+    jump: i32,
+    milieu: &str,
+    opts: (bool, bool, bool, bool),
+) -> Result<RouteResult, String> {
     let s = String::from(js_sys::encode_uri_component(start));
     let e = String::from(js_sys::encode_uri_component(end));
-    let url = format!("/api/route?start={s}&end={e}&jump={jump}&milieu={milieu}");
+    let mut url = format!("/api/route?start={s}&end={e}&jump={jump}&milieu={milieu}");
+    // (wild, im, nored, aok) — append only when set; the backend defaults false.
+    let (wild, im, nored, aok) = opts;
+    if wild {
+        url.push_str("&wild=true");
+    }
+    if im {
+        url.push_str("&im=true");
+    }
+    if nored {
+        url.push_str("&nored=true");
+    }
+    if aok {
+        url.push_str("&aok=true");
+    }
     fetch_json::<RouteResult>(&url).await
 }
 
@@ -323,6 +343,12 @@ fn App() -> impl IntoView {
     let route_start = RwSignal::new(String::new());
     let route_end = RwSignal::new(String::new());
     let route_jump = RwSignal::new(0i32); // 0 = none chosen yet (a J-N pill picks it)
+    // Route-finding option toggles (the reference's `routeOptions` checkboxes);
+    // `/api/route` accepts each as a flag. Off by default.
+    let route_wild = RwSignal::new(false); // stops must have gas giant or water (wilderness refuel)
+    let route_im = RwSignal::new(false); // stops must be Imperial member worlds
+    let route_nored = RwSignal::new(false); // avoid TAS Red Zones
+    let route_aok = RwSignal::new(false); // allow anomalies / calibration points as stops
 
     // World detail panel: the clicked world (overview-LOD until the on-demand
     // `?lod=full` fetch upgrades it), plus a per-sector full-LOD cache so a
@@ -927,8 +953,14 @@ fn App() -> impl IntoView {
         }
         set_route_status.set("Computing route…".into());
         let m = milieu.get_untracked();
+        let opts = (
+            route_wild.get_untracked(),
+            route_im.get_untracked(),
+            route_nored.get_untracked(),
+            route_aok.get_untracked(),
+        );
         spawn_local(async move {
-            match fetch_route(&s, &e, j, m).await {
+            match fetch_route(&s, &e, j, m, opts).await {
                 Ok(r) => {
                     // Summary + waypoint list render from `route` itself; clear
                     // the transient status line.
@@ -965,6 +997,24 @@ fn App() -> impl IntoView {
         let j = route_jump.get_untracked();
         if j > 0 {
             do_route(j);
+        }
+    };
+    // One route-option checkbox: flips its flag and (if a route is already
+    // computed) recomputes with the new constraint, like the reference.
+    let route_opt = move |sig: RwSignal<bool>, label: &'static str, title: &'static str| {
+        view! {
+            <label title=title
+                   style="display:flex; align-items:center; gap:7px; cursor:pointer; \
+                          padding:2px 0; font:12px system-ui,sans-serif; color:#333;">
+                <input type="checkbox" prop:checked=move || sig.get()
+                       on:change=move |ev| {
+                           sig.set(event_target_checked(&ev));
+                           let j = route_jump.get_untracked();
+                           if j > 0 { do_route(j); }
+                       }
+                       style="width:14px; height:14px; accent-color:#e32736; cursor:pointer; flex:none;" />
+                <span>{label}</span>
+            </label>
         }
     };
     // Copy the computed route to the clipboard — matches the reference
@@ -1205,8 +1255,7 @@ fn App() -> impl IntoView {
                     <div style="flex:none; display:flex; align-items:center; gap:6px; \
                                 border-bottom:1px solid #d8d8d8; margin-bottom:8px;">
                         <input type="text" placeholder="Start (type or click map)"
-                               prop:value=move || route_start.get()
-                               on:input=move |ev| route_start.set(event_target_value(&ev))
+                               bind:value=route_start
                                style="flex:1; min-width:0; border:none; outline:none; \
                                       background:transparent; color:#222; \
                                       font:16px system-ui,sans-serif; padding:7px 2px;" />
@@ -1217,8 +1266,7 @@ fn App() -> impl IntoView {
                     <div style="flex:none; display:flex; align-items:center; gap:6px; \
                                 border-bottom:1px solid #d8d8d8; margin-bottom:10px;">
                         <input type="text" placeholder="Destination (type or click map)"
-                               prop:value=move || route_end.get()
-                               on:input=move |ev| route_end.set(event_target_value(&ev))
+                               bind:value=route_end
                                style="flex:1; min-width:0; border:none; outline:none; \
                                       background:transparent; color:#222; \
                                       font:16px system-ui,sans-serif; padding:7px 2px;" />
@@ -1226,17 +1274,26 @@ fn App() -> impl IntoView {
                                 style="border:none; background:transparent; cursor:pointer; \
                                        font-size:16px; color:#444; padding:0 4px; line-height:1;">"⇅"</button>
                     </div>
-                    <div style="flex:none; display:flex; gap:6px;">
-                        {(1..=6).map(|n| view! {
-                            <button on:click=move |_| do_route(n)
-                                    style:background=move || if route_jump.get() == n { "#e32736" } else { "#fff" }
-                                    style:color=move || if route_jump.get() == n { "#fff" } else { "#333" }
-                                    style="flex:1; padding:0; line-height:28px; border:1px solid #ccc; \
-                                           border-radius:15px; cursor:pointer; \
-                                           font:600 13px system-ui,sans-serif;">
-                                {format!("J-{n}")}
-                            </button>
-                        }).collect_view()}
+                    <div style="flex:none; display:flex; gap:5px;">
+                        {[("J-1", 1), ("J-2", 2), ("J-3", 3), ("J-4", 4), ("J-5", 5), ("J-6", 6), ("H-1", 10)]
+                            .into_iter().map(|(label, n)| view! {
+                                <button on:click=move |_| do_route(n)
+                                        title=move || if n == 10 { "Calculate a Hop-1 (10 pc) route" } else { "" }
+                                        style:background=move || if route_jump.get() == n { "#e32736" } else { "#fff" }
+                                        style:color=move || if route_jump.get() == n { "#fff" } else { "#333" }
+                                        style="flex:1; padding:0; line-height:28px; border:1px solid #ccc; \
+                                               border-radius:14px; cursor:pointer; \
+                                               font:600 12px system-ui,sans-serif;">
+                                    {label}
+                                </button>
+                            }).collect_view()}
+                    </div>
+                    // Route-finding constraints (the reference's routeOptions).
+                    <div style="flex:none; margin-top:8px;">
+                        {route_opt(route_wild, "Require Wilderness Fueling", "Stops must have a gas giant or liquid water present")}
+                        {route_opt(route_im, "Only Imperial Worlds", "Stops must be member worlds of the Third Imperium")}
+                        {route_opt(route_nored, "Avoid Red Zones", "Stops must not be TAS Red Zone (restricted)")}
+                        {route_opt(route_aok, "Allow Anomalies / Calibration Points", "Allow stops at deep-space stations, calibration points, and other anomalies")}
                     </div>
                     <div style="flex:none; min-height:1em; color:#555; font-size:12px; \
                                 text-align:center; margin-top:6px;">

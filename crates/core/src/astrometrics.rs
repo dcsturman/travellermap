@@ -29,17 +29,29 @@ impl Coord {
 
     /// Hex distance (in parsecs) on the offset-hex grid.
     ///
-    /// Mirrors `Astrometrics.HexDistance`; the `ody` correction accounts for
-    /// odd/even column staggering.
+    /// Converts each offset coord (`x` = column, `y` = row) to cube coordinates
+    /// using the **same** column stagger as the renderer — even columns shifted
+    /// down ("even-q", matching [`crate`]'s `hex_parsec`) — then returns the cube
+    /// distance, which is exact and symmetric.
+    ///
+    /// We deliberately do **not** port `Astrometrics.HexDistance` directly: that
+    /// formula operates on the reference's *Reference-centric* absolute
+    /// coordinates, whose column parity is **flipped** relative to ours
+    /// (`Astrometrics.cs`: "even/odd column handling are opposite … since
+    /// Reference is in an odd hex 0140"). Applying it to our column-parity coords
+    /// undercounts column-crossing jumps by one in half the cases (e.g. it
+    /// returned 2 for a true distance-3 pair). The cube form agrees with the
+    /// reference's numbered `HexNeighbor` adjacency.
     pub fn hex_distance(self, other: Coord) -> i32 {
-        let dx = other.x - self.x;
-        let dy = other.y - self.y;
-        let adx = dx.abs();
-        let mut ody = dy + adx / 2;
-        if self.x % 2 == 0 && other.x % 2 != 0 {
-            ody += 1;
-        }
-        (adx - ody).max(ody.max(adx))
+        // even-q offset → cube. `x + (x mod 2)` is always even, so `/ 2` is exact.
+        let cube = |c: Coord| {
+            let q = c.x;
+            let r = c.y - (c.x + c.x.rem_euclid(2)) / 2;
+            (q, r, -q - r)
+        };
+        let (aq, ar, az) = cube(self);
+        let (bq, br, bz) = cube(other);
+        ((aq - bq).abs() + (ar - br).abs() + (az - bz).abs()) / 2
     }
 }
 
@@ -76,5 +88,21 @@ mod tests {
     #[test]
     fn adjacent_hexes_are_one_apart() {
         assert_eq!(Coord::new(1, 1).hex_distance(Coord::new(2, 1)), 1);
+    }
+
+    #[test]
+    fn column_crossing_distance_is_correct() {
+        // Theev (col 21) → Noricum (col 20), two rows down: 3 hops on the map
+        // (down-left then down twice), not 2. The old reference-parity port
+        // undercounted this to 2, letting a J-3 leg into a J-2 route.
+        assert_eq!(Coord::new(21, 16).hex_distance(Coord::new(20, 18)), 3);
+        // Symmetric.
+        assert_eq!(Coord::new(20, 18).hex_distance(Coord::new(21, 16)), 3);
+        // Same column is just the row delta.
+        assert_eq!(Coord::new(20, 18).hex_distance(Coord::new(20, 20)), 2);
+        // The six immediate neighbours of an odd column are all distance 1.
+        for n in [(20, 16), (20, 15), (21, 15), (22, 15), (22, 16), (21, 17)] {
+            assert_eq!(Coord::new(21, 16).hex_distance(Coord::new(n.0, n.1)), 1, "{n:?}");
+        }
     }
 }
