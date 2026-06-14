@@ -7,10 +7,11 @@ repository.workspace = true
 description = "Leptos/WASM client that renders the Traveller map in the browser."
 
 [features]
-# Non-reference, dev-only: double-click a system → solar-system image popup
-# (served by the backend's matching `callisto` endpoint). Marker only — no extra
-# deps; gates the dblclick handler + modal so a default build has neither. OFF by
-# default; run with `trunk serve --features callisto` (and the backend likewise).
+# Non-reference, dev-only: double-click a system → solar-system image popup. The
+# image comes from the external worldgen service (travellermap has no worldgen
+# dependency); this marker feature — no extra deps — gates the dblclick handler +
+# modal so a default build never has them and never calls the external service.
+# OFF by default; run with `trunk serve --features callisto`.
 callisto = []
 
 [dependencies]

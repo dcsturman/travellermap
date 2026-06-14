@@ -157,21 +157,26 @@ Features that go **beyond** travellermap.com, gated behind a Cargo feature that 
 **OFF by default and never committed enabled** (default builds, CI, and shipped
 artifacts stay clean). Build/run locally with `--features <name>` on both crates.
 
-- [x] **Callisto — double-click a system → solar-system view (DONE 2026-06-13).**
-  Double-clicking a world pops up its **generated solar system**, rendered by the
-  `../worldgen` crate. Gated behind feature **`callisto`**. *Generation is on the
-  **backend*** (native worldgen, `default-features=false`): `GET
-  /api/system/{milieu}/{sector}/{hex}` looks up the world, derives `worldgen`
-  constraints from its T5 data (stellar roster → `StarSpec` via a ported
-  `parse_stellar`; PBG belts/gas-giants; `W` worlds count → extra planets;
-  main-world UWP), seeds deterministically from `system_seed(sector, hex)`, and
-  returns a PNG (422 on partial/contradictory UWP, 404 if no world). The frontend
-  `callisto` feature is a **marker only** (no worldgen in wasm — bundle stays lean):
-  an `on:dblclick` handler opens a modal `<img>` pointed at the endpoint, with
-  Print / Download PNG / Close. Files: `crates/backend/src/system_gen.rs`,
-  `get_system` + cfg-gated route in `main.rs`; `crates/frontend/src/main.rs`
-  (`system_view` signal, dblclick, modal). Chose backend over WASM to keep frontend
-  iteration fast and dodge the getrandom/tiny-skia wasm edges.
+- [x] **Callisto — double-click a system → solar-system view (DONE 2026-06-13;
+  re-architected to an external service 2026-06-14).** Double-clicking a world pops
+  up its **generated solar system** as a high-res zoom/pan image. Gated behind the
+  frontend-only feature **`callisto`** (OFF by default). **travellermap has no
+  dependency on worldgen at all** — the image is produced by the external worldgen
+  service `https://tools.callistoflight.com/system?sector=&hex=&name=&uwp=&pbg=&
+  stellar=&worlds=&scale=2.0` (returns a 3200×1800 PNG; `image/png`, permissive
+  CORS, 422 on a partial/contradictory UWP). The frontend already holds the world's
+  T5 fields (from the detail panel), so `on:dblclick` builds that URL, **fetches the
+  PNG as a blob** (so the popup opens only on a real image — an unreachable service
+  or 422 is a silent no-op), and shows it in a cursor-anchored zoom (wheel) / pan
+  (drag) viewer with Reset / Print / Download / Close (Esc closes). The blob object
+  URL backs the `<img>` + cross-origin Download; Print uses the absolute service
+  URL. Over-a-world cursor hint (arrow vs grab), bounded to visible sectors.
+  Files: `crates/frontend/src/main.rs` (`SYSTEM_SERVICE` const, `system_view`,
+  dblclick, modal). *History:* first built backend-side with worldgen as an optional
+  native dep, but even an optional path/git dep must be **resolved** by Cargo, so it
+  broke standalone/CI builds — hence the move to a standalone HTTP service the client
+  calls (and which can scale/deploy independently). The service spec is in
+  `worldgen/docs/library-integration.md` consumers' notes.
 
 ### Rendering / visual parity
 

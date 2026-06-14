@@ -33,10 +33,6 @@ mod route;
 mod search;
 use search::SearchEntry;
 
-// Non-reference, dev-only solar-system image endpoint (worldgen). See system_gen.rs.
-#[cfg(feature = "callisto")]
-mod system_gen;
-
 /// Macro-overlay vector files, grouped by kind (mirrors the reference
 /// `RenderContext` border/rift/route file lists).
 const BORDER_FILES: &[&str] = &[
@@ -269,14 +265,7 @@ async fn main() {
         .route("/api/route", get(get_route))
         .route("/api/sector/{milieu}/{name}", get(get_sector))
         .route("/api/res/{*path}", get(get_res))
-        .route("/api/admin/flush", post(flush_cache));
-
-    // Callisto: double-click a system → generated solar-system PNG. Registered
-    // only when the (dev-only, OFF-by-default) feature is built in.
-    #[cfg(feature = "callisto")]
-    let app = app.route("/api/system/{milieu}/{sector}/{hex}", get(get_system));
-
-    let app = app
+        .route("/api/admin/flush", post(flush_cache))
         // Permissive CORS is a dev convenience (Trunk serves the wasm app from
         // a different origin). Tighten before any real deployment.
         .layer(CorsLayer::permissive())
@@ -544,35 +533,6 @@ async fn get_sector(
     serve_cached(&state.response_cache, &key, &headers, || {
         build_sector_bytes(&state, &milieu, &name, &q.lod)
     })
-}
-
-/// `GET /api/system/{milieu}/{sector}/{hex}` — a generated solar-system PNG for
-/// one world (Callisto, dev-only). Looks the world up, derives system
-/// constraints from its T5 data, and renders deterministically via `worldgen`.
-#[cfg(feature = "callisto")]
-async fn get_system(
-    Path((milieu, sector, hex)): Path<(String, String, String)>,
-    State(state): State<AppState>,
-) -> Response {
-    if !is_safe_segment(&milieu) || !is_safe_segment(&sector) || !is_safe_segment(&hex) {
-        return (StatusCode::BAD_REQUEST, "invalid system path").into_response();
-    }
-    let Some(world) = system_gen::lookup_world(&state, &milieu, &sector, &hex) else {
-        return (StatusCode::NOT_FOUND, format!("no world at {sector} {hex}")).into_response();
-    };
-    match system_gen::world_to_png(&sector, &world) {
-        Ok(png) => (
-            [
-                (header::CONTENT_TYPE, "image/png"),
-                (header::CACHE_CONTROL, "no-cache"),
-            ],
-            png,
-        )
-            .into_response(),
-        // A partial/contradictory main-world UWP is a property of the data, not
-        // a server fault → 422 with the worldgen reason for the popup to show.
-        Err(e) => (StatusCode::UNPROCESSABLE_ENTITY, e).into_response(),
-    }
 }
 
 /// Resolve a sector's data file and parse its worlds. The index's `DataFile` is
