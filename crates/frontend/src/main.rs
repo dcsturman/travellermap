@@ -81,6 +81,47 @@ fn open_print_html(html: &str) {
     let _ = win().open_with_url_and_target(&url, "_blank");
 }
 
+/// `window.location.origin + path` — absolute URL for an `/api/...` path. Read
+/// via `Reflect` so we needn't enable the web-sys `Location` feature (only the
+/// callisto print path, which renders in an opaque-origin blob doc where
+/// relative URLs don't resolve, needs this).
+#[cfg(feature = "callisto")]
+fn absolute_url(path: &str) -> String {
+    let origin = js_sys::Reflect::get(&win(), &wasm_bindgen::JsValue::from_str("location"))
+        .ok()
+        .and_then(|loc| js_sys::Reflect::get(&loc, &wasm_bindgen::JsValue::from_str("origin")).ok())
+        .and_then(|o| o.as_string())
+        .unwrap_or_default();
+    format!("{origin}{path}")
+}
+
+/// Trigger a browser download of a same-origin URL as a file (`<a download>`).
+#[cfg(feature = "callisto")]
+fn download_url(url: &str, filename: &str) {
+    let Some(doc) = win().document() else { return };
+    let Ok(a) = doc.create_element("a") else { return };
+    let _ = a.set_attribute("href", url);
+    let _ = a.set_attribute("download", filename);
+    if let Ok(a) = a.dyn_into::<web_sys::HtmlElement>() {
+        a.click();
+    }
+}
+
+/// Open a print window for a remote image URL (embedded in a self-printing doc).
+#[cfg(feature = "callisto")]
+fn print_image_url(url: &str, title: &str) {
+    let abs = absolute_url(url);
+    let html = format!(
+        "<!DOCTYPE html><html><head><meta charset=utf-8><title>{title}</title>\
+         <style>body{{margin:0;padding:18px;text-align:center;font:14px system-ui,sans-serif;color:#000;}}\
+           h1{{font-size:18px;margin:0 0 12px;}}img{{max-width:100%;}}\
+           @media print{{body{{padding:0;}}}}</style></head><body>\
+         <h1>{title}</h1><img src=\"{abs}\" onload=\"window.print()\">\
+         </body></html>"
+    );
+    open_print_html(&html);
+}
+
 /// Trigger a browser download of a canvas as a PNG (via a data-URL `<a download>`).
 fn download_canvas_png(canvas: &HtmlCanvasElement, filename: &str) {
     let Ok(url) = canvas.to_data_url_with_type("image/png") else { return };
@@ -227,6 +268,11 @@ fn App() -> impl IntoView {
     let (view, set_view) = signal(None::<ViewState>);
     let (results, set_results) = signal(Vec::<SearchResult>::new());
     let drag = RwSignal::new(None::<(f64, f64)>);
+    // True while the cursor hovers directly over a world (callisto only): flips
+    // the map cursor to an arrow to signal it's clickable / double-clickable.
+    // Stays false in non-callisto builds (never written), so the cursor is
+    // unchanged there.
+    let hover_world = RwSignal::new(false);
     // Canvas buffer size (device px); changes on mount and window resize.
     let (canvas_size, set_canvas_size) = signal((0u32, 0u32));
 
@@ -275,6 +321,19 @@ fn App() -> impl IntoView {
     let jumpmap =
         RwSignal::new(None::<((i32, i32), String, tmap_core::astrometrics::Coord, i32)>);
     let jumpmap_ref = NodeRef::<leptos::html::Canvas>::new();
+    // Callisto (dev-only): the solar-system image popup for a double-clicked
+    // world — `(image url, title)`. The URL points at the backend's `/api/system`
+    // endpoint (built only under `--features callisto` on both sides). The popup
+    // is a zoom/pan viewer (the render is high-res); `sys_zoom`/`sys_pan` hold the
+    // view transform and `sys_drag` the in-progress pan `(startX, startY, panX, panY)`.
+    #[cfg(feature = "callisto")]
+    let system_view = RwSignal::new(None::<(String, String)>);
+    #[cfg(feature = "callisto")]
+    let sys_zoom = RwSignal::new(1.0_f64);
+    #[cfg(feature = "callisto")]
+    let sys_pan = RwSignal::new((0.0_f64, 0.0_f64));
+    #[cfg(feature = "callisto")]
+    let sys_drag = RwSignal::new(None::<(f64, f64, f64, f64)>);
     let (route_status, set_route_status) = signal(String::new());
     // Distinguish a click (set endpoint) from a drag (pan): remember press origin.
     let down_pos = RwSignal::new(None::<(f64, f64)>);
@@ -357,6 +416,20 @@ fn App() -> impl IntoView {
         .add_event_listener_with_callback("resize", resize_cb.as_ref().unchecked_ref())
         .ok();
     resize_cb.forget(); // lives for the app's lifetime
+
+    // Esc dismisses the callisto solar-system popup (back to the map view).
+    #[cfg(feature = "callisto")]
+    {
+        let keydown_cb = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |ev: web_sys::KeyboardEvent| {
+            if ev.key() == "Escape" && system_view.get_untracked().is_some() {
+                system_view.set(None);
+            }
+        });
+        win()
+            .add_event_listener_with_callback("keydown", keydown_cb.as_ref().unchecked_ref())
+            .ok();
+        keydown_cb.forget();
+    }
 
     // 1) Load the universe index for the active milieu — and reload it whenever
     //    the milieu changes. Reading `milieu.get()` subscribes this effect; on a
@@ -549,17 +622,58 @@ fn App() -> impl IntoView {
         drag.set(Some(p));
         down_pos.set(Some(p));
     };
+    // Is the cursor directly over a world disc? (~0.4 parsec, tighter than the
+    // click tolerance so the arrow means "on a world", not "near one"). Only
+    // meaningful once worlds are individually drawn (detail zoom).
+    #[cfg(feature = "callisto")]
+    let world_under_cursor = move |px: (f64, f64)| -> bool {
+        let Some(cv) = canvas_ref.get_untracked() else { return false };
+        let (w, h) = logical_dims(&cv);
+        let Some(v) = view.get_untracked() else { return false };
+        if v.scale < render::WORLD_MIN_SCALE {
+            return false;
+        }
+        let target = v.to_parsec(w, h, px);
+        const R2: f64 = 0.4 * 0.4;
+        let mut over = false;
+        // Only scan sectors overlapping the viewport (not everything loaded), so
+        // the per-mousemove cost is bounded by what's on screen.
+        sectors.with_value(|loaded| {
+            'outer: for sc in render::visible_sectors(&v, w, h) {
+                let Some(s) = loaded.get(&sc) else { continue };
+                let Some(loc) = s.info.location else { continue };
+                for wld in &s.worlds {
+                    let Some((col, row)) = parse_hex(&wld.hex) else { continue };
+                    let (wx, wy) = render::sector_hex_parsec(loc.x, loc.y, col, row);
+                    if (wx - target.0).powi(2) + (wy - target.1).powi(2) <= R2 {
+                        over = true;
+                        break 'outer;
+                    }
+                }
+            }
+        });
+        over
+    };
     let on_move = move |ev: web_sys::MouseEvent| {
-        let Some((lx, ly)) = drag.get_untracked() else {
-            return;
-        };
         let (x, y) = (ev.client_x() as f64, ev.client_y() as f64);
-        drag.set(Some((x, y)));
-        if let Some(v) = view.get_untracked() {
-            set_view.set(Some(ViewState {
-                center: (v.center.0 - (x - lx) / v.scale, v.center.1 - (y - ly) / v.scale),
-                ..v
-            }));
+        if let Some((lx, ly)) = drag.get_untracked() {
+            drag.set(Some((x, y)));
+            if let Some(v) = view.get_untracked() {
+                set_view.set(Some(ViewState {
+                    center: (v.center.0 - (x - lx) / v.scale, v.center.1 - (y - ly) / v.scale),
+                    ..v
+                }));
+            }
+            return;
+        }
+        // Not dragging: track whether we're over a world so the cursor can hint
+        // clickability (callisto only — the double-click solar-system feature).
+        #[cfg(feature = "callisto")]
+        {
+            let over = world_under_cursor((x, y));
+            if hover_world.get_untracked() != over {
+                hover_world.set(over);
+            }
         }
     };
     // Click-to-set: hit-test a canvas click to the nearest loaded world (within
@@ -700,6 +814,38 @@ fn App() -> impl IntoView {
         drag.set(None);
         down_pos.set(None);
     };
+    // Double-click a world → solar-system image popup (Callisto, dev-only). The
+    // preceding single-clicks already selected the world (or cleared the
+    // selection over empty space), so reuse `selected` rather than re-hit-testing.
+    // We fetch the image first and open the popup only on success, so a backend
+    // without the matching callisto endpoint (404) just does nothing.
+    #[cfg(feature = "callisto")]
+    let on_dblclick = move |_ev: web_sys::MouseEvent| {
+        if route_open.get_untracked() {
+            return; // route-planning mode owns clicks
+        }
+        let Some(sw) = selected.get_untracked() else { return };
+        let m = milieu.get_untracked();
+        let enc = String::from(js_sys::encode_uri_component(&sw.sector_name));
+        let url = format!("/api/system/{m}/{enc}/{}", sw.world.hex);
+        let name = if sw.world.name.is_empty() { sw.world.hex.clone() } else { sw.world.name.clone() };
+        let title = format!("{name} — {} {}", sw.sector_name, sw.world.hex);
+        spawn_local(async move {
+            // Verify the backend actually produced an image before opening the
+            // popup, so a backend without the callisto endpoint (404) or an
+            // unrenderable world (422) is a silent no-op. The `<img>` then loads
+            // the same (now browser-cached) URL.
+            let Ok(resp) = gloo_net::http::Request::get(&url).send().await else { return };
+            if !resp.ok() {
+                return;
+            }
+            sys_zoom.set(1.0);
+            sys_pan.set((0.0, 0.0));
+            system_view.set(Some((url, title)));
+        });
+    };
+    #[cfg(not(feature = "callisto"))]
+    let on_dblclick = move |_ev: web_sys::MouseEvent| {};
 
     // --- search ---
     let on_search = move |ev: web_sys::Event| {
@@ -830,16 +976,120 @@ fn App() -> impl IntoView {
         panel.set(0);
     };
 
+    // Callisto solar-system popup (dev-only). Built as an `AnyView` so the main
+    // `view!` embeds `{system_modal}` unconditionally; without the feature it's
+    // nothing.
+    #[cfg(feature = "callisto")]
+    let close_system = move || system_view.set(None);
+    #[cfg(feature = "callisto")]
+    let reset_sys = move || {
+        sys_zoom.set(1.0);
+        sys_pan.set((0.0, 0.0));
+    };
+    // Wheel zoom, anchored on the cursor so the point under it stays put.
+    #[cfg(feature = "callisto")]
+    let on_sys_wheel = move |ev: web_sys::WheelEvent| {
+        ev.prevent_default();
+        let z = sys_zoom.get_untracked();
+        let nz = (z * if ev.delta_y() < 0.0 { 1.15 } else { 1.0 / 1.15 }).clamp(1.0, 8.0);
+        if (nz - z).abs() < 1e-6 {
+            return;
+        }
+        // Cursor position relative to the viewport's center (transform-origin).
+        let (cx, cy) = ev
+            .current_target()
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+            .map(|el| {
+                let r = el.get_bounding_client_rect();
+                (ev.client_x() as f64 - (r.x() + r.width() / 2.0), ev.client_y() as f64 - (r.y() + r.height() / 2.0))
+            })
+            .unwrap_or((0.0, 0.0));
+        if nz <= 1.0 + 1e-6 {
+            sys_pan.set((0.0, 0.0)); // fully out → recenter
+        } else {
+            let (px, py) = sys_pan.get_untracked();
+            sys_pan.set((cx - nz * (cx - px) / z, cy - nz * (cy - py) / z));
+        }
+        sys_zoom.set(nz);
+    };
+    #[cfg(feature = "callisto")]
+    let on_sys_down = move |ev: web_sys::MouseEvent| {
+        ev.prevent_default();
+        let (px, py) = sys_pan.get_untracked();
+        sys_drag.set(Some((ev.client_x() as f64, ev.client_y() as f64, px, py)));
+    };
+    #[cfg(feature = "callisto")]
+    let on_sys_move = move |ev: web_sys::MouseEvent| {
+        if let Some((sx, sy, opx, opy)) = sys_drag.get_untracked() {
+            sys_pan.set((opx + ev.client_x() as f64 - sx, opy + ev.client_y() as f64 - sy));
+        }
+    };
+    #[cfg(feature = "callisto")]
+    let on_sys_up = move |_ev: web_sys::MouseEvent| sys_drag.set(None);
+
+    // A full-screen "zoom into the world" overlay: the high-res system render in
+    // a zoom (wheel) / pan (drag) viewport, with Reset / Print / Download / Close.
+    #[cfg(feature = "callisto")]
+    let btn = "padding:6px 12px; border-radius:15px; cursor:pointer; border:1px solid #2a3145; \
+               background:rgba(40,44,58,0.7); color:#cdd5e6; font:600 12px system-ui;";
+    #[cfg(feature = "callisto")]
+    let system_modal = view! {
+        <Show when=move || system_view.get().is_some()>
+            <div style="position:fixed; inset:0; z-index:30; display:flex; flex-direction:column; \
+                        background:rgba(0,0,0,0.9);">
+                <div style="flex:none; display:flex; align-items:center; gap:8px; padding:10px 14px;">
+                    <span style="flex:1; min-width:0; font:700 15px system-ui; color:#fff; \
+                                 overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                        {move || system_view.get().map(|(_, t)| t).unwrap_or_default()}
+                    </span>
+                    <button style=btn on:click=move |_| reset_sys()>"⟳  Reset"</button>
+                    <button style=btn on:click=move |_| {
+                                if let Some((u, t)) = system_view.get_untracked() { print_image_url(&u, &t); }
+                            }>"🖨  Print"</button>
+                    <button style=btn on:click=move |_| {
+                                if let Some((u, t)) = system_view.get_untracked() { download_url(&u, &format!("{t}.png")); }
+                            }>"⬇  Download"</button>
+                    <span on:click=move |_| close_system()
+                          style="cursor:pointer; color:#fff; font-size:24px; line-height:1; padding:0 6px;">"✕"</span>
+                </div>
+                <div on:wheel=on_sys_wheel on:mousedown=on_sys_down on:mousemove=on_sys_move
+                     on:mouseup=on_sys_up on:mouseleave=on_sys_up
+                     style="flex:1; overflow:hidden; display:flex; align-items:center; justify-content:center; \
+                            touch-action:none;"
+                     style:cursor=move || if sys_drag.get().is_some() { "grabbing" } else { "grab" }>
+                    <img src=move || system_view.get().map(|(u, _)| u).unwrap_or_default()
+                         draggable="false"
+                         style="max-width:98%; max-height:98%; transform-origin:center center; \
+                                user-select:none; -webkit-user-drag:none;"
+                         style:transform=move || {
+                             let z = sys_zoom.get();
+                             let (px, py) = sys_pan.get();
+                             format!("translate({px}px, {py}px) scale({z})")
+                         } />
+                </div>
+            </div>
+        </Show>
+    }
+    .into_any();
+    #[cfg(not(feature = "callisto"))]
+    let system_modal = ().into_any();
+
     view! {
         <main style="margin:0; padding:0; overflow:hidden; background:#000;">
             <canvas node_ref=canvas_ref
                     style="position:fixed; top:0; left:0; width:100vw; height:100vh; \
                            display:block; touch-action:none;"
-                    style:cursor=move || if route_open.get() { "crosshair" } else { "grab" }
+                    style:cursor=move || {
+                        if route_open.get() { "crosshair" }
+                        else if drag.get().is_some() { "grabbing" }
+                        else if hover_world.get() { "default" } // over a world (callisto) → clickable
+                        else { "grab" }
+                    }
                     on:mousedown=on_down
                     on:mousemove=on_move
                     on:mouseup=on_up
                     on:mouseleave=on_leave
+                    on:dblclick=on_dblclick
                     on:wheel=on_wheel></canvas>
             <div style="position:fixed; top:10px; left:12px; width:320px; \
                         font:14px system-ui,sans-serif; color:#cfd6e6;">
@@ -1103,6 +1353,7 @@ fn App() -> impl IntoView {
                     </div>
                 </div>
             </Show>
+            {system_modal}
             // --- bottom pane (mirrors the reference #bottom-pane): red stripe,
             //     the per-sector data-source credit (or Mongoose copyright) on the
             //     left, the TRAVELLER® wordmark on the right. ---

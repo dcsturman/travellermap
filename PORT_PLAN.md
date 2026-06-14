@@ -151,6 +151,28 @@ All remaining perf work in one place. Tooling is in hand (frame-timing HUD, vege
 
 Grouped by theme. Within each, the load-bearing/foundational items come first.
 
+### Non-reference extensions (experimental, feature-gated)
+
+Features that go **beyond** travellermap.com, gated behind a Cargo feature that is
+**OFF by default and never committed enabled** (default builds, CI, and shipped
+artifacts stay clean). Build/run locally with `--features <name>` on both crates.
+
+- [x] **Callisto — double-click a system → solar-system view (DONE 2026-06-13).**
+  Double-clicking a world pops up its **generated solar system**, rendered by the
+  `../worldgen` crate. Gated behind feature **`callisto`**. *Generation is on the
+  **backend*** (native worldgen, `default-features=false`): `GET
+  /api/system/{milieu}/{sector}/{hex}` looks up the world, derives `worldgen`
+  constraints from its T5 data (stellar roster → `StarSpec` via a ported
+  `parse_stellar`; PBG belts/gas-giants; `W` worlds count → extra planets;
+  main-world UWP), seeds deterministically from `system_seed(sector, hex)`, and
+  returns a PNG (422 on partial/contradictory UWP, 404 if no world). The frontend
+  `callisto` feature is a **marker only** (no worldgen in wasm — bundle stays lean):
+  an `on:dblclick` handler opens a modal `<img>` pointed at the endpoint, with
+  Print / Download PNG / Close. Files: `crates/backend/src/system_gen.rs`,
+  `get_system` + cfg-gated route in `main.rs`; `crates/frontend/src/main.rs`
+  (`system_view` signal, dblclick, modal). Chose backend over WASM to keep frontend
+  iteration fast and dodge the getrandom/tiny-skia wasm edges.
+
 ### Rendering / visual parity
 
 The remaining gaps vs. travellermap.com after the Phase 10 foundational pass.
