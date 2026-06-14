@@ -9,6 +9,39 @@
 pub const SECTOR_WIDTH: i32 = 32;
 /// Sector height in parsecs (hex rows).
 pub const SECTOR_HEIGHT: i32 = 40;
+/// Subsector dimensions in parsecs (a sector is 4×4 subsectors).
+pub const SUBSECTOR_WIDTH: i32 = 8;
+pub const SUBSECTOR_HEIGHT: i32 = 10;
+
+/// Reference hex (`Astrometrics.ReferenceHex` = column 01, row 40). World-space
+/// `(x, y)` is measured relative to it, so the Reference world sits at origin.
+pub const REFERENCE_HEX_X: i32 = 1;
+pub const REFERENCE_HEX_Y: i32 = 40;
+
+/// `(sector_x, sector_y, hex_x, hex_y)` → world-space `(x, y)`.
+///
+/// Port of `Astrometrics.LocationToCoordinates`: absolute parsec offset from the
+/// Reference world. Used by the `/api/coordinates` compatibility endpoint.
+pub fn location_to_coordinates(sx: i32, sy: i32, hx: i32, hy: i32) -> (i32, i32) {
+    let x = sx * SECTOR_WIDTH + (hx - REFERENCE_HEX_X);
+    let y = sy * SECTOR_HEIGHT + (hy - REFERENCE_HEX_Y);
+    (x, y)
+}
+
+/// World-space `(x, y)` → `(sector_x, sector_y, hex_x, hex_y)`.
+///
+/// Port of `Astrometrics.CoordinatesToLocation` (the inverse of
+/// [`location_to_coordinates`]); the floor-division offsets handle negative
+/// coordinates so a world always maps into a 1-based hex of the correct sector.
+pub fn coordinates_to_location(x: i32, y: i32) -> (i32, i32, i32, i32) {
+    let x = x + REFERENCE_HEX_X - 1;
+    let y = y + REFERENCE_HEX_Y - 1;
+    let sx = (x - if x < 0 { SECTOR_WIDTH - 1 } else { 0 }) / SECTOR_WIDTH;
+    let sy = (y - if y < 0 { SECTOR_HEIGHT - 1 } else { 0 }) / SECTOR_HEIGHT;
+    let hx = x - sx * SECTOR_WIDTH + 1;
+    let hy = y - sy * SECTOR_HEIGHT + 1;
+    (sx, sy, hx, hy)
+}
 
 /// Horizontal spacing between hex centers, `cos(pi/6)`.
 pub const PARSEC_SCALE_X: f32 = 0.866_025_4;
@@ -88,6 +121,18 @@ mod tests {
     #[test]
     fn adjacent_hexes_are_one_apart() {
         assert_eq!(Coord::new(1, 1).hex_distance(Coord::new(2, 1)), 1);
+    }
+
+    #[test]
+    fn coordinates_match_reference() {
+        // Spinward Marches sits at grid (-4,-1); Regina is hex 1910. The live
+        // `/api/coordinates?sector=Spinward Marches&hex=1910` returns these.
+        assert_eq!(location_to_coordinates(-4, -1, 19, 10), (-110, -70));
+        // Round-trips back to the same sector/hex.
+        assert_eq!(coordinates_to_location(-110, -70), (-4, -1, 19, 10));
+        // Reference world itself is the world-space origin.
+        assert_eq!(location_to_coordinates(0, 0, 1, 40), (0, 0));
+        assert_eq!(coordinates_to_location(0, 0), (0, 0, 1, 40));
     }
 
     #[test]

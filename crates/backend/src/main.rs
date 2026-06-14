@@ -29,6 +29,7 @@ use tmap_core::{
 };
 use tower_http::cors::CorsLayer;
 
+mod compat;
 mod route;
 mod search;
 use search::SearchEntry;
@@ -45,7 +46,7 @@ const ROUTE_FILES: &[&str] = &["J5Route", "J4Route", "CoreRoute"];
 #[derive(Clone)]
 struct AppState {
     /// Root of the shared `res/` data tree (the system of record).
-    res_dir: PathBuf,
+    pub(crate) res_dir: PathBuf,
     /// Lazily-built, cached per-milieu sector index (name → grid coords).
     universe_cache: Arc<Mutex<HashMap<String, Arc<Universe>>>>,
     /// Macro overlays, parsed once on first request (charted-space, milieu-independent).
@@ -123,7 +124,7 @@ fn build_world_labels(res_dir: &FsPath) -> Vec<WorldLabel> {
 impl AppState {
     /// The sector index for a milieu, building and caching it on first use by
     /// scanning `res/Sectors/{milieu}/*.xml`.
-    fn universe(&self, milieu: &str) -> Result<Arc<Universe>, (StatusCode, String)> {
+    pub(crate) fn universe(&self, milieu: &str) -> Result<Arc<Universe>, (StatusCode, String)> {
         if !is_safe_segment(milieu) {
             return Err((StatusCode::BAD_REQUEST, "invalid milieu".into()));
         }
@@ -195,7 +196,7 @@ impl AppState {
 /// Read a file as text, tolerating non-UTF-8 sector data. Tries UTF-8, then
 /// falls back to Latin-1 (every byte → a code point; matches the reference,
 /// which reads CP1252) so legacy `.sec` files don't fail.
-fn read_text(path: impl AsRef<FsPath>) -> std::io::Result<String> {
+pub(crate) fn read_text(path: impl AsRef<FsPath>) -> std::io::Result<String> {
     let bytes = std::fs::read(path)?;
     Ok(String::from_utf8(bytes)
         .unwrap_or_else(|e| e.into_bytes().iter().map(|&b| b as char).collect()))
@@ -264,6 +265,11 @@ async fn main() {
         .route("/api/search", get(get_search))
         .route("/api/route", get(get_route))
         .route("/api/sector/{milieu}/{name}", get(get_sector))
+        // Public-API compatibility layer (documented URLs + PascalCase JSON).
+        .route("/api/coordinates", get(compat::get_coordinates))
+        .route("/api/milieux", get(compat::get_milieux))
+        .route("/t5ss/allegiances", get(compat::get_allegiances))
+        .route("/t5ss/sophonts", get(compat::get_sophonts))
         .route("/api/res/{*path}", get(get_res))
         .route("/api/admin/flush", post(flush_cache))
         // Permissive CORS is a dev convenience (Trunk serves the wasm app from
@@ -583,7 +589,7 @@ pub(crate) fn resolve_and_parse_worlds(
 }
 
 /// Parse + assemble a sector and serialize it (the cache-miss path).
-fn build_sector_bytes(
+pub(crate) fn build_sector_bytes(
     state: &AppState,
     milieu: &str,
     name: &str,
@@ -736,7 +742,7 @@ fn is_safe_segment(s: &str) -> bool {
 mod tests {
     use super::*;
 
-    fn test_state() -> AppState {
+    pub(crate) fn test_state() -> AppState {
         // `res/` is at the workspace root, two levels up from this crate.
         let res_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../res");
         AppState {
