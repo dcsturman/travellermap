@@ -1870,10 +1870,12 @@ name = "tmap-backend"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "http-body-util",
  "serde",
  "serde_json",
  "tmap-core",
  "tokio",
+ "tower",
  "tower-http",
 ]
 

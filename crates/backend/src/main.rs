@@ -33,6 +33,8 @@ use tmap_core::{
 use tower_http::cors::CorsLayer;
 
 mod compat;
+#[cfg(test)]
+mod compat_suite;
 mod route;
 mod search;
 use search::SearchEntry;
@@ -245,23 +247,25 @@ fn load_universe(res_dir: &FsPath, milieu: &str) -> Universe {
     }
 }
 
-#[tokio::main]
-async fn main() {
-    // `res/` lives at the workspace root; override with TMAP_RES_DIR if needed.
-    let res_dir = std::env::var("TMAP_RES_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("res"));
-    let state = AppState {
-        res_dir,
-        universe_cache: Arc::new(Mutex::new(HashMap::new())),
-        overlays: Arc::new(OnceLock::new()),
-        search_cache: Arc::new(Mutex::new(HashMap::new())),
-        response_cache: Arc::new(Mutex::new(HashMap::new())),
-        region_cache: Arc::new(Mutex::new(HashMap::new())),
-        route_cache: Arc::new(Mutex::new(HashMap::new())),
-    };
+impl AppState {
+    /// Build a fresh state rooted at `res_dir`, with all caches empty.
+    pub(crate) fn new(res_dir: PathBuf) -> Self {
+        AppState {
+            res_dir,
+            universe_cache: Arc::new(Mutex::new(HashMap::new())),
+            overlays: Arc::new(OnceLock::new()),
+            search_cache: Arc::new(Mutex::new(HashMap::new())),
+            response_cache: Arc::new(Mutex::new(HashMap::new())),
+            region_cache: Arc::new(Mutex::new(HashMap::new())),
+            route_cache: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
 
-    let app = Router::new()
+/// Assemble the application router. Shared by `main` and the compatibility test
+/// suite (`compat_suite`), so tests exercise the exact routing/handlers we ship.
+pub(crate) fn build_router(state: AppState) -> Router {
+    Router::new()
         .route("/api/health", get(health))
         .route("/api/universe", get(get_universe))
         .route("/api/overlays", get(get_overlays))
@@ -278,7 +282,16 @@ async fn main() {
         // Permissive CORS is a dev convenience (Trunk serves the wasm app from
         // a different origin). Tighten before any real deployment.
         .layer(CorsLayer::permissive())
-        .with_state(state);
+        .with_state(state)
+}
+
+#[tokio::main]
+async fn main() {
+    // `res/` lives at the workspace root; override with TMAP_RES_DIR if needed.
+    let res_dir = std::env::var("TMAP_RES_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("res"));
+    let app = build_router(AppState::new(res_dir));
 
     let addr = "127.0.0.1:3000";
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
@@ -792,16 +805,7 @@ mod tests {
 
     pub(crate) fn test_state() -> AppState {
         // `res/` is at the workspace root, two levels up from this crate.
-        let res_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../res");
-        AppState {
-            res_dir,
-            universe_cache: Arc::new(Mutex::new(HashMap::new())),
-            overlays: Arc::new(OnceLock::new()),
-            search_cache: Arc::new(Mutex::new(HashMap::new())),
-            response_cache: Arc::new(Mutex::new(HashMap::new())),
-            region_cache: Arc::new(Mutex::new(HashMap::new())),
-            route_cache: Arc::new(Mutex::new(HashMap::new())),
-        }
+        AppState::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../res"))
     }
 
     /// Every placed sector in M1105 must load and serialize to valid

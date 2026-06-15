@@ -275,7 +275,8 @@ struct AllegianceCode {
     legacy_code: String,
     #[serde(rename = "Name")]
     name: String,
-    #[serde(rename = "Location")]
+    // The reference omits a null `Location` (stock allegiances have none).
+    #[serde(rename = "Location", skip_serializing_if = "String::is_empty")]
     location: String,
 }
 
@@ -289,9 +290,32 @@ struct SophontCode {
     location: String,
 }
 
+/// Stock allegiances the reference merges on top of the `.tab` file
+/// (`SecondSurvey.cs` `s_t5Allegiances` — the "Unofficial/Unreviewed" M1120
+/// splinter states + cultural regions). `(Code, LegacyCode, Name)`; these have
+/// no `Location`. None overlap the `.tab`, so all are appended.
+const STOCK_ALLEGIANCES: &[(&str, &str, &str)] = &[
+    ("FdAr", "Fa", "Federation of Arden"),
+    ("BoWo", "Bw", "Border Worlds"),
+    ("LuIm", "Li", "Lucan's Imperium"),
+    ("MaSt", "Ma", "Maragaret's Domain"),
+    ("BaCl", "Bc", "Backman Cluster"),
+    ("FdDa", "Fd", "Federation of Daibei"),
+    ("FdIl", "Fi", "Federation of Ilelish"),
+    ("AvCn", "Ac", "Avalar Consulate"),
+    ("CoAl", "Ca", "Corsair Alliance"),
+    ("StIm", "St", "Strephon's Worlds"),
+    ("ZiSi", "Rv", "Restored Vilani Imperium"),
+    ("VA16", "V6", "Assemblage of 1116"),
+    ("CRVi", "CV", "Vilani Cultural Region"),
+    ("CRGe", "CG", "Geonee Cultural Region"),
+    ("CRSu", "CS", "Suerrat Cultural Region"),
+    ("CRAk", "CA", "Anakudnu Cultural Region"),
+];
+
 /// `GET /t5ss/allegiances` — the T5SS allegiance code table
-/// (`res/t5ss/allegiance_codes.tab`), sorted by code. Columns:
-/// `Code  Legacy  BaseCode  Name  Location`.
+/// (`res/t5ss/allegiance_codes.tab` + [`STOCK_ALLEGIANCES`]), sorted by code.
+/// Tab columns: `Code  Legacy  BaseCode  Name  Location`.
 pub async fn get_allegiances(Query(jp): Query<Jsonp>, State(state): State<AppState>) -> Response {
     let path = state.res_dir.join("t5ss").join("allegiance_codes.tab");
     let text = read_text(path).unwrap_or_default();
@@ -316,6 +340,14 @@ pub async fn get_allegiances(Query(jp): Query<Jsonp>, State(state): State<AppSta
             })
         })
         .collect();
+    for &(code, legacy, name) in STOCK_ALLEGIANCES {
+        list.push(AllegianceCode {
+            code: code.to_string(),
+            legacy_code: legacy.to_string(),
+            name: name.to_string(),
+            location: String::new(),
+        });
+    }
     list.sort_by(|a, b| a.code.cmp(&b.code));
     respond(&list, &jp.jsonp)
 }

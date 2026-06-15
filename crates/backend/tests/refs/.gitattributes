@@ -1,0 +1,4 @@
+# Golden fixtures captured verbatim from the live travellermap.com API — they
+# are the byte-for-byte parity oracle for compat_suite. Never normalize EOLs
+# (the reference emits CRLF for SEC/tab text); store exactly as captured.
+* -text

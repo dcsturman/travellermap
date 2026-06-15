@@ -1,0 +1,25 @@
+Sector	SS	Hex	Name	UWP	Bases	Remarks	Zone	PBG	Allegiance	Stars	{Ix}	(Ex)	[Cx]	Nobility	W	RU
+Spin	A	0101	Zeycude	C430698-9		De Na Ni Po		613	ZhIN	K9 V	{ -1 }	(C53-1)	[6559]		8	-180
+Spin	A	0102	Reno	C4207B9-A		De He Na Po Pi Pz	A	603	ZhIN	G8 V M1 V	{ 1 }	(C6A+2)	[886B]		12	1440
+Spin	A	0103	Errere	B563664-B	KM	Ni Ri O:0304		910	ZhIN	M1 V M4 V	{ 3 }	(957+1)	[4939]		9	315
+Spin	A	0104	Cantrel	C566243-9		Lo		520	ZhIN	F1 V	{ -1 }	(610-4)	[1126]		12	-24
+Spin	A	0108	Gyomar	C8B2889-8		Fl He Ph (Tethmari)		824	NaHu	A8 V	{ -1 }	(G77+1)	[9769]		14	784
+Spin	A	0202	Thengo	C868586-5		Ag Ni Pr Lt		801	ZhIN	G5 V M3 V	{ -1 }	(743-2)	[4444]		12	-168
+Spin	A	0301	Rio	C686648-8		Ag Ni Ga Ri		201	NaHu	M0 V M1 V	{ 0 }	(954+1)	[6658]		8	180
+Spin	A	0303	Gesentown	B31169B-C	KM	Ic Na Ni Da Ht	A	801	ZhIN	M2 V M9 V	{ 2 }	(956+4)	[887E]		12	1080
+Spin	A	0304	Chronor	A6369A5-D	KM	Hi Cp Ht		810	ZhIN	F8 V	{ 4 }	(C8G+2)	[7D3B]		5	3072
+Spin	A	0307	Atsa	B4337CA-A	KM	Na Po An Pz	A	810	ZhIN	F7 V M3 V	{ 3 }	(A6C+5)	[9A7C]		8	3600
+Spin	A	0503	Whenge	D648500-8		Ag Ni		610	NaHu	F8 V	{ -2 }	(842-5)	[1313]		13	-320
+Spin	A	0601	Enlas-du	E975776-6		Ag Pi		323	NaHu	F1 V	{ -1 }	(966-2)	[6645]		14	-648
+Spin	A	0605	Algebaster	C665658-9		Ag Ni Ga Ri		410	NaHu	M0 V M1 V	{ 1 }	(955+1)	[6759]		10	225
+Spin	A	0607	Rasatt	E883401-7		Ni		910	NaHu	F0 V	{ -3 }	(631-5)	[1113]		6	-90
+Spin	A	0608	Ninjar	A311666-C	KM	Ic Na Ni Mr Ht		410	ZhIN	A4 V	{ 2 }	(956+1)	[584B]		6	270
+Spin	A	0610	Sheyou	B756779-A	KM	Ag Ga		111	ZhIN	F4 V M0 V	{ 4 }	(B6D+5)	[8B6B]		13	4290
+Spin	A	0703	Indo	E434662-6		Ni O:0605		320	NaHu	F6 V	{ -3 }	(851-5)	[2312]		11	-200
+Spin	A	0704	Nerewhon	E738475-7		Ni		820	NaHu	K5 V	{ -3 }	(631-5)	[2135]		10	-90
+Spin	A	0705	Cipango	A886865-C	KM	Ga Ri Pa Ph O:0304 Ht		121	ZhIN	G2 V	{ 4 }	(D7E+2)	[6C3A]		10	2548
+Spin	A	0710	Stave	E7667A8-2		Ag Ga Ri (Obeyery) Lt		801	NaHu	K9 V M2 V	{ 0 }	(965+1)	[7752]		8	270
+Spin	A	0805	Narval	D525688-7	M	Ni Da	A	603	CsZh	G4 V M6 V	{ -3 }	(851-3)	[6357]		10	-120
+Spin	A	0807	Plaven	E845300-5		Lo Lt		910	NaHu	G8 V M7 V	{ -3 }	(520-5)	[1111]		6	-50
+Spin	A	0808	Quar	B532720-B	N	Na Po Pz	A	401	CsIm	M2 V	{ 2 }	(A6C-2)	[2916]		9	-1440
+Spin	A	0810	Frond	E9C3300-9		Fl Lo		103	CsIm	F8 V	{ -2 }	(820-5)	[1114]		12	-80

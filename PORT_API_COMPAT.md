@@ -48,6 +48,20 @@ The image endpoints (Tile/Poster/JumpMap) are intentionally N/A — those render
 
 **Next — the "others":** `/api/search` envelope-unify is best folded into the planned Tantivy query-language work (one pass over search internals). The rest need new index/writer work: `/api/sec` text via `SectorWriter`; `/api/metadata` + `/api/credits` via a fuller metadata parse; `/api/jumpworlds` + `/api/route` via a cross-sector spatial index (`route` partly exists); `/api/msec` via `MSECWriter`. Plus the universe **completeness** gap (positioned-but-dataless sectors + `requireData`/`tag`/`era` filters).
 
+## Compatibility test suite (TDD) — `crates/backend/src/compat_suite.rs`
+
+An end-to-end suite drives the **real axum router in-process** (`tower::oneshot`) and checks every documented data endpoint against **golden fixtures captured from the live travellermap.com API** (`crates/backend/tests/refs/*`). JSON is compared as `serde_json::Value` (order- and `\/`-escaping-insensitive); the T5SS code tables are compared as a **set keyed by `Code`** (their array order is incidental — the reference uses .NET culture-sensitive collation). This is the parity oracle for the whole effort.
+
+**TDD convention:** endpoints not yet implemented (or not yet in the public shape) have their test `#[ignore = "…"]`d **with the target assertion already written**, so implementing one = deleting its `ignore`. Scoreboard:
+
+```
+cargo test -p tmap-backend compat_suite                       # active (must pass)
+cargo test -p tmap-backend compat_suite -- --include-ignored  # full target (red until done)
+cargo test -p tmap-backend compat_suite -- --ignored --list   # what's left
+```
+
+Current: **12 active (green)** — coordinates (×6 forms + errors), milieux, t5ss allegiances/sophonts, universe envelope + known-sector shape, JSONP (wrap + bad-callback reject). **13 ignored (red targets)** — universe completeness (×2), search envelope, sec tab/SecondSurvey, metadata, msec, credits, jumpworlds, route public bare-array shape, `/data/…` aliases (×2), `Accept: text/xml`. Capturing this suite surfaced a real gap, now fixed: `/t5ss/allegiances` was missing the 16 stock allegiances the reference merges on top of the `.tab` (M1120 splinter states + cultural regions; no `Location`).
+
 ## Our backend extensions (no reference equivalent — keep)
 - **`GET /api/overlays`** — bundles macro borders/routes/rifts (`res/Vectors/`) + macro world labels (`res/labels/Worlds.xml`) into one JSON payload. New, well-motivated for client-side rendering; not part of the public API.
 - **`GET /api/sector/{milieu}/{name}?lod=full|overview`** — combined worlds+borders+routes+subsectors JSON with LOD projection. Core streaming primitive of the rewrite; closest ref split is `/api/sec` (worlds) + `/api/metadata` (metadata).

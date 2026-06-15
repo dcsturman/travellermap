@@ -13,3 +13,9 @@ serde_json.workspace = true
 axum = "0.8.9"
 tokio = { version = "1.52.3", features = ["full"] }
 tower-http = { version = "0.6.11", features = ["cors", "fs"] }
+
+[dev-dependencies]
+# Drive the router in-process for the public-API compatibility suite
+# (`compat_suite`): `tower`'s `oneshot` + `http-body-util`'s body collection.
+tower = { version = "0.5.3", features = ["util"] }
+http-body-util = "0.1.3"
