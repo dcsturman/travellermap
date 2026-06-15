@@ -10,7 +10,9 @@ use std::collections::{HashMap, HashSet};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use tmap_core::astrometrics::{parse_hex, PARSEC_SCALE_X};
-use tmap_core::dto::{Overlays, RouteResult, SearchResult, SearchResults, SectorData, Universe, World};
+use tmap_core::dto::{
+    Overlays, RouteResult, SearchResult, SearchResults, SectorData, UniverseResult, World,
+};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use web_sys::HtmlCanvasElement;
@@ -498,16 +500,20 @@ fn App() -> impl IntoView {
         set_results.set(Vec::new());
         set_status.set(format!("Loading {m}…"));
         spawn_local(async move {
-            match fetch_json::<Universe>(&format!("/api/universe?milieu={m}")).await {
+            match fetch_json::<UniverseResult>(&format!("/api/universe?milieu={m}")).await {
                 Ok(u) => {
                     // Ignore a response that arrived after another switch.
                     if milieu.get_untracked() != m {
                         return;
                     }
+                    // Public shape: flat X/Y + a Names array (canonical name first).
                     let map: HashMap<(i32, i32), String> = u
                         .sectors
                         .into_iter()
-                        .map(|s| ((s.location.x, s.location.y), s.name))
+                        .map(|s| {
+                            let name = s.names.into_iter().next().map(|n| n.text).unwrap_or_default();
+                            ((s.x, s.y), name)
+                        })
                         .collect();
                     set_status.set(format!("{m} — {} sectors · drag to pan, scroll to zoom", map.len()));
                     index.set_value(map);

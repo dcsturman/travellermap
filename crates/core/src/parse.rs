@@ -12,8 +12,8 @@
 
 use crate::astrometrics::Coord;
 use crate::dto::{
-    Border, MapLabel, Route, SectorIndexEntry, SectorLabel, SubPath, Subsector, VectorObject,
-    World,
+    Border, MapLabel, Route, SectorIndexEntry, SectorLabel, SectorName, SubPath, Subsector,
+    VectorObject, World,
 };
 use base64::Engine;
 use regex::Regex;
@@ -340,13 +340,11 @@ pub fn sector_index_entry(xml: &str) -> Result<SectorIndexEntry, ParseError> {
             })
         }
     };
-    // First <Name> child (the canonical name; localized `<Name Lang=...>` follow).
-    let name = root
-        .children()
-        .find(|n| n.has_tag_name("Name"))
-        .and_then(|n| n.text())
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty())
+    // All <Name> children — canonical first, localized `<Name Lang=...>` follow.
+    let names = sector_names(root);
+    let name = names
+        .first()
+        .map(|n| n.text.clone())
         .ok_or_else(|| ParseError {
             message: "missing <Name>".into(),
         })?;
@@ -355,6 +353,8 @@ pub fn sector_index_entry(xml: &str) -> Result<SectorIndexEntry, ParseError> {
         name,
         abbreviation: root.attribute("Abbreviation").map(str::to_owned),
         location: Coord::new(x, y),
+        names,
+        tags: root.attribute("Tags").unwrap_or("").to_owned(),
         data_file: None,
         data_format: None,
         metadata_file: None,
@@ -366,6 +366,22 @@ pub fn sector_index_entry(xml: &str) -> Result<SectorIndexEntry, ParseError> {
 /// This is the authoritative source: it covers sectors whose per-sector `.xml`
 /// omits coords, and gives the exact data file + format to load. Entries
 /// without a `DataFile` (named regions with no data) are skipped.
+/// All `<Name>` children of a `<Sector>` node, canonical first, each with its
+/// optional `Lang` attribute. Drives the public-API `Names` array.
+fn sector_names(sector: roxmltree::Node) -> Vec<SectorName> {
+    sector
+        .children()
+        .filter(|n| n.has_tag_name("Name"))
+        .filter_map(|n| {
+            let text = n.text().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty())?;
+            Some(SectorName {
+                text,
+                lang: n.attribute("Lang").map(str::to_owned),
+            })
+        })
+        .collect()
+}
+
 pub fn parse_milieu_index(xml: &str) -> Vec<SectorIndexEntry> {
     let Ok(doc) = roxmltree::Document::parse(xml) else {
         return Vec::new();
@@ -381,12 +397,8 @@ pub fn parse_milieu_index(xml: &str) -> Vec<SectorIndexEntry> {
                     .and_then(|t| t.trim().parse::<i32>().ok())
             };
             let (x, y) = (child_int("X")?, child_int("Y")?);
-            let name = sector
-                .children()
-                .find(|n| n.has_tag_name("Name"))
-                .and_then(|n| n.text())
-                .map(|s| s.trim().to_owned())
-                .filter(|s| !s.is_empty())?;
+            let names = sector_names(sector);
+            let name = names.first()?.text.clone();
             let data = sector.children().find(|n| n.has_tag_name("DataFile"))?;
             let data_file = data.text().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty())?;
             let metadata_file = sector
@@ -399,6 +411,8 @@ pub fn parse_milieu_index(xml: &str) -> Vec<SectorIndexEntry> {
                 name,
                 abbreviation: sector.attribute("Abbreviation").map(str::to_owned),
                 location: Coord::new(x, y),
+                names,
+                tags: sector.attribute("Tags").unwrap_or("").to_owned(),
                 data_format: data.attribute("Type").map(str::to_owned),
                 data_file: Some(data_file),
                 metadata_file,

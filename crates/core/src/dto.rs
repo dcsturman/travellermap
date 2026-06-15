@@ -199,6 +199,14 @@ pub struct SectorIndexEntry {
     pub abbreviation: Option<String>,
     /// Sector grid position (Core at `(0,0)`, +x trailing, +y rimward).
     pub location: Coord,
+    /// All `<Name>` entries (canonical first, then localized `Lang=…`). Source
+    /// for the public `/api/universe` `Names` array; backend-internal otherwise.
+    #[serde(default, skip_serializing)]
+    pub names: Vec<SectorName>,
+    /// The sector's own review tags (`<Sector Tags="…">`, e.g. `"Official"`),
+    /// before the milieu metafile tag is appended. Backend-internal.
+    #[serde(default, skip_serializing)]
+    pub tags: String,
     /// Data filename (e.g. `"Spinward Marches.tab"`) — backend-only, from the
     /// milieu region list; the client doesn't need it.
     #[serde(default, skip_serializing)]
@@ -213,10 +221,47 @@ pub struct SectorIndexEntry {
 }
 
 /// The set of sectors in a milieu and where they sit — the navigation index.
+/// In-memory only; the wire shape is [`UniverseResult`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Universe {
     pub milieu: String,
     pub sectors: Vec<SectorIndexEntry>,
+}
+
+/// One localized sector name, matching the public-API `Names` element
+/// (`{"Text","Lang"}`). `lang` is absent for the canonical (English) name.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SectorName {
+    #[serde(rename = "Text")]
+    pub text: String,
+    #[serde(rename = "Lang", default, skip_serializing_if = "Option::is_none")]
+    pub lang: Option<String>,
+}
+
+/// One sector in the public `/api/universe` response (port of
+/// `UniverseHandler`'s `SectorResult`). PascalCase, flat `X`/`Y`, and a `Names`
+/// array — the documented shape, consumed by our own Leptos client too.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UniverseSector {
+    #[serde(rename = "X")]
+    pub x: i32,
+    #[serde(rename = "Y")]
+    pub y: i32,
+    #[serde(rename = "Milieu")]
+    pub milieu: String,
+    #[serde(rename = "Abbreviation", default, skip_serializing_if = "Option::is_none")]
+    pub abbreviation: Option<String>,
+    #[serde(rename = "Tags", default, skip_serializing_if = "String::is_empty")]
+    pub tags: String,
+    #[serde(rename = "Names")]
+    pub names: Vec<SectorName>,
+}
+
+/// The public `/api/universe` envelope: `{"Sectors":[…]}` (`UniverseResult`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UniverseResult {
+    #[serde(rename = "Sectors")]
+    pub sectors: Vec<UniverseSector>,
 }
 
 /// One connected sub-path of a [`VectorObject`]. A border/rift can comprise

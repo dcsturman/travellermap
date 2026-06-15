@@ -20,7 +20,10 @@ use axum::{
 use serde::Deserialize;
 use tmap_core::{
     astrometrics::{parse_hex, Coord},
-    dto::{Overlays, SearchResults, SectorData, SectorInfo, Universe, VectorObject, World, WorldLabel},
+    dto::{
+        Overlays, SearchResults, SectorData, SectorInfo, SectorName, Universe, UniverseResult,
+        UniverseSector, VectorObject, World, WorldLabel,
+    },
     parse::{
         border_region, parse_column, parse_map_labels, parse_milieu_index, parse_sec, parse_tab,
         parse_vector_object, parse_world_labels, sector_border_styles, sector_borders,
@@ -421,7 +424,10 @@ struct UniverseQuery {
     milieu: String,
 }
 
-/// `GET /api/universe?milieu=M1105` — the sector index for navigation.
+/// `GET /api/universe?milieu=M1105` — the sector index for navigation, in the
+/// documented public shape (`UniverseHandler`'s `{"Sectors":[…]}`, PascalCase).
+/// This is the unified contract: external tools and our own Leptos client both
+/// read it (the private snake_case `Universe` is now in-memory only).
 async fn get_universe(
     Query(q): Query<UniverseQuery>,
     headers: HeaderMap,
@@ -430,7 +436,49 @@ async fn get_universe(
     let key = format!("universe/{}", q.milieu);
     serve_cached(&state.response_cache, &key, &headers, || {
         let u = state.universe(&q.milieu)?;
-        serde_json::to_vec(&*u).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        // The milieu's metafile tag (e.g. "OTU") is appended to each sector's own
+        // review tags ("Official" → "Official OTU"), matching the reference.
+        let mtag = milieu_tag(&state.res_dir, &q.milieu);
+        let sectors = u
+            .sectors
+            .iter()
+            .map(|s| {
+                let tags = [s.tags.as_str(), mtag.as_deref().unwrap_or("")]
+                    .into_iter()
+                    .filter(|t| !t.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                // Always emit at least the canonical name (older per-sector xml
+                // without a localized list still has `s.name`).
+                let names = if s.names.is_empty() {
+                    vec![SectorName { text: s.name.clone(), lang: None }]
+                } else {
+                    s.names.clone()
+                };
+                UniverseSector {
+                    x: s.location.x,
+                    y: s.location.y,
+                    milieu: q.milieu.clone(),
+                    abbreviation: s.abbreviation.clone(),
+                    tags,
+                    names,
+                }
+            })
+            .collect();
+        serde_json::to_vec(&UniverseResult { sectors })
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+    })
+}
+
+/// The tag the milieu metafile carries in `res/Sectors/milieu.tab` (e.g.
+/// `"OTU"`), appended to each sector's own tags in the universe response.
+fn milieu_tag(res_dir: &FsPath, milieu: &str) -> Option<String> {
+    let text = read_text(res_dir.join("Sectors").join("milieu.tab")).ok()?;
+    text.lines().skip(1).find_map(|line| {
+        let mut f = line.split('\t');
+        let path = f.next()?;
+        let tag = f.next()?.trim();
+        (path.split('/').next() == Some(milieu) && !tag.is_empty()).then(|| tag.to_string())
     })
 }
 
