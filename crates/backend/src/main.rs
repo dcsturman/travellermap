@@ -31,7 +31,7 @@ use tmap_core::{
     },
     metadata::{parse_sector_metadata, MetaAllegiance},
     sector_writer::{self, WriteOptions},
-    world_util::{allegiance_base, allegiance_name, synthesize_abbreviation},
+    world_util::{allegiance_base, allegiance_name, encode_legacy_bases, synthesize_abbreviation},
 };
 use tower_http::cors::CorsLayer;
 
@@ -280,6 +280,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route("/api/sec", get(get_sec))
         .route("/api/metadata", get(get_metadata))
         .route("/api/credits", get(get_credits))
+        .route("/api/jumpworlds", get(get_jumpworlds))
         .route("/api/milieux", get(compat::get_milieux))
         .route("/t5ss/allegiances", get(compat::get_allegiances))
         .route("/t5ss/sophonts", get(compat::get_sophonts))
@@ -294,6 +295,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route("/data/{sector}/metadata", get(data_metadata))
         .route("/data/{sector}/{tail}/coordinates", get(compat::data_coordinates_hex))
         .route("/data/{sector}/{tail}/credits", get(data_credits_hex))
+        .route("/data/{sector}/{tail}/jump/{jump}", get(data_jumpworlds))
         .route("/api/res/{*path}", get(get_res))
         .route("/api/admin/flush", post(flush_cache))
         // Permissive CORS is a dev convenience (Trunk serves the wasm app from
@@ -831,6 +833,25 @@ fn gather_subsectors(
     subs
 }
 
+/// `/data/{sector}/{hex}/jump/{jump}` → worlds within `jump` of the hex.
+async fn data_jumpworlds(
+    Path((sector, hex, jump)): Path<(String, String, i32)>,
+    State(state): State<AppState>,
+) -> Response {
+    let q = JumpWorldsQuery {
+        milieu: default_milieu(),
+        sector: Some(sector),
+        sx: None,
+        sy: None,
+        hex: Some(hex),
+        jump,
+    };
+    match build_jumpworlds(&state, &q) {
+        Ok(result) => Json(result).into_response(),
+        Err((code, msg)) => (code, msg).into_response(),
+    }
+}
+
 /// The sector's metadata `.xml` text (MetadataFile, else data-file stem + `.xml`).
 fn read_meta_xml(dir: &FsPath, data_file: &str, entry: &tmap_core::dto::SectorIndexEntry) -> String {
     let meta_file = entry
@@ -1286,6 +1307,168 @@ fn build_credits(
     }
 
     r
+}
+
+// --- JumpWorlds ----------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct JumpWorldsQuery {
+    #[serde(default = "default_milieu")]
+    milieu: String,
+    sector: Option<String>,
+    sx: Option<i32>,
+    sy: Option<i32>,
+    hex: Option<String>,
+    #[serde(default = "default_jumpworlds_jump")]
+    jump: i32,
+}
+
+fn default_jumpworlds_jump() -> i32 {
+    6
+}
+
+/// Per-sector context used to denormalize each world into a [`WorldResult`].
+struct JumpSectorCtx {
+    name: String,
+    abbreviation: Option<String>,
+    subsectors: Vec<Subsector>,
+}
+
+/// `GET /api/jumpworlds?sector=&hex=&jump=N` — every world within `jump` parsecs
+/// of a hex, as `{Worlds:[…]}` (port of `JumpWorldsHandler` + `HexSelector`).
+async fn get_jumpworlds(Query(q): Query<JumpWorldsQuery>, State(state): State<AppState>) -> Response {
+    match build_jumpworlds(&state, &q) {
+        Ok(result) => Json(result).into_response(),
+        Err((code, msg)) => (code, msg).into_response(),
+    }
+}
+
+fn build_jumpworlds(
+    state: &AppState,
+    q: &JumpWorldsQuery,
+) -> Result<tmap_core::dto::JumpWorldsResult, (StatusCode, String)> {
+    let jump = q.jump.clamp(0, 12);
+    let universe = state.universe(&q.milieu)?;
+
+    let entry = if let (Some(sx), Some(sy)) = (q.sx, q.sy) {
+        universe.sectors.iter().find(|s| s.location.x == sx && s.location.y == sy)
+    } else if let Some(name) = &q.sector {
+        universe.sectors.iter().find(|s| {
+            s.name.eq_ignore_ascii_case(name)
+                || s.abbreviation.as_deref().is_some_and(|a| a.eq_ignore_ascii_case(name))
+        })
+    } else {
+        return Err((StatusCode::BAD_REQUEST, "No sector specified.".into()));
+    }
+    .ok_or((StatusCode::NOT_FOUND, "The specified sector was not found.".into()))?;
+
+    let hex = q.hex.as_deref().ok_or((StatusCode::BAD_REQUEST, "No hex specified.".into()))?;
+    let (chx, chy) = parse_hex(hex).ok_or((StatusCode::BAD_REQUEST, format!("Invalid hex: {hex}")))?;
+    let (cx, cy) = astrometrics::location_to_coordinates(entry.location.x, entry.location.y, chx, chy);
+    let center = Coord::new(cx, cy);
+
+    // Absolute-coordinate bounding box (matches HexSelector: ±(jump+1)).
+    let (x0, x1) = (cx - jump - 1, cx + jump + 1);
+    let (y0, y1) = (cy - jump - 1, cy + jump + 1);
+    let (sxa, sya, ..) = astrometrics::coordinates_to_location(x0, y0);
+    let (sxb, syb, ..) = astrometrics::coordinates_to_location(x1, y1);
+
+    // Load every candidate sector once; index its worlds by absolute coord.
+    let dir = state.res_dir.join("Sectors").join(&q.milieu);
+    let mtag = milieu_tag(&state.res_dir, &q.milieu);
+    let mut ctxs: Vec<JumpSectorCtx> = Vec::new();
+    let mut world_map: HashMap<(i32, i32), (World, usize)> = HashMap::new();
+    for sy_ in sya..=syb {
+        for sx_ in sxa..=sxb {
+            let Some(e) = universe.sectors.iter().find(|s| s.location.x == sx_ && s.location.y == sy_)
+            else {
+                continue;
+            };
+            let Some((file, outcome)) = resolve_and_parse_worlds(&dir, &e.name, Some(e)) else {
+                continue;
+            };
+            let subsectors = gather_subsectors(state, &dir, &file, e, &q.milieu);
+            let is_otu = e
+                .tags
+                .split_whitespace()
+                .chain(mtag.as_deref().unwrap_or("").split_whitespace())
+                .any(|t| t == "OTU");
+            let abbreviation = e.abbreviation.clone().or_else(|| {
+                is_otu.then(|| e.names.first().and_then(|n| synthesize_abbreviation(&n.text))).flatten()
+            });
+            let ctx_idx = ctxs.len();
+            ctxs.push(JumpSectorCtx {
+                name: e.names.first().map(|n| n.text.clone()).unwrap_or_else(|| e.name.clone()),
+                abbreviation,
+                subsectors,
+            });
+            for w in outcome.worlds {
+                let Some((col, row)) = parse_hex(&w.hex) else { continue };
+                let (wx, wy) = astrometrics::location_to_coordinates(sx_, sy_, col, row);
+                world_map.entry((wx, wy)).or_insert((w, ctx_idx));
+            }
+        }
+    }
+
+    // Raster scan (y outer, x inner) over the bbox — the HexSelector emit order.
+    let mut worlds = Vec::new();
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            if astrometrics::reference_hex_distance(center, Coord::new(x, y)) > jump {
+                continue;
+            }
+            if let Some((w, ci)) = world_map.get(&(x, y)) {
+                worlds.push(world_to_result(w, &ctxs[*ci], x, y));
+            }
+        }
+    }
+
+    Ok(tmap_core::dto::JumpWorldsResult { worlds })
+}
+
+/// Denormalize a [`World`] + sector context into the public [`WorldResult`].
+fn world_to_result(
+    w: &World,
+    ctx: &JumpSectorCtx,
+    world_x: i32,
+    world_y: i32,
+) -> tmap_core::dto::WorldResult {
+    let ss = astrometrics::subsector_letter(&w.hex).to_string();
+    let subsector = astrometrics::subsector_index(&w.hex) as i32;
+    let quadrant = astrometrics::quadrant_index(&w.hex) as i32;
+    let subsector_name = ctx
+        .subsectors
+        .iter()
+        .find(|s| s.index == ss)
+        .map(|s| s.name.clone())
+        .unwrap_or_default();
+    tmap_core::dto::WorldResult {
+        name: w.name.clone(),
+        hex: w.hex.clone(),
+        uwp: w.uwp.clone(),
+        pbg: w.pbg.clone(),
+        zone: w.zone.clone(),
+        bases: w.bases.clone(),
+        allegiance: w.allegiance.clone(),
+        stellar: w.stellar.clone(),
+        ss,
+        ix: w.importance.clone(),
+        ex: w.economic.clone(),
+        cx: w.cultural.clone(),
+        nobility: w.nobility.clone().unwrap_or_default(),
+        worlds: w.worlds.map(i32::from).unwrap_or(0),
+        resource_units: w.resource_units,
+        subsector,
+        quadrant,
+        world_x,
+        world_y,
+        remarks: w.remarks.clone(),
+        legacy_base_code: encode_legacy_bases(&w.allegiance, &w.bases),
+        sector: ctx.name.clone(),
+        subsector_name,
+        sector_abbreviation: ctx.abbreviation.clone(),
+        allegiance_name: allegiance_name(&w.allegiance).unwrap_or_default(),
+    }
 }
 
 /// The `Allegiances` list: every code used by the worlds and by the borders/

@@ -67,6 +67,72 @@ impl World {
     }
 }
 
+/// The public per-world result shape used by `/api/jumpworlds` (and `/api/search`
+/// world hits) — port of the reference `World`'s serialized members. PascalCase,
+/// with the computed/denormalized fields (`SS`, `Subsector`, `Quadrant`,
+/// `WorldX/Y`, `LegacyBaseCode`, `Sector`, `SubsectorName`,
+/// `SectorAbbreviation`, `AllegianceName`) the reference adds on serialization.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorldResult {
+    #[serde(rename = "Name")]
+    pub name: String,
+    #[serde(rename = "Hex")]
+    pub hex: String,
+    #[serde(rename = "UWP")]
+    pub uwp: String,
+    #[serde(rename = "PBG")]
+    pub pbg: String,
+    #[serde(rename = "Zone")]
+    pub zone: String,
+    #[serde(rename = "Bases")]
+    pub bases: String,
+    #[serde(rename = "Allegiance")]
+    pub allegiance: String,
+    #[serde(rename = "Stellar")]
+    pub stellar: String,
+    #[serde(rename = "SS")]
+    pub ss: String,
+    #[serde(rename = "Ix")]
+    pub ix: Option<String>,
+    #[serde(rename = "Ex")]
+    pub ex: Option<String>,
+    #[serde(rename = "Cx")]
+    pub cx: Option<String>,
+    #[serde(rename = "Nobility")]
+    pub nobility: String,
+    #[serde(rename = "Worlds")]
+    pub worlds: i32,
+    #[serde(rename = "ResourceUnits")]
+    pub resource_units: Option<i32>,
+    #[serde(rename = "Subsector")]
+    pub subsector: i32,
+    #[serde(rename = "Quadrant")]
+    pub quadrant: i32,
+    #[serde(rename = "WorldX")]
+    pub world_x: i32,
+    #[serde(rename = "WorldY")]
+    pub world_y: i32,
+    #[serde(rename = "Remarks")]
+    pub remarks: String,
+    #[serde(rename = "LegacyBaseCode")]
+    pub legacy_base_code: String,
+    #[serde(rename = "Sector")]
+    pub sector: String,
+    #[serde(rename = "SubsectorName")]
+    pub subsector_name: String,
+    #[serde(rename = "SectorAbbreviation")]
+    pub sector_abbreviation: Option<String>,
+    #[serde(rename = "AllegianceName")]
+    pub allegiance_name: String,
+}
+
+/// The `/api/jumpworlds` envelope: `{"Worlds":[…]}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JumpWorldsResult {
+    #[serde(rename = "Worlds")]
+    pub worlds: Vec<WorldResult>,
+}
+
 /// One named subsector within a sector. `index` is the letter `A`–`P` (a 4×4
 /// grid, reading order), which fixes its position; each spans 8×10 parsecs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

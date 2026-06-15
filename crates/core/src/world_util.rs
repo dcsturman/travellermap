@@ -581,6 +581,66 @@ pub fn allegiance_base(code: &str) -> Option<String> {
     base.get(code).cloned()
 }
 
+/// Encode T5 base codes back to the single legacy base letter, mirroring the
+/// reference `SecondSurvey.EncodeLegacyBases` glob table (first match wins).
+/// The allegiance is first reduced to its base code (e.g. `ImDd` → `Im`); the
+/// lookup key is `"<baseAllegiance>.<bases>"`. Returns `bases` unchanged if no
+/// glob matches (e.g. empty bases).
+pub fn encode_legacy_bases(allegiance: &str, bases: &str) -> String {
+    // (allegiance-glob, exact-bases, legacy-letter) in reference insertion order.
+    const TABLE: &[(&str, &str, &str)] = &[
+        ("*", "NS", "A"),
+        ("*", "NW", "B"),
+        ("*", "C", "C"),
+        ("Zh", "D", "Y"),
+        ("*", "D", "D"),
+        ("*", "E", "E"),
+        ("*", "KM", "F"),
+        ("So", "K", "F"),
+        ("V*", "K", "G"),
+        ("*", "CK", "H"),
+        ("So", "KM", "K"),
+        ("Kk", "K", "K"),
+        ("Hv", "K", "L"),
+        ("Dr", "K", "P"),
+        ("*", "K", "J"),
+        ("*", "M", "M"),
+        ("*", "N", "N"),
+        ("*", "O", "O"),
+        ("Dr", "M", "Q"),
+        ("*", "R", "R"),
+        ("*", "S", "S"),
+        ("*", "T", "T"),
+        ("*", "RT", "U"),
+        ("*", "V", "V"),
+        ("Zh", "W", "X"),
+        ("*", "W", "W"),
+        ("Zh", "KM", "Z"),
+        ("Sc", "H", "H"),
+        ("*", "I", "I"),
+        ("*", "T", "T"),
+    ];
+    let base_alleg = allegiance_base(allegiance).unwrap_or_else(|| allegiance.to_string());
+    for &(alleg_glob, b, letter) in TABLE {
+        if b == bases && glob_match(alleg_glob, &base_alleg) {
+            return letter.to_string();
+        }
+    }
+    bases.to_string()
+}
+
+/// Match a tiny glob supporting a single trailing `*` (or a bare `*`) against
+/// `s` — enough for the legacy-base allegiance patterns (`*`, `V*`, `Zh`, …).
+fn glob_match(pat: &str, s: &str) -> bool {
+    if pat == "*" {
+        true
+    } else if let Some(prefix) = pat.strip_suffix('*') {
+        s.starts_with(prefix)
+    } else {
+        pat == s
+    }
+}
+
 /// Allegiance code → full display name, from `res/t5ss/allegiance_codes.tab`
 /// (`Code <tab> Legacy <tab> BaseCode <tab> Name <tab> Location`, skip header).
 ///
@@ -1087,6 +1147,20 @@ pub fn decode_world(world: &World) -> DecodedWorld {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_base_encoding() {
+        // Imperial Scout base, Naval base, Naval+Scout combo, and empty.
+        assert_eq!(encode_legacy_bases("ImDd", "S"), "S");
+        assert_eq!(encode_legacy_bases("ImDd", "N"), "N");
+        assert_eq!(encode_legacy_bases("ImDd", "NS"), "A");
+        assert_eq!(encode_legacy_bases("ImDd", ""), "");
+        // Allegiance-specific globs: Zhodani depot (Zh.D → Y), Solomani naval (So.K → F).
+        assert_eq!(encode_legacy_bases("ZhCo", "D"), "Y");
+        assert_eq!(encode_legacy_bases("SoCf", "K"), "F");
+        // Unknown bases pass through unchanged.
+        assert_eq!(encode_legacy_bases("ImDd", "ZZ"), "ZZ");
+    }
 
     fn world(uwp: &str) -> World {
         World {

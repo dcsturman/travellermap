@@ -361,7 +361,6 @@ async fn credits_json() {
 // --- JumpWorlds ----------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "jumpworlds: worlds within N parsecs as {Worlds:[…]} (needs cross-sector spatial index)"]
 async fn jumpworlds_json() {
     let (status, _, body) = get("/api/jumpworlds?sector=Spinward%20Marches&hex=1910&jump=2").await;
     assert_eq!(status, StatusCode::OK);

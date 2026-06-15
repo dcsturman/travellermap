@@ -88,6 +88,24 @@ impl Coord {
     }
 }
 
+/// Hex distance (parsecs) between two **absolute, Reference-centric** map
+/// coordinates — a direct port of `Astrometrics.HexDistance`. Use this (not
+/// [`Coord::hex_distance`]) whenever the inputs are the reference's absolute
+/// coordinates (e.g. `World.WorldX/WorldY`, the public-API parity); the cube
+/// form in [`Coord::hex_distance`] is calibrated to our flipped column parity
+/// and disagrees by one on half the column-crossing pairs. C# and Rust `%`
+/// both truncate toward zero, so the parity test transfers verbatim.
+pub fn reference_hex_distance(a: Coord, b: Coord) -> i32 {
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    let adx = dx.abs();
+    let mut ody = dy + adx / 2;
+    if a.x % 2 == 0 && b.x % 2 != 0 {
+        ody += 1;
+    }
+    (adx - ody).max(ody.max(adx))
+}
+
 /// Subsector index `0..16` (A=0 … P=15) of a world's hex (`World.Subsector`):
 /// `(col-1)/8 + (row-1)/10 * 4`. Out-of-range hex clamps to 0.
 pub fn subsector_index(hex: &str) -> usize {
@@ -134,6 +152,20 @@ pub fn parse_hex(hex: &str) -> Option<(i32, i32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reference_hex_distance_matches_csharp() {
+        // Regina (Spinward Marches 1910) is absolute (-110,-70); Forboldn (1808)
+        // is (-111,-72). Astrometrics.HexDistance gives 2 (a jump-2 neighbour) —
+        // the column-parity correction is the whole point.
+        let regina = Coord::new(-110, -70);
+        let forboldn = Coord::new(-111, -72);
+        assert_eq!(reference_hex_distance(regina, forboldn), 2);
+        assert_eq!(reference_hex_distance(forboldn, regina), 2);
+        // Zero distance to self, and a same-column step is exactly the row delta.
+        assert_eq!(reference_hex_distance(regina, regina), 0);
+        assert_eq!(reference_hex_distance(regina, Coord::new(-110, -68)), 2);
+    }
 
     #[test]
     fn parses_hex_labels() {
