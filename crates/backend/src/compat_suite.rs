@@ -352,7 +352,6 @@ async fn msec_text() {
 // --- Credits -------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "credits: per-location credits/author/source (needs metadata credit fields)"]
 async fn credits_json() {
     let (status, _, body) = get("/api/credits?sector=Spinward%20Marches&hex=1910").await;
     assert_eq!(status, StatusCode::OK);

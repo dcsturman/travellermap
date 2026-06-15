@@ -276,6 +276,77 @@ pub struct UniverseResult {
     pub sectors: Vec<UniverseSector>,
 }
 
+/// The public `/api/credits` response (port of `CreditsHandler`'s
+/// `CreditsResult`). PascalCase; every string field is omitted when absent
+/// (the reference's JSON serializer drops nulls). `SectorX`/`SectorY` are
+/// always present.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CreditsResult {
+    #[serde(rename = "Credits", default, skip_serializing_if = "Option::is_none")]
+    pub credits: Option<String>,
+
+    #[serde(rename = "SectorX")]
+    pub sector_x: i32,
+    #[serde(rename = "SectorY")]
+    pub sector_y: i32,
+    #[serde(rename = "SectorName", default, skip_serializing_if = "Option::is_none")]
+    pub sector_name: Option<String>,
+    #[serde(rename = "SectorAuthor", default, skip_serializing_if = "Option::is_none")]
+    pub sector_author: Option<String>,
+    #[serde(rename = "SectorSource", default, skip_serializing_if = "Option::is_none")]
+    pub sector_source: Option<String>,
+    #[serde(rename = "SectorPublisher", default, skip_serializing_if = "Option::is_none")]
+    pub sector_publisher: Option<String>,
+    #[serde(rename = "SectorCopyright", default, skip_serializing_if = "Option::is_none")]
+    pub sector_copyright: Option<String>,
+    #[serde(rename = "SectorRef", default, skip_serializing_if = "Option::is_none")]
+    pub sector_ref: Option<String>,
+    #[serde(rename = "SectorMilieu", default, skip_serializing_if = "Option::is_none")]
+    pub sector_milieu: Option<String>,
+    #[serde(rename = "SectorTags", default, skip_serializing_if = "Option::is_none")]
+    pub sector_tags: Option<String>,
+
+    #[serde(rename = "RouteCredits", default, skip_serializing_if = "Option::is_none")]
+    pub route_credits: Option<String>,
+
+    #[serde(rename = "SubsectorName", default, skip_serializing_if = "Option::is_none")]
+    pub subsector_name: Option<String>,
+    #[serde(rename = "SubsectorIndex", default, skip_serializing_if = "Option::is_none")]
+    pub subsector_index: Option<String>,
+    #[serde(rename = "SubsectorCredits", default, skip_serializing_if = "Option::is_none")]
+    pub subsector_credits: Option<String>,
+
+    #[serde(rename = "WorldName", default, skip_serializing_if = "Option::is_none")]
+    pub world_name: Option<String>,
+    #[serde(rename = "WorldHex", default, skip_serializing_if = "Option::is_none")]
+    pub world_hex: Option<String>,
+    #[serde(rename = "WorldUwp", default, skip_serializing_if = "Option::is_none")]
+    pub world_uwp: Option<String>,
+    #[serde(rename = "WorldRemarks", default, skip_serializing_if = "Option::is_none")]
+    pub world_remarks: Option<String>,
+    #[serde(rename = "WorldIx", default, skip_serializing_if = "Option::is_none")]
+    pub world_ix: Option<String>,
+    #[serde(rename = "WorldEx", default, skip_serializing_if = "Option::is_none")]
+    pub world_ex: Option<String>,
+    #[serde(rename = "WorldCx", default, skip_serializing_if = "Option::is_none")]
+    pub world_cx: Option<String>,
+    #[serde(rename = "WorldPbg", default, skip_serializing_if = "Option::is_none")]
+    pub world_pbg: Option<String>,
+    #[serde(rename = "WorldAllegiance", default, skip_serializing_if = "Option::is_none")]
+    pub world_allegiance: Option<String>,
+    #[serde(rename = "WorldCredits", default, skip_serializing_if = "Option::is_none")]
+    pub world_credits: Option<String>,
+
+    #[serde(rename = "ProductPublisher", default, skip_serializing_if = "Option::is_none")]
+    pub product_publisher: Option<String>,
+    #[serde(rename = "ProductTitle", default, skip_serializing_if = "Option::is_none")]
+    pub product_title: Option<String>,
+    #[serde(rename = "ProductAuthor", default, skip_serializing_if = "Option::is_none")]
+    pub product_author: Option<String>,
+    #[serde(rename = "ProductRef", default, skip_serializing_if = "Option::is_none")]
+    pub product_ref: Option<String>,
+}
+
 /// One connected sub-path of a [`VectorObject`]. A border/rift can comprise
 /// several disjoint regions (islands), each its own sub-path; drawing them as
 /// one polyline would connect them with spurious straight lines.

@@ -279,6 +279,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route("/api/coordinates", get(compat::get_coordinates))
         .route("/api/sec", get(get_sec))
         .route("/api/metadata", get(get_metadata))
+        .route("/api/credits", get(get_credits))
         .route("/api/milieux", get(compat::get_milieux))
         .route("/t5ss/allegiances", get(compat::get_allegiances))
         .route("/t5ss/sophonts", get(compat::get_sophonts))
@@ -1005,6 +1006,19 @@ fn build_metadata_bytes(
     milieu: &str,
     entry: &tmap_core::dto::SectorIndexEntry,
 ) -> Result<Vec<u8>, (StatusCode, String)> {
+    let (meta, _worlds) = assemble_metadata(state, milieu, entry);
+    serde_json::to_vec(&meta).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+/// Parse + merge a sector's metadata (per-sector `.xml` over the inline
+/// region-list block) into a `SectorMetadata`, returning it alongside the
+/// sector's parsed worlds. Shared by `/api/metadata` and `/api/credits` so the
+/// two endpoints draw from one parse.
+fn assemble_metadata(
+    state: &AppState,
+    milieu: &str,
+    entry: &tmap_core::dto::SectorIndexEntry,
+) -> (tmap_core::metadata::SectorMetadata, Vec<World>) {
     let dir = state.res_dir.join("Sectors").join(milieu);
     let resolved = resolve_and_parse_worlds(&dir, &entry.name, Some(entry));
     let data_file = resolved
@@ -1080,7 +1094,100 @@ fn build_metadata_bytes(
 
     meta.allegiances = compute_metadata_allegiances(&worlds, &meta.borders, &meta.regions, &local_alleg);
 
-    serde_json::to_vec(&meta).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+    (meta, worlds)
+}
+
+#[derive(Debug, Deserialize)]
+struct CreditsQuery {
+    #[serde(default = "default_milieu")]
+    milieu: String,
+    sector: Option<String>,
+    sx: Option<i32>,
+    sy: Option<i32>,
+    hex: Option<String>,
+}
+
+/// `GET /api/credits` — credits/attribution for a location (port of
+/// `CreditsHandler.cs`, data side). Resolves the sector (by name or sx,sy) and
+/// a hex (defaults to the sector's central hex), returning sector/subsector/
+/// world/product credits as the documented JSON shape.
+async fn get_credits(Query(q): Query<CreditsQuery>, State(state): State<AppState>) -> Response {
+    let universe = match state.universe(&q.milieu) {
+        Ok(u) => u,
+        Err(e) => return e.into_response(),
+    };
+    let entry = if let (Some(sx), Some(sy)) = (q.sx, q.sy) {
+        universe.sectors.iter().find(|s| s.location.x == sx && s.location.y == sy)
+    } else if let Some(name) = &q.sector {
+        universe.sectors.iter().find(|s| {
+            s.name.eq_ignore_ascii_case(name)
+                || s.abbreviation.as_deref().is_some_and(|a| a.eq_ignore_ascii_case(name))
+        })
+    } else {
+        return (StatusCode::BAD_REQUEST, "No sector specified.").into_response();
+    };
+    let Some(entry) = entry else {
+        return (StatusCode::NOT_FOUND, "The specified sector was not found.").into_response();
+    };
+
+    // Default to the sector's central hex (1620), matching Astrometrics.SectorCentralHex.
+    let hex = q.hex.clone().unwrap_or_else(|| "1620".to_string());
+    let result = build_credits(&state, &q.milieu, entry, &hex);
+    axum::Json(result).into_response()
+}
+
+fn build_credits(
+    state: &AppState,
+    milieu: &str,
+    entry: &tmap_core::dto::SectorIndexEntry,
+    hex: &str,
+) -> tmap_core::dto::CreditsResult {
+    let nonempty = |s: String| (!s.is_empty()).then_some(s);
+    let (meta, worlds) = assemble_metadata(state, milieu, entry);
+
+    let mut r = tmap_core::dto::CreditsResult {
+        sector_x: meta.x,
+        sector_y: meta.y,
+        ..Default::default()
+    };
+    r.sector_name = meta.names.first().map(|n| n.text.clone());
+    r.credits = meta.credits_text.clone();
+    r.sector_tags = nonempty(meta.tags.clone());
+    r.sector_author = meta.data_file.author.clone();
+    r.sector_source = meta.data_file.source.clone();
+    r.sector_publisher = meta.data_file.publisher.clone();
+    r.sector_copyright = meta.data_file.copyright.clone();
+    r.sector_ref = meta.data_file.reference.clone();
+    r.sector_milieu = meta.data_file.milieu.clone().or_else(|| Some(milieu.to_string()));
+
+    if let Some(p) = meta.products.first() {
+        r.product_publisher = p.publisher.clone();
+        r.product_title = p.title.clone();
+        r.product_author = p.author.clone();
+        r.product_ref = p.reference.clone();
+    }
+
+    // Subsector (by its letter index A–P for this hex).
+    let letter = astrometrics::subsector_letter(hex).to_string();
+    if let Some(ss) = meta.subsectors.iter().find(|s| s.index == letter) {
+        r.subsector_name = nonempty(ss.name.clone());
+        r.subsector_index = nonempty(ss.index.clone());
+    }
+
+    // World at the hex.
+    if let Some(w) = worlds.iter().find(|w| w.hex == hex) {
+        r.world_name = nonempty(w.name.clone());
+        r.world_hex = nonempty(w.hex.clone());
+        r.world_uwp = nonempty(w.uwp.clone());
+        r.world_remarks = nonempty(w.remarks.clone());
+        r.world_ix = w.importance.clone();
+        r.world_ex = w.economic.clone();
+        r.world_cx = w.cultural.clone();
+        r.world_pbg = nonempty(w.pbg.clone());
+        r.world_allegiance = nonempty(w.allegiance.clone());
+    }
+
+    r
 }
 
 /// The `Allegiances` list: every code used by the worlds and by the borders/
