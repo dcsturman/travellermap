@@ -263,20 +263,35 @@ async fn search_public_envelope() {
 // --- SEC / tab text output -----------------------------------------------
 
 #[tokio::test]
-#[ignore = "sec: emit TabDelimited text via SectorWriter"]
 async fn sec_tab_delimited() {
     let (status, ct, body) = get("/api/sec?sector=Spinward%20Marches&subsector=A&type=TabDelimited").await;
     assert_eq!(status, StatusCode::OK);
     assert!(ct.contains("text/plain"), "ct={ct}");
+    // TabDelimited carries no metadata block (hence no timestamp) — byte-exact.
     assert_eq!(body, golden("sec_sm_subsectorA.tab"));
 }
 
 #[tokio::test]
-#[ignore = "sec: emit SecondSurvey text via SectorWriter"]
 async fn sec_second_survey() {
     let (status, _, body) = get("/api/sec?sector=Spinward%20Marches&subsector=A&type=SecondSurvey").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, golden("sec_sm_subsectorA.sec"));
+    // The metadata block carries a generation timestamp; normalize it away.
+    assert_eq!(strip_timestamp(&body), strip_timestamp(&golden("sec_sm_subsectorA.sec")));
+}
+
+/// Replace the `# <ISO-8601 timestamp>` metadata line with a fixed token so the
+/// (non-deterministic) generation time doesn't defeat byte comparison.
+fn strip_timestamp(s: &str) -> String {
+    s.lines()
+        .map(|l| {
+            if l.starts_with("# ") && l.len() > 4 && l.as_bytes()[2].is_ascii_digit() && l.contains('T') {
+                "# <TIMESTAMP>"
+            } else {
+                l
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 // --- Metadata ------------------------------------------------------------

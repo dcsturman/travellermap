@@ -88,6 +88,38 @@ impl Coord {
     }
 }
 
+/// Subsector index `0..16` (A=0 … P=15) of a world's hex (`World.Subsector`):
+/// `(col-1)/8 + (row-1)/10 * 4`. Out-of-range hex clamps to 0.
+pub fn subsector_index(hex: &str) -> usize {
+    let (c, r) = parse_hex(hex).unwrap_or((1, 1));
+    let sc = ((c - 1) / SUBSECTOR_WIDTH).clamp(0, 3);
+    let sr = ((r - 1) / SUBSECTOR_HEIGHT).clamp(0, 3);
+    (sr * 4 + sc) as usize
+}
+
+/// Subsector letter `'A'..='P'` of a world's hex (`World.SS`).
+pub fn subsector_letter(hex: &str) -> char {
+    (b'A' + subsector_index(hex) as u8) as char
+}
+
+/// Quadrant index of a world's hex (`World.Quadrant`):
+/// `(col-1)/16 + (row-1)/20 * 4` (ported verbatim from the reference).
+pub fn quadrant_index(hex: &str) -> usize {
+    let (c, r) = parse_hex(hex).unwrap_or((1, 1));
+    let qc = (c - 1) / (SUBSECTOR_WIDTH * 2);
+    let qr = (r - 1) / (SUBSECTOR_HEIGHT * 2);
+    (qc + qr * 4).max(0) as usize
+}
+
+/// A world's hex relative to its subsector origin (`Hex.ToSubsectorString`),
+/// e.g. `"0911"` → `"0101"`. Used when `sscoords=1`.
+pub fn subsector_hex(hex: &str) -> String {
+    let (c, r) = parse_hex(hex).unwrap_or((1, 1));
+    let sc = (c - 1).rem_euclid(SUBSECTOR_WIDTH) + 1;
+    let sr = (r - 1).rem_euclid(SUBSECTOR_HEIGHT) + 1;
+    format!("{sc:02}{sr:02}")
+}
+
 /// Parse a four-digit hex label like `"1910"` into 1-based `(col, row)`
 /// (column 01-32, row 01-40). Returns `None` if malformed.
 pub fn parse_hex(hex: &str) -> Option<(i32, i32)> {

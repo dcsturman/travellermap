@@ -19,16 +19,19 @@ use axum::{
 };
 use serde::Deserialize;
 use tmap_core::{
-    astrometrics::{parse_hex, Coord},
+    astrometrics::{self, parse_hex, Coord},
     dto::{
-        Overlays, SearchResults, SectorData, SectorInfo, SectorName, Universe, UniverseResult,
-        UniverseSector, VectorObject, World, WorldLabel,
+        DataFileMeta, Overlays, SearchResults, SectorData, SectorInfo, SectorName, Subsector,
+        Universe, UniverseResult, UniverseSector, VectorObject, World, WorldLabel,
     },
     parse::{
-        border_region, parse_column, parse_map_labels, parse_milieu_index, parse_sec, parse_tab,
-        parse_vector_object, parse_world_labels, sector_border_styles, sector_borders,
+        border_region, milieu_sector_block, parse_column, parse_map_labels, parse_milieu_index,
+        parse_sec, parse_tab, parse_vector_object, parse_world_labels, sector_allegiances,
+        sector_border_styles, sector_borders, sector_credits, sector_datafile_meta,
         sector_index_entry, sector_routes, sector_subsectors,
     },
+    sector_writer::{self, WriteOptions},
+    world_util::{allegiance_name, synthesize_abbreviation},
 };
 use tower_http::cors::CorsLayer;
 
@@ -274,6 +277,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route("/api/sector/{milieu}/{name}", get(get_sector))
         // Public-API compatibility layer (documented URLs + PascalCase JSON).
         .route("/api/coordinates", get(compat::get_coordinates))
+        .route("/api/sec", get(get_sec))
         .route("/api/milieux", get(compat::get_milieux))
         .route("/t5ss/allegiances", get(compat::get_allegiances))
         .route("/t5ss/sophonts", get(compat::get_sophonts))
@@ -468,11 +472,19 @@ async fn get_universe(
                 } else {
                     s.names.clone()
                 };
+                // OTU sectors with no declared abbreviation get a synthesized
+                // one (e.g. "Zhdant" → "Zhda"), matching the reference.
+                let abbreviation = s.abbreviation.clone().or_else(|| {
+                    tags.split_whitespace()
+                        .any(|t| t == "OTU")
+                        .then(|| names.first().and_then(|n| synthesize_abbreviation(&n.text)))
+                        .flatten()
+                });
                 UniverseSector {
                     x: s.location.x,
                     y: s.location.y,
                     milieu: q.milieu.clone(),
-                    abbreviation: s.abbreviation.clone(),
+                    abbreviation,
                     tags,
                     names,
                 }
@@ -568,6 +580,322 @@ async fn get_route(
         .find_route(start, end, jump, opts)
         .ok_or_else(|| (StatusCode::NOT_FOUND, "no route found".to_string()))?;
     Ok(Json(result))
+}
+
+#[derive(Debug, Deserialize)]
+struct SecQuery {
+    #[serde(default = "default_milieu")]
+    milieu: String,
+    /// Sector by display name or T5SS abbreviation.
+    sector: Option<String>,
+    sx: Option<i32>,
+    sy: Option<i32>,
+    /// Restrict to one subsector (letter A–P or name).
+    subsector: Option<String>,
+    /// Restrict to one quadrant (`alpha`/`beta`/`gamma`/`delta`).
+    quadrant: Option<String>,
+    /// Output format: `TabDelimited` | `SecondSurvey`. (Legacy `SEC` pending.)
+    #[serde(rename = "type")]
+    type_: Option<String>,
+    /// Booleans (`0`/`1`/`true`/`false`); reference defaults: metadata=1, header=1, sscoords=0.
+    metadata: Option<String>,
+    header: Option<String>,
+    sscoords: Option<String>,
+}
+
+/// Parse a reference-style boolean query option (`1`/`true` → true, else the default).
+fn bool_opt(v: &Option<String>, default: bool) -> bool {
+    match v.as_deref() {
+        Some("1") | Some("true") | Some("True") => true,
+        Some("0") | Some("false") | Some("False") => false,
+        _ => default,
+    }
+}
+
+/// `GET /api/sec` — a sector's worlds as SEC/SecondSurvey/TabDelimited text.
+/// Ports `server/api/SECHandler.cs` (data side). Currently serves
+/// `type=TabDelimited` and `type=SecondSurvey`; the legacy fixed-column `SEC`
+/// format (the no-`type` default) is not yet ported (needs the T5→legacy
+/// allegiance/base transforms) → 400 with a pointer to the supported types.
+async fn get_sec(Query(q): Query<SecQuery>, State(state): State<AppState>) -> Response {
+    match build_sec(&state, &q) {
+        Ok(text) => (
+            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            text,
+        )
+            .into_response(),
+        Err((code, msg)) => (code, msg).into_response(),
+    }
+}
+
+fn build_sec(state: &AppState, q: &SecQuery) -> Result<String, (StatusCode, String)> {
+    let media = q.type_.as_deref().unwrap_or("SEC");
+    if media != "TabDelimited" && media != "SecondSurvey" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("type '{media}' not yet supported; use type=TabDelimited or type=SecondSurvey"),
+        ));
+    }
+
+    // Resolve the sector by sx,sy or name/abbreviation.
+    let universe = state.universe(&q.milieu)?;
+    let entry = if let (Some(sx), Some(sy)) = (q.sx, q.sy) {
+        universe.sectors.iter().find(|s| s.location.x == sx && s.location.y == sy)
+    } else if let Some(name) = &q.sector {
+        universe.sectors.iter().find(|s| {
+            s.name.eq_ignore_ascii_case(name)
+                || s.abbreviation.as_deref().is_some_and(|a| a.eq_ignore_ascii_case(name))
+        })
+    } else {
+        return Err((StatusCode::BAD_REQUEST, "No sector specified.".into()));
+    }
+    .ok_or((StatusCode::NOT_FOUND, "The specified sector was not found.".into()))?;
+
+    let dir = state.res_dir.join("Sectors").join(&q.milieu);
+    let (data_file, outcome) = resolve_and_parse_worlds(&dir, &entry.name, Some(entry))
+        .ok_or((StatusCode::NOT_FOUND, format!("no data for '{}'", entry.name)))?;
+    let all_worlds = outcome.worlds;
+
+    // Subsector / quadrant filtering (mirrors SECHandler's `options.filter`).
+    let subsectors = gather_subsectors(state, &dir, &data_file, entry, &q.milieu);
+    let filtered: Vec<World> = if let Some(sub) = &q.subsector {
+        let idx = subsector_index_for(sub, &subsectors)
+            .ok_or((StatusCode::NOT_FOUND, format!("subsector '{sub}' not found")))?;
+        all_worlds.iter().filter(|w| astrometrics::subsector_index(&w.hex) == idx).cloned().collect()
+    } else if let Some(quad) = &q.quadrant {
+        let qidx = quadrant_index_for(quad)
+            .ok_or((StatusCode::BAD_REQUEST, format!("quadrant '{quad}' is invalid")))?;
+        all_worlds.iter().filter(|w| astrometrics::quadrant_index(&w.hex) == qidx).cloned().collect()
+    } else {
+        all_worlds.clone()
+    };
+
+    let opts = WriteOptions {
+        sscoords: bool_opt(&q.sscoords, false),
+        include_header: bool_opt(&q.header, true),
+    };
+
+    // Effective abbreviation: declared, else synthesized for OTU sectors.
+    let mtag = milieu_tag(&state.res_dir, &q.milieu);
+    let is_otu = entry
+        .tags
+        .split_whitespace()
+        .chain(mtag.as_deref().unwrap_or("").split_whitespace())
+        .any(|t| t == "OTU");
+    let abbr = entry.abbreviation.clone().or_else(|| {
+        is_otu.then(|| entry.names.first().and_then(|n| synthesize_abbreviation(&n.text))).flatten()
+    });
+
+    if media == "TabDelimited" {
+        // TabDelimited ignores includeMetadata (no comment block), per the reference.
+        return Ok(sector_writer::write_tab(&filtered, abbr.as_deref().unwrap_or(""), &opts));
+    }
+
+    // SecondSurvey: optional metadata comment block (allegiances from ALL worlds),
+    // then the columnar world table (filtered).
+    let mut out = String::new();
+    if bool_opt(&q.metadata, true) {
+        out.push_str(&sec_metadata_block(
+            state, &dir, &data_file, entry, abbr.as_deref(), &q.milieu, &subsectors, &all_worlds,
+        ));
+    }
+    out.push_str(&sector_writer::write_second_survey(&filtered, &opts));
+    Ok(out)
+}
+
+/// Subsector index 0–15 for a subsector letter (`A`–`P`) or name.
+fn subsector_index_for(label: &str, subsectors: &[Subsector]) -> Option<usize> {
+    if label.len() == 1 {
+        let c = label.chars().next().unwrap().to_ascii_uppercase();
+        if ('A'..='P').contains(&c) {
+            return Some((c as u8 - b'A') as usize);
+        }
+    }
+    subsectors
+        .iter()
+        .find(|s| !s.name.is_empty() && s.name.eq_ignore_ascii_case(label))
+        .and_then(|s| s.index.chars().next())
+        .map(|c| (c.to_ascii_uppercase() as u8 - b'A') as usize)
+}
+
+/// Quadrant index for `alpha`/`beta`/`gamma`/`delta` (`Sector.QuadrantIndexFor`).
+fn quadrant_index_for(label: &str) -> Option<usize> {
+    match label.to_ascii_lowercase().as_str() {
+        "alpha" => Some(0),
+        "beta" => Some(1),
+        "gamma" => Some(2),
+        "delta" => Some(3),
+        _ => None,
+    }
+}
+
+/// Read a sector's subsector list from its metadata `.xml`, falling back to the
+/// inline region-list block.
+fn gather_subsectors(
+    state: &AppState,
+    dir: &FsPath,
+    data_file: &str,
+    entry: &tmap_core::dto::SectorIndexEntry,
+    milieu: &str,
+) -> Vec<Subsector> {
+    let meta_xml = read_meta_xml(dir, data_file, entry);
+    let mut subs = sector_subsectors(&meta_xml);
+    if subs.is_empty() {
+        let region = state.region_xml(milieu);
+        let inline = milieu_sector_block(&region, &entry.name).unwrap_or_default();
+        subs = sector_subsectors(&inline);
+    }
+    subs
+}
+
+/// The sector's metadata `.xml` text (MetadataFile, else data-file stem + `.xml`).
+fn read_meta_xml(dir: &FsPath, data_file: &str, entry: &tmap_core::dto::SectorIndexEntry) -> String {
+    let meta_file = entry
+        .metadata_file
+        .clone()
+        .or_else(|| {
+            FsPath::new(data_file)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(|stem| format!("{stem}.xml"))
+        })
+        .unwrap_or_else(|| format!("{}.xml", entry.name));
+    read_text(dir.join(&meta_file)).unwrap_or_default()
+}
+
+/// Build the `# …` metadata comment block prefixed to SEC/SecondSurvey output
+/// (port of `Sector.Serialize`'s header, `isT5` path).
+#[allow(clippy::too_many_arguments)]
+fn sec_metadata_block(
+    state: &AppState,
+    dir: &FsPath,
+    data_file: &str,
+    entry: &tmap_core::dto::SectorIndexEntry,
+    abbreviation: Option<&str>,
+    milieu: &str,
+    subsectors: &[Subsector],
+    all_worlds: &[World],
+) -> String {
+    let meta_xml = read_meta_xml(dir, data_file, entry);
+    let region = state.region_xml(milieu);
+    let inline = milieu_sector_block(&region, &entry.name).unwrap_or_default();
+
+    let credits = sector_credits(&meta_xml).or_else(|| sector_credits(&inline));
+    let mut df: DataFileMeta = sector_datafile_meta(&inline);
+    if df == DataFileMeta::default() {
+        df = sector_datafile_meta(&meta_xml);
+    }
+    let alleg_names = sector_allegiances(&meta_xml);
+
+    let mut s = String::new();
+    let mut line = |t: &str| {
+        s.push_str(t);
+        s.push_str("\r\n");
+    };
+
+    line("# Generated by https://travellermap.com");
+    line(&format!("# {}", iso8601_now_utc()));
+    line("");
+
+    let name0 = entry.names.first().map(|n| n.text.as_str()).unwrap_or(&entry.name);
+    line(&format!("# {name0}"));
+    line(&format!("# {},{}", entry.location.x, -entry.location.y));
+    line("");
+    for n in &entry.names {
+        match &n.lang {
+            Some(lang) => line(&format!("# Name: {} ({lang})", n.text)),
+            None => line(&format!("# Name: {}", n.text)),
+        }
+    }
+    if let Some(abbr) = abbreviation {
+        line("");
+        line(&format!("# Abbreviation: {abbr}"));
+    }
+    line("");
+    line(&format!("# Milieu: {milieu}"));
+    if let Some(c) = &credits {
+        line("");
+        line(&format!("# Credits: {}", strip_html_collapse(c)));
+    }
+    if df != DataFileMeta::default() {
+        line("");
+        if let Some(v) = &df.author { line(&format!("# Author:    {v}")); }
+        if let Some(v) = &df.publisher { line(&format!("# Publisher: {v}")); }
+        if let Some(v) = &df.copyright { line(&format!("# Copyright: {v}")); }
+        if let Some(v) = &df.source { line(&format!("# Source:    {v}")); }
+        if let Some(v) = &df.reference { line(&format!("# Ref:       {v}")); }
+    }
+    line("");
+    for i in 0..16u8 {
+        let c = (b'A' + i) as char;
+        let name = subsectors
+            .iter()
+            .find(|ss| ss.index.eq_ignore_ascii_case(&c.to_string()))
+            .map(|ss| ss.name.as_str())
+            .unwrap_or("");
+        line(&format!("# Subsector {c}: {name}"));
+    }
+    line("");
+
+    // Allegiances present across ALL worlds (not the filtered subset), sorted.
+    let mut codes: Vec<&str> = all_worlds
+        .iter()
+        .map(|w| w.allegiance.as_str())
+        .filter(|a| !a.is_empty())
+        .collect();
+    codes.sort_unstable();
+    codes.dedup();
+    for code in codes {
+        let name = alleg_names
+            .get(code)
+            .cloned()
+            .or_else(|| allegiance_name(code));
+        if let Some(name) = name {
+            line(&format!("# Alleg: {code}: \"{name}\""));
+        }
+    }
+    line("");
+    s
+}
+
+/// Strip HTML tags and collapse all whitespace runs to single spaces, trimmed
+/// (the reference's `Regex.Replace("<.*?>","")` + `\s+ → " "` for `# Credits:`).
+fn strip_html_collapse(s: &str) -> String {
+    let mut no_tags = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => no_tags.push(c),
+            _ => {}
+        }
+    }
+    no_tags.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Current UTC time as ISO-8601 with a `+00:00` offset (the reference uses local
+/// time; the value is cosmetic — generation timestamp — so UTC is fine).
+fn iso8601_now_utc() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0) as i64;
+    let days = secs.div_euclid(86_400);
+    let tod = secs.rem_euclid(86_400);
+    let (h, mi, s) = (tod / 3600, (tod % 3600) / 60, tod % 60);
+    // Howard Hinnant's days→civil(y,m,d).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{s:02}+00:00")
 }
 
 #[derive(Debug, Deserialize)]

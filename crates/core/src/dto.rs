@@ -228,6 +228,17 @@ pub struct Universe {
     pub sectors: Vec<SectorIndexEntry>,
 }
 
+/// Provenance attributes from a sector's `<DataFile>` element (region list),
+/// surfaced in the `# …` metadata comment block of SEC/SecondSurvey output.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DataFileMeta {
+    pub author: Option<String>,
+    pub publisher: Option<String>,
+    pub copyright: Option<String>,
+    pub source: Option<String>,
+    pub reference: Option<String>,
+}
+
 /// One localized sector name, matching the public-API `Names` element
 /// (`{"Text","Lang"}`). `lang` is absent for the canonical (English) name.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

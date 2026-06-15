@@ -534,6 +534,31 @@ fn sophont_name(code: &str) -> Option<String> {
     table.get(code).cloned()
 }
 
+/// Derive a sector's 4-letter abbreviation from its canonical name when none is
+/// declared (port of `Sector.SynthesizeAbbreviation`): strip spaces, replace any
+/// non-letter with `x`, take 4 chars, capitalize the first and lowercase the
+/// rest — e.g. `"Zhdant"` → `"Zhda"`. The caller gates on the sector being OTU.
+/// Returns `None` for an empty/letterless name.
+pub fn synthesize_abbreviation(name: &str) -> Option<String> {
+    let cleaned: String = name
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .map(|c| if c.is_ascii_alphabetic() { c } else { 'x' })
+        .collect();
+    if cleaned.is_empty() {
+        return None;
+    }
+    let mut out = String::new();
+    for (i, c) in cleaned.chars().take(4).enumerate() {
+        if i == 0 {
+            out.extend(c.to_uppercase());
+        } else {
+            out.extend(c.to_lowercase());
+        }
+    }
+    Some(out)
+}
+
 /// Allegiance code → full display name, from `res/t5ss/allegiance_codes.tab`
 /// (`Code <tab> Legacy <tab> BaseCode <tab> Name <tab> Location`, skip header).
 ///
@@ -1235,5 +1260,15 @@ mod tests {
         let d = decode_world(&w);
         // 8 - 1 - 0 - 3 = 4
         assert_eq!(d.other_worlds, Some(4));
+    }
+
+    #[test]
+    fn synthesizes_abbreviation() {
+        assert_eq!(synthesize_abbreviation("Zhdant").as_deref(), Some("Zhda"));
+        // Spaces stripped, first capital + rest lowercase.
+        assert_eq!(synthesize_abbreviation("Far Frontiers").as_deref(), Some("Farf"));
+        // Non-letters become 'x'.
+        assert_eq!(synthesize_abbreviation("3Worlds").as_deref(), Some("Xwor"));
+        assert_eq!(synthesize_abbreviation("   ").as_deref(), None);
     }
 }

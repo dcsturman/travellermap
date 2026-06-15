@@ -500,10 +500,32 @@ pub fn sector_tags(xml: &str) -> String {
 pub fn sector_credits(xml: &str) -> Option<String> {
     let doc = roxmltree::Document::parse(xml).ok()?;
     let credits = doc.root_element().children().find(|n| n.has_tag_name("Credits"))?;
-    // Concatenate all descendant text so multi-fragment content isn't truncated.
-    let text: String = credits.descendants().filter_map(|n| n.text()).collect();
+    // Concatenate all descendant *text nodes* so multi-fragment content (e.g.
+    // `…<cite>…</cite>…`) isn't truncated — and isn't double-counted (iterating
+    // every descendant and calling `.text()` counts an element's text twice:
+    // once for the element, once for its text child).
+    let text: String = credits.descendants().filter(|n| n.is_text()).filter_map(|n| n.text()).collect();
     let trimmed = text.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
+}
+
+/// Provenance attributes of the `<DataFile>` element in a sector's region-list
+/// block (`Source`/`Author`/`Publisher`/`Copyright`/`Ref`). Used for the SEC/
+/// SecondSurvey metadata comment block.
+pub fn sector_datafile_meta(xml: &str) -> crate::dto::DataFileMeta {
+    let mut meta = crate::dto::DataFileMeta::default();
+    let Ok(doc) = roxmltree::Document::parse(xml) else {
+        return meta;
+    };
+    if let Some(df) = doc.descendants().find(|n| n.has_tag_name("DataFile")) {
+        let attr = |name: &str| df.attribute(name).map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+        meta.author = attr("Author");
+        meta.publisher = attr("Publisher");
+        meta.copyright = attr("Copyright");
+        meta.source = attr("Source");
+        meta.reference = attr("Ref");
+    }
+    meta
 }
 
 /// Per-sector allegiance borders from a sector metadata `.xml` (`<Border

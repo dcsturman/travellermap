@@ -17,4 +17,5 @@ pub mod astrometrics;
 pub mod dto;
 pub mod parse;
 pub mod route;
+pub mod sector_writer;
 pub mod world_util;
