@@ -27,8 +27,7 @@ use tmap_core::{
     parse::{
         border_region, milieu_sector_block, parse_column, parse_map_labels, parse_milieu_index,
         parse_sec, parse_tab, parse_vector_object, parse_world_labels, sector_allegiances,
-        sector_border_styles, sector_borders, sector_credits, sector_datafile_meta,
-        sector_index_entry, sector_routes, sector_subsectors,
+        sector_credits, sector_datafile_meta, sector_index_entry, sector_subsectors,
     },
     metadata::{parse_sector_metadata, MetaAllegiance},
     sector_writer::{self, WriteOptions},
@@ -422,6 +421,65 @@ fn project_overview(world: World) -> World {
         worlds: None,
         resource_units: None,
         ..world
+    }
+}
+
+// --- Render projections: shared `metadata` types → render `dto` types --------
+// These map the parse-once `SectorMetadata` onto the renderer-tuned `SectorData`
+// shapes the Leptos client consumes, reproducing the old per-element parse
+// exactly (e.g. a border with `ShowLabel=false` drops its label + position).
+
+fn render_subsectors(subs: &[tmap_core::metadata::MetaSubsector]) -> Vec<Subsector> {
+    subs.iter().map(|s| Subsector { index: s.index.clone(), name: s.name.clone() }).collect()
+}
+
+fn render_route(r: &tmap_core::metadata::MetaRoute) -> tmap_core::dto::Route {
+    tmap_core::dto::Route {
+        start: r.start.clone(),
+        end: r.end.clone(),
+        start_offset: (r.start_offset_x, r.start_offset_y),
+        end_offset: (r.end_offset_x, r.end_offset_y),
+        allegiance: r.allegiance.clone(),
+        color: r.color.clone(),
+    }
+}
+
+/// Borders + Regions of a sector in source document order (`<Border>`/`<Region>`
+/// interleaved), so the render layer draws them exactly as the reference did.
+fn ordered_borders(m: &tmap_core::metadata::SectorMetadata) -> Vec<&tmap_core::metadata::MetaBorder> {
+    let mut v: Vec<&tmap_core::metadata::MetaBorder> = m.borders.iter().chain(&m.regions).collect();
+    v.sort_by_key(|b| b.seq);
+    v
+}
+
+fn render_border(b: &tmap_core::metadata::MetaBorder) -> tmap_core::dto::Border {
+    // `ShowLabel=false` suppresses both the label and its position (the client
+    // resolves border labels from `label_position`).
+    let (label, label_position) = if b.show_label {
+        (b.label.clone(), b.label_position.clone())
+    } else {
+        (None, None)
+    };
+    tmap_core::dto::Border {
+        allegiance: b.allegiance.clone().unwrap_or_default(),
+        hexes: b.hexes.clone(),
+        region: Vec::new(),
+        color: b.color.clone(),
+        label,
+        label_position,
+        wrap_label: b.wrap_label,
+        label_offset: (b.label_offset_x, b.label_offset_y),
+    }
+}
+
+fn render_label(l: &tmap_core::metadata::MetaLabel) -> tmap_core::dto::SectorLabel {
+    tmap_core::dto::SectorLabel {
+        text: l.text.clone(),
+        hex: l.hex.clone(),
+        color: l.color.clone(),
+        size: l.size.clone(),
+        wrap: l.wrap,
+        offset: (l.offset_x, l.offset_y),
     }
 }
 
@@ -1179,41 +1237,62 @@ pub(crate) fn build_sector_bytes(
     let region = state.region_xml(milieu);
     let inline = tmap_core::parse::milieu_sector_block(&region, name).unwrap_or_default();
 
-    let mut subsectors = sector_subsectors(&meta_xml);
+    // Phase B: parse each metadata source **once** into the shared
+    // `SectorMetadata`, then project to the render `SectorData` — replacing the
+    // previous ~8 separate `sector_*` calls (each of which re-parsed the XML).
+    // The reference's per-sector `.xml` wins; the inline region-list block fills
+    // gaps. Output is byte-identical to the old per-element path (verified
+    // against a baseline of all M1105 sectors).
+    let meta = parse_sector_metadata(&meta_xml);
+    let inline_meta = parse_sector_metadata(&inline);
+
+    let mut subsectors: Vec<Subsector> = render_subsectors(&meta.subsectors);
     if subsectors.is_empty() {
-        subsectors = sector_subsectors(&inline);
+        subsectors = render_subsectors(&inline_meta.subsectors);
     }
 
-    let mut routes = sector_routes(&meta_xml);
+    // Routes: per-sector first, then inline (dedup by start/end + offsets).
+    let mut routes: Vec<tmap_core::dto::Route> = meta.routes.iter().map(render_route).collect();
     let mut seen_routes: HashSet<(String, String, (i32, i32), (i32, i32))> = routes
         .iter()
         .map(|r| (r.start.clone(), r.end.clone(), r.start_offset, r.end_offset))
         .collect();
-    for r in sector_routes(&inline) {
+    for r in inline_meta.routes.iter().map(render_route) {
         if seen_routes.insert((r.start.clone(), r.end.clone(), r.start_offset, r.end_offset)) {
             routes.push(r);
         }
     }
 
-    let mut borders = sector_borders(&meta_xml);
+    // Borders + Regions feed the same micro-border layer, in source document
+    // order (interleaved, via `seq`), deduped by allegiance + hexes.
+    let mut borders: Vec<tmap_core::dto::Border> =
+        ordered_borders(&meta).into_iter().map(render_border).collect();
     let mut seen_borders: HashSet<(String, Vec<String>)> =
         borders.iter().map(|b| (b.allegiance.clone(), b.hexes.clone())).collect();
-    for b in sector_borders(&inline) {
+    for b in ordered_borders(&inline_meta).into_iter().map(render_border) {
         if seen_borders.insert((b.allegiance.clone(), b.hexes.clone())) {
             borders.push(b);
         }
     }
 
-    let mut border_styles = sector_border_styles(&meta_xml);
-    for (k, v) in sector_border_styles(&inline) {
-        border_styles.entry(k).or_insert(v);
+    // Border fill colors from the sector stylesheet's `border.<alleg>` rules.
+    let mut border_styles = meta
+        .stylesheet
+        .as_deref()
+        .map(tmap_core::parse::parse_border_styles_css)
+        .unwrap_or_default();
+    if let Some(css) = inline_meta.stylesheet.as_deref() {
+        for (k, v) in tmap_core::parse::parse_border_styles_css(css) {
+            border_styles.entry(k).or_insert(v);
+        }
     }
 
     // Sector-local allegiance names (preferred over the global stock table when
     // labeling a border with no explicit `Label`), from both metadata sources.
-    let mut alleg_names = tmap_core::parse::sector_allegiances(&meta_xml);
-    for (k, v) in tmap_core::parse::sector_allegiances(&inline) {
-        alleg_names.entry(k).or_insert(v);
+    let mut alleg_names: HashMap<String, String> =
+        meta.local_allegiances.iter().map(|a| (a.code.clone(), a.name.clone())).collect();
+    for a in &inline_meta.local_allegiances {
+        alleg_names.entry(a.code.clone()).or_insert_with(|| a.name.clone());
     }
 
     for b in &mut borders {
@@ -1235,10 +1314,10 @@ pub(crate) fn build_sector_bytes(
     }
 
     // Standalone hand-placed labels ("Outrim Void", …) from both sources.
-    let mut labels = tmap_core::parse::sector_labels(&meta_xml);
+    let mut labels: Vec<tmap_core::dto::SectorLabel> = meta.labels.iter().map(render_label).collect();
     let mut seen_labels: HashSet<(String, String)> =
         labels.iter().map(|l| (l.text.clone(), l.hex.clone())).collect();
-    for l in tmap_core::parse::sector_labels(&inline) {
+    for l in inline_meta.labels.iter().map(render_label) {
         if seen_labels.insert((l.text.clone(), l.hex.clone())) {
             labels.push(l);
         }
@@ -1252,12 +1331,11 @@ pub(crate) fn build_sector_bytes(
 
     // Review tags + data-source credit (prefer the per-sector xml; the inline
     // region-list block carries Tags too, so fall back to it for tags).
-    let mut tags = tmap_core::parse::sector_tags(&meta_xml);
+    let mut tags = meta.tags.clone();
     if tags.is_empty() {
-        tags = tmap_core::parse::sector_tags(&inline);
+        tags = inline_meta.tags.clone();
     }
-    let credits = tmap_core::parse::sector_credits(&meta_xml)
-        .or_else(|| tmap_core::parse::sector_credits(&inline));
+    let credits = meta.credits_text.clone().or_else(|| inline_meta.credits_text.clone());
 
     let data = SectorData {
         info: SectorInfo {

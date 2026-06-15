@@ -636,17 +636,21 @@ fn attr_is_false(n: roxmltree::Node, name: &str) -> bool {
 /// `border.SwCf { color: blue; }`). Returns allegiance → color, which overrides
 /// the global `otu.css` table but is overridden by a border's explicit `Color`.
 pub fn sector_border_styles(xml: &str) -> HashMap<String, String> {
-    let mut map = HashMap::new();
     let Ok(doc) = roxmltree::Document::parse(xml) else {
-        return map;
+        return HashMap::new();
     };
-    let Some(text) = doc
-        .descendants()
+    doc.descendants()
         .find(|n| n.has_tag_name("Stylesheet"))
         .and_then(|n| n.text())
-    else {
-        return map;
-    };
+        .map(parse_border_styles_css)
+        .unwrap_or_default()
+}
+
+/// Parse `border.<allegiance> { color: … }` rules out of a sector stylesheet's
+/// CSS text → allegiance-code → color. Split out of [`sector_border_styles`] so
+/// callers that already hold the stylesheet text don't re-parse the XML.
+pub fn parse_border_styles_css(text: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
     for rule in text.split('}') {
         let Some((selectors, body)) = rule.split_once('{') else {
             continue;

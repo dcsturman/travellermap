@@ -20,9 +20,6 @@ use crate::dto::SectorName;
 fn is_false(b: &bool) -> bool {
     !*b
 }
-fn is_true(b: &bool) -> bool {
-    *b
-}
 fn is_zero_f(v: &f32) -> bool {
     *v == 0.0
 }
@@ -127,26 +124,57 @@ pub struct MetaAllegiance {
     pub base: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+/// A border/region as parsed (**raw**): `label_position` is the explicit
+/// `LabelPosition` attribute (`None` if absent), `hexes` the path. Both
+/// projections read these — the render path wants the raw attribute, the public
+/// JSON computes the bounding-box-centre fallback and joins the path. Serialized
+/// manually so the public shape carries the *computed* `LabelPosition` + `Path`.
+#[derive(Debug)]
 pub struct MetaBorder {
-    #[serde(rename = "ShowLabel", skip_serializing_if = "is_true")]
     pub show_label: bool,
-    #[serde(rename = "WrapLabel", skip_serializing_if = "is_false")]
     pub wrap_label: bool,
-    #[serde(rename = "Color", skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
-    #[serde(rename = "Allegiance", skip_serializing_if = "Option::is_none")]
     pub allegiance: Option<String>,
-    #[serde(rename = "LabelPosition")]
-    pub label_position: String,
-    #[serde(rename = "LabelOffsetX", skip_serializing_if = "is_zero_f")]
+    pub label_position: Option<String>,
     pub label_offset_x: f32,
-    #[serde(rename = "LabelOffsetY", skip_serializing_if = "is_zero_f")]
     pub label_offset_y: f32,
-    #[serde(rename = "Label", skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    #[serde(rename = "Path")]
-    pub path: String,
+    pub hexes: Vec<String>,
+    /// Document-order index across `<Border>` *and* `<Region>` combined. The
+    /// render layer draws both in source order (interleaved); this lets the
+    /// caller restore that order after they're split into `borders`/`regions`.
+    pub seq: usize,
+}
+
+impl Serialize for MetaBorder {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut m = s.serialize_map(None)?;
+        if !self.show_label {
+            m.serialize_entry("ShowLabel", &false)?;
+        }
+        if self.wrap_label {
+            m.serialize_entry("WrapLabel", &true)?;
+        }
+        if let Some(c) = &self.color {
+            m.serialize_entry("Color", c)?;
+        }
+        if let Some(a) = &self.allegiance {
+            m.serialize_entry("Allegiance", a)?;
+        }
+        m.serialize_entry("LabelPosition", &label_position(self.label_position.clone(), &self.hexes))?;
+        if self.label_offset_x != 0.0 {
+            m.serialize_entry("LabelOffsetX", &self.label_offset_x)?;
+        }
+        if self.label_offset_y != 0.0 {
+            m.serialize_entry("LabelOffsetY", &self.label_offset_y)?;
+        }
+        if let Some(l) = &self.label {
+            m.serialize_entry("Label", l)?;
+        }
+        m.serialize_entry("Path", &self.hexes.join(" "))?;
+        m.end()
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -173,16 +201,22 @@ pub struct MetaRoute {
 
 #[derive(Debug, Serialize)]
 pub struct MetaLabel {
-    #[serde(rename = "Text")]
-    pub text: String,
     #[serde(rename = "Hex")]
     pub hex: String,
+    #[serde(rename = "Allegiance", skip_serializing_if = "Option::is_none")]
+    pub allegiance: Option<String>,
     #[serde(rename = "Color", skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
     #[serde(rename = "Size", skip_serializing_if = "Option::is_none")]
     pub size: Option<String>,
-    #[serde(rename = "Allegiance", skip_serializing_if = "Option::is_none")]
-    pub allegiance: Option<String>,
+    #[serde(rename = "Wrap")]
+    pub wrap: bool,
+    #[serde(rename = "OffsetX", skip_serializing_if = "is_zero_f")]
+    pub offset_x: f32,
+    #[serde(rename = "OffsetY", skip_serializing_if = "is_zero_f")]
+    pub offset_y: f32,
+    #[serde(rename = "Text")]
+    pub text: String,
 }
 
 fn attr(node: roxmltree::Node, name: &str) -> Option<String> {
@@ -204,11 +238,14 @@ fn label_position(explicit: Option<String>, hexes: &[String]) -> String {
     format!("{:02}{:02}", (min_x + max_x + 1) / 2, (min_y + max_y + 1) / 2)
 }
 
-fn parse_border(node: roxmltree::Node) -> MetaBorder {
+fn parse_border(node: roxmltree::Node, seq: usize) -> MetaBorder {
+    // Keep only 4-digit numeric hex tokens (matches the reference + the render
+    // border parse), so stray whitespace/garbage never enters the path.
     let hexes: Vec<String> = node
         .text()
         .unwrap_or("")
         .split_whitespace()
+        .filter(|t| t.len() == 4 && t.bytes().all(|b| b.is_ascii_digit()))
         .map(str::to_owned)
         .collect();
     MetaBorder {
@@ -216,11 +253,12 @@ fn parse_border(node: roxmltree::Node) -> MetaBorder {
         wrap_label: matches!(node.attribute("WrapLabel"), Some("True") | Some("true")),
         color: attr(node, "Color"),
         allegiance: attr(node, "Allegiance"),
-        label_position: label_position(attr(node, "LabelPosition"), &hexes),
+        label_position: attr(node, "LabelPosition"),
         label_offset_x: attr(node, "LabelOffsetX").and_then(|s| s.parse().ok()).unwrap_or(0.0),
         label_offset_y: attr(node, "LabelOffsetY").and_then(|s| s.parse().ok()).unwrap_or(0.0),
         label: attr(node, "Label"),
-        path: hexes.join(" "),
+        hexes,
+        seq,
     }
 }
 
@@ -241,6 +279,7 @@ pub fn parse_sector_metadata(xml: &str) -> SectorMetadata {
         meta.label = attr(root, "Label");
     }
 
+    let mut border_seq = 0usize;
     for n in doc.descendants() {
         match n.tag_name().name() {
             "Subsector" => {
@@ -265,8 +304,14 @@ pub fn parse_sector_metadata(xml: &str) -> SectorMetadata {
                     meta.credits_text = Some(trimmed.to_owned());
                 }
             }
-            "Border" => meta.borders.push(parse_border(n)),
-            "Region" => meta.regions.push(parse_border(n)),
+            "Border" => {
+                meta.borders.push(parse_border(n, border_seq));
+                border_seq += 1;
+            }
+            "Region" => {
+                meta.regions.push(parse_border(n, border_seq));
+                border_seq += 1;
+            }
             "Route" => meta.routes.push(MetaRoute {
                 start: attr(n, "Start").unwrap_or_default(),
                 end: attr(n, "End").unwrap_or_default(),
@@ -279,11 +324,14 @@ pub fn parse_sector_metadata(xml: &str) -> SectorMetadata {
                 route_type: attr(n, "Type"),
             }),
             "Label" => meta.labels.push(MetaLabel {
-                text: n.text().map(|s| s.trim().to_owned()).unwrap_or_default(),
                 hex: attr(n, "Hex").unwrap_or_default(),
+                allegiance: attr(n, "Allegiance"),
                 color: attr(n, "Color"),
                 size: attr(n, "Size"),
-                allegiance: attr(n, "Allegiance"),
+                wrap: matches!(n.attribute("Wrap"), Some("True") | Some("true")),
+                offset_x: attr(n, "OffsetX").and_then(|s| s.parse().ok()).unwrap_or(0.0),
+                offset_y: attr(n, "OffsetY").and_then(|s| s.parse().ok()).unwrap_or(0.0),
+                text: n.text().map(|s| s.trim().to_owned()).unwrap_or_default(),
             }),
             "Allegiance" => {
                 if let Some(code) = attr(n, "Code") {
