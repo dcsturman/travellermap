@@ -276,7 +276,9 @@ async fn fetch_route(
 ) -> Result<RouteResult, String> {
     let s = String::from(js_sys::encode_uri_component(start));
     let e = String::from(js_sys::encode_uri_component(end));
-    let mut url = format!("/api/route?start={s}&end={e}&jump={jump}&milieu={milieu}");
+    // `detail=true` asks for the rich {waypoints,jumps,parsecs} shape (absolute
+    // coords for drawing); the public default is a bare array of stops.
+    let mut url = format!("/api/route?start={s}&end={e}&jump={jump}&milieu={milieu}&detail=true");
     // (wild, im, nored, aok) — append only when set; the backend defaults false.
     let (wild, im, nored, aok) = opts;
     if wild {

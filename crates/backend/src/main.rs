@@ -609,6 +609,11 @@ struct RouteQuery {
     im: bool,
     #[serde(default)]
     aok: bool,
+    /// Private extension: return the rich `{waypoints,jumps,parsecs}` object
+    /// (with absolute coords, for our client to draw) instead of the documented
+    /// public bare array of stops. Off by default → public-API compatible.
+    #[serde(default)]
+    detail: bool,
 }
 
 fn default_jump() -> i32 {
@@ -622,7 +627,7 @@ fn default_jump() -> i32 {
 async fn get_route(
     Query(q): Query<RouteQuery>,
     State(state): State<AppState>,
-) -> Result<Json<tmap_core::dto::RouteResult>, (StatusCode, String)> {
+) -> Result<Response, (StatusCode, String)> {
     let jump = q.jump.clamp(1, 12);
     let index = state.route_index(&q.milieu)?;
 
@@ -640,7 +645,13 @@ async fn get_route(
     let result = index
         .find_route(start, end, jump, opts)
         .ok_or_else(|| (StatusCode::NOT_FOUND, "no route found".to_string()))?;
-    Ok(Json(result))
+    // Default: the documented public bare array of stops. `&detail=true` returns
+    // our rich object (waypoints with absolute coords) for the Leptos client.
+    if q.detail {
+        Ok(Json(result).into_response())
+    } else {
+        Ok(Json(result.to_public_stops()).into_response())
+    }
 }
 
 #[derive(Debug, Deserialize)]

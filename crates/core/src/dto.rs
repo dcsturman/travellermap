@@ -488,3 +488,65 @@ pub struct RouteResult {
     /// Total path length in parsecs (sum of per-jump hex distances).
     pub parsecs: i32,
 }
+
+impl RouteResult {
+    /// Project to the documented public `/api/route` shape: a bare array of
+    /// [`RouteStop`]s (port of `RouteHandler`'s `RouteStop` list). The private
+    /// `coord`/aggregate fields are dropped; `SectorX/Y` + `HexX/Y` are
+    /// recovered from each waypoint's absolute coordinate.
+    pub fn to_public_stops(&self) -> Vec<RouteStop> {
+        self.waypoints
+            .iter()
+            .map(|w| {
+                let (sx, sy, hx, hy) =
+                    crate::astrometrics::coordinates_to_location(w.coord.x, w.coord.y);
+                RouteStop {
+                    sector: w.sector.clone(),
+                    sector_x: sx,
+                    sector_y: sy,
+                    subsector: None,
+                    name: w.name.clone(),
+                    hex: w.hex.clone(),
+                    hex_x: hx,
+                    hex_y: hy,
+                    uwp: w.uwp.clone(),
+                    pbg: w.pbg.clone(),
+                    zone: w.zone.clone(),
+                    allegiance_name: w.allegiance.clone(),
+                }
+            })
+            .collect()
+    }
+}
+
+/// One stop in the public `/api/route` response (port of `RouteHandler`'s
+/// `RouteStop`). PascalCase; the endpoint returns a bare array of these.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RouteStop {
+    #[serde(rename = "Sector")]
+    pub sector: String,
+    #[serde(rename = "SectorX")]
+    pub sector_x: i32,
+    #[serde(rename = "SectorY")]
+    pub sector_y: i32,
+    /// Subsector display name. Not resolved per-waypoint here (the route index
+    /// holds no subsector names), so omitted when unknown.
+    #[serde(rename = "Subsector", default, skip_serializing_if = "Option::is_none")]
+    pub subsector: Option<String>,
+    #[serde(rename = "Name")]
+    pub name: String,
+    #[serde(rename = "Hex")]
+    pub hex: String,
+    #[serde(rename = "HexX")]
+    pub hex_x: i32,
+    #[serde(rename = "HexY")]
+    pub hex_y: i32,
+    #[serde(rename = "UWP")]
+    pub uwp: String,
+    #[serde(rename = "PBG")]
+    pub pbg: String,
+    #[serde(rename = "Zone")]
+    pub zone: String,
+    #[serde(rename = "AllegianceName")]
+    pub allegiance_name: String,
+}

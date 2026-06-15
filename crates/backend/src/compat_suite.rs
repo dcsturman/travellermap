@@ -373,7 +373,6 @@ async fn jumpworlds_json() {
 // the public API returns a bare array of stops. This asserts the public shape.
 
 #[tokio::test]
-#[ignore = "route: emit the public bare-array stop shape (currently {waypoints,…})"]
 async fn route_public_shape() {
     let (status, _, body) = get("/api/route?start=Spinward%20Marches%201910&end=Spinward%20Marches%202410&jump=2").await;
     assert_eq!(status, StatusCode::OK);
