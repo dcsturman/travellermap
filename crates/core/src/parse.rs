@@ -519,6 +519,7 @@ pub fn sector_datafile_meta(xml: &str) -> crate::dto::DataFileMeta {
     };
     if let Some(df) = doc.descendants().find(|n| n.has_tag_name("DataFile")) {
         let attr = |name: &str| df.attribute(name).map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+        meta.title = attr("Title");
         meta.author = attr("Author");
         meta.publisher = attr("Publisher");
         meta.copyright = attr("Copyright");

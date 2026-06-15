@@ -232,6 +232,7 @@ pub struct Universe {
 /// surfaced in the `# …` metadata comment block of SEC/SecondSurvey output.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct DataFileMeta {
+    pub title: Option<String>,
     pub author: Option<String>,
     pub publisher: Option<String>,
     pub copyright: Option<String>,

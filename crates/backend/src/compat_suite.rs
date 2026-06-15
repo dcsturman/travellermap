@@ -297,11 +297,46 @@ fn strip_timestamp(s: &str) -> String {
 // --- Metadata ------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "metadata: standalone full sector metadata JSON (needs fuller parse + serializer)"]
 async fn metadata_json() {
-    let (status, _, body) = get("/api/metadata?sector=Spinward%20Marches").await;
+    let (status, ct, body) = get("/api/metadata?sector=Spinward%20Marches").await;
     assert_eq!(status, StatusCode::OK);
-    assert_json_matches(&body, "metadata_sm.json");
+    assert!(ct.contains("application/json"), "ct={ct}");
+    assert_eq!(norm_metadata(&body), norm_metadata(&golden("metadata_sm.json")));
+}
+
+/// Normalize a metadata doc for comparison: (1) sort `Allegiances` by code —
+/// the reference builds it from an unordered `HashSet`; (2) resolve each route's
+/// `Start`/`End` + offsets to **absolute world coords** and drop the offsets, so
+/// two encodings of the same cross-sector edge (`3201`+`StartOffsetX=-1` vs
+/// `0001`) compare equal — immune to upstream route-notation drift.
+fn norm_metadata(s: &str) -> Value {
+    let mut v = jv(s);
+    let (sx, sy) = (v["X"].as_i64().unwrap_or(0), v["Y"].as_i64().unwrap_or(0));
+    if let Some(a) = v.get_mut("Allegiances").and_then(|a| a.as_array_mut()) {
+        a.sort_by(|x, y| x["Code"].as_str().cmp(&y["Code"].as_str()));
+    }
+    if let Some(routes) = v.get_mut("Routes").and_then(|r| r.as_array_mut()) {
+        for r in routes.iter_mut() {
+            let o = r.as_object_mut().unwrap();
+            let s_abs = route_abs(o, "Start", "StartOffsetX", "StartOffsetY", sx, sy);
+            let e_abs = route_abs(o, "End", "EndOffsetX", "EndOffsetY", sx, sy);
+            for k in ["StartOffsetX", "StartOffsetY", "EndOffsetX", "EndOffsetY"] {
+                o.remove(k);
+            }
+            o.insert("Start".into(), s_abs);
+            o.insert("End".into(), e_abs);
+        }
+    }
+    v
+}
+
+fn route_abs(o: &serde_json::Map<String, Value>, hk: &str, oxk: &str, oyk: &str, sx: i64, sy: i64) -> Value {
+    let hex = o.get(hk).and_then(|h| h.as_str()).unwrap_or("0000");
+    let col: i64 = hex.get(0..2).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let row: i64 = hex.get(2..4).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let ox = o.get(oxk).and_then(|v| v.as_i64()).unwrap_or(0);
+    let oy = o.get(oyk).and_then(|v| v.as_i64()).unwrap_or(0);
+    Value::Array(vec![Value::from((sx + ox) * 32 + col), Value::from((sy + oy) * 40 + row)])
 }
 
 // --- MSEC ----------------------------------------------------------------

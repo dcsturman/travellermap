@@ -30,8 +30,9 @@ use tmap_core::{
         sector_border_styles, sector_borders, sector_credits, sector_datafile_meta,
         sector_index_entry, sector_routes, sector_subsectors,
     },
+    metadata::{parse_sector_metadata, MetaAllegiance},
     sector_writer::{self, WriteOptions},
-    world_util::{allegiance_name, synthesize_abbreviation},
+    world_util::{allegiance_base, allegiance_name, synthesize_abbreviation},
 };
 use tower_http::cors::CorsLayer;
 
@@ -278,6 +279,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
         // Public-API compatibility layer (documented URLs + PascalCase JSON).
         .route("/api/coordinates", get(compat::get_coordinates))
         .route("/api/sec", get(get_sec))
+        .route("/api/metadata", get(get_metadata))
         .route("/api/milieux", get(compat::get_milieux))
         .route("/t5ss/allegiances", get(compat::get_allegiances))
         .route("/t5ss/sophonts", get(compat::get_sophonts))
@@ -896,6 +898,162 @@ fn iso8601_now_utc() -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
     format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{s:02}+00:00")
+}
+
+#[derive(Debug, Deserialize)]
+struct MetadataQuery {
+    #[serde(default = "default_milieu")]
+    milieu: String,
+    sector: Option<String>,
+    sx: Option<i32>,
+    sy: Option<i32>,
+}
+
+/// `GET /api/metadata` — a sector's metadata (names, subsectors, allegiances,
+/// borders/regions, routes, labels, stylesheet, products, credits) in the
+/// documented JSON shape. Ports `SectorMetaDataHandler.cs` (data side). Cached
+/// per `(milieu, sector)` via `serve_cached`.
+async fn get_metadata(
+    Query(q): Query<MetadataQuery>,
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> Response {
+    let universe = match state.universe(&q.milieu) {
+        Ok(u) => u,
+        Err(e) => return e.into_response(),
+    };
+    let entry = if let (Some(sx), Some(sy)) = (q.sx, q.sy) {
+        universe.sectors.iter().find(|s| s.location.x == sx && s.location.y == sy)
+    } else if let Some(name) = &q.sector {
+        universe.sectors.iter().find(|s| {
+            s.name.eq_ignore_ascii_case(name)
+                || s.abbreviation.as_deref().is_some_and(|a| a.eq_ignore_ascii_case(name))
+        })
+    } else {
+        return (StatusCode::BAD_REQUEST, "No sector specified.").into_response();
+    };
+    let Some(entry) = entry else {
+        return (StatusCode::NOT_FOUND, "The specified sector was not found.").into_response();
+    };
+
+    let key = format!("metadata/{}/{}", q.milieu, entry.name);
+    serve_cached(&state.response_cache, &key, &headers, || {
+        build_metadata_bytes(&state, &q.milieu, entry)
+    })
+}
+
+fn build_metadata_bytes(
+    state: &AppState,
+    milieu: &str,
+    entry: &tmap_core::dto::SectorIndexEntry,
+) -> Result<Vec<u8>, (StatusCode, String)> {
+    let dir = state.res_dir.join("Sectors").join(milieu);
+    let resolved = resolve_and_parse_worlds(&dir, &entry.name, Some(entry));
+    let data_file = resolved
+        .as_ref()
+        .map(|(f, _)| f.clone())
+        .unwrap_or_else(|| format!("{}.tab", entry.name));
+    let worlds: Vec<World> = resolved.map(|(_, o)| o.worlds).unwrap_or_default();
+
+    let meta_xml = read_meta_xml(&dir, &data_file, entry);
+    let region = state.region_xml(milieu);
+    let inline = milieu_sector_block(&region, &entry.name).unwrap_or_default();
+
+    // Parse both sources once; per-sector `.xml` wins, the inline region-list
+    // block fills any collection it leaves empty (matches build_sector_bytes).
+    let mut meta = parse_sector_metadata(&meta_xml);
+    let inline_meta = parse_sector_metadata(&inline);
+    if meta.subsectors.is_empty() {
+        meta.subsectors = inline_meta.subsectors;
+    }
+    if meta.borders.is_empty() {
+        meta.borders = inline_meta.borders;
+    }
+    if meta.regions.is_empty() {
+        meta.regions = inline_meta.regions;
+    }
+    if meta.routes.is_empty() {
+        meta.routes = inline_meta.routes;
+    }
+    if meta.products.is_empty() {
+        meta.products = inline_meta.products;
+    }
+    if meta.labels.is_empty() {
+        meta.labels = inline_meta.labels;
+    }
+    if meta.stylesheet.is_none() {
+        meta.stylesheet = inline_meta.stylesheet;
+    }
+    let mut local_alleg = meta.local_allegiances.clone();
+    local_alleg.extend(inline_meta.local_allegiances.clone());
+
+    // Identity from the sector index entry (authoritative).
+    meta.x = entry.location.x;
+    meta.y = entry.location.y;
+    if !entry.names.is_empty() {
+        meta.names = entry.names.clone();
+    }
+    meta.selected = meta.selected || inline_meta.selected;
+    meta.label = meta.label.or(inline_meta.label);
+    let mtag = milieu_tag(&state.res_dir, milieu);
+    meta.tags = [entry.tags.as_str(), mtag.as_deref().unwrap_or("")]
+        .into_iter()
+        .filter(|t| !t.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let is_otu = meta.tags.split_whitespace().any(|t| t == "OTU");
+    meta.abbreviation = entry.abbreviation.clone().or_else(|| {
+        is_otu.then(|| meta.names.first().and_then(|n| synthesize_abbreviation(&n.text))).flatten()
+    });
+
+    let mut df = sector_datafile_meta(&inline);
+    if df == DataFileMeta::default() {
+        df = sector_datafile_meta(&meta_xml);
+    }
+    meta.data_file = tmap_core::metadata::MetaDataFile {
+        title: df.title,
+        author: df.author,
+        source: df.source,
+        publisher: df.publisher,
+        copyright: df.copyright,
+        milieu: Some(milieu.to_string()),
+        reference: df.reference,
+    };
+
+    meta.allegiances = compute_metadata_allegiances(&worlds, &meta.borders, &meta.regions, &local_alleg);
+
+    serde_json::to_vec(&meta).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+/// The `Allegiances` list: every code used by the worlds and by the borders/
+/// regions, each resolved to `{Name, Code, Base}` (sector-local `<Allegiance>`
+/// overrides first, else the stock tables). Sorted by code for determinism (the
+/// reference uses an unordered `HashSet`).
+fn compute_metadata_allegiances(
+    worlds: &[World],
+    borders: &[tmap_core::metadata::MetaBorder],
+    regions: &[tmap_core::metadata::MetaBorder],
+    local: &[MetaAllegiance],
+) -> Vec<MetaAllegiance> {
+    let local_map: HashMap<&str, &MetaAllegiance> = local.iter().map(|a| (a.code.as_str(), a)).collect();
+    let mut codes: Vec<&str> = worlds.iter().map(|w| w.allegiance.as_str()).filter(|c| !c.is_empty()).collect();
+    for b in borders.iter().chain(regions) {
+        if let Some(a) = &b.allegiance {
+            codes.push(a);
+        }
+    }
+    codes.sort_unstable();
+    codes.dedup();
+    codes
+        .iter()
+        .filter_map(|&code| {
+            let (name, base) = match local_map.get(code) {
+                Some(l) => (Some(l.name.clone()), l.base.clone()),
+                None => (allegiance_name(code), allegiance_base(code)),
+            };
+            name.map(|name| MetaAllegiance { name, code: code.to_string(), base })
+        })
+        .collect()
 }
 
 #[derive(Debug, Deserialize)]

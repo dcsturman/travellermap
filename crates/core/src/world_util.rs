@@ -559,6 +559,28 @@ pub fn synthesize_abbreviation(name: &str) -> Option<String> {
     Some(out)
 }
 
+/// Allegiance code → base allegiance code (`BaseCode` column of
+/// `allegiance_codes.tab`, e.g. `ZhIN` → `Zh`), used in the metadata
+/// `Allegiances` list. `None` when the column is empty.
+pub fn allegiance_base(code: &str) -> Option<String> {
+    static BASE: OnceLock<HashMap<String, String>> = OnceLock::new();
+    let raw = include_str!("../../../res/t5ss/allegiance_codes.tab");
+    let base = BASE.get_or_init(|| {
+        let mut m = HashMap::new();
+        for line in raw.lines().skip(1) {
+            let cols: Vec<&str> = line.split('\t').collect();
+            if cols.len() >= 3 {
+                let (c, b) = (cols[0].trim(), cols[2].trim());
+                if !c.is_empty() && !b.is_empty() {
+                    m.insert(c.to_string(), b.to_string());
+                }
+            }
+        }
+        m
+    });
+    base.get(code).cloned()
+}
+
 /// Allegiance code → full display name, from `res/t5ss/allegiance_codes.tab`
 /// (`Code <tab> Legacy <tab> BaseCode <tab> Name <tab> Location`, skip header).
 ///
