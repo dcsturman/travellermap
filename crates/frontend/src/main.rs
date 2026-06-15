@@ -87,7 +87,7 @@ fn open_print_html(html: &str) {
 /// double-click popup calls this directly — travellermap has no worldgen
 /// dependency. Change here (or later make it configurable) to point elsewhere.
 #[cfg(feature = "callisto")]
-const SYSTEM_SERVICE: &str = "https://tools.callistoflight.com/system";
+const SYSTEM_SERVICE: &str = "https://tools.callistoflight.com/api/system";
 
 /// Wrap PNG bytes in an object URL for the solar-system popup `<img>` /
 /// download. Fetching the bytes (rather than pointing `<img>` at the remote

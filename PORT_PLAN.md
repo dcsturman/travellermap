@@ -162,7 +162,7 @@ artifacts stay clean). Build/run locally with `--features <name>` on both crates
   up its **generated solar system** as a high-res zoom/pan image. Gated behind the
   frontend-only feature **`callisto`** (OFF by default). **travellermap has no
   dependency on worldgen at all** — the image is produced by the external worldgen
-  service `https://tools.callistoflight.com/system?sector=&hex=&name=&uwp=&pbg=&
+  service `https://tools.callistoflight.com/api/system?sector=&hex=&name=&uwp=&pbg=&
   stellar=&worlds=&scale=2.0` (returns a 3200×1800 PNG; `image/png`, permissive
   CORS, 422 on a partial/contradictory UWP). The frontend already holds the world's
   T5 fields (from the detail panel), so `on:dblclick` builds that URL, **fetches the
