@@ -389,7 +389,6 @@ async fn route_public_shape() {
 // --- Semantic /data/... URL aliases --------------------------------------
 
 #[tokio::test]
-#[ignore = "/data alias: /data/{sector}/{hex}/coordinates"]
 async fn data_alias_coordinates() {
     let (status, _, body) = get("/data/Spinward%20Marches/1910/coordinates").await;
     assert_eq!(status, StatusCode::OK);
@@ -397,7 +396,6 @@ async fn data_alias_coordinates() {
 }
 
 #[tokio::test]
-#[ignore = "/data alias: /data/{sector}/tab"]
 async fn data_alias_sec_tab() {
     let (status, ..) = get("/data/Spinward%20Marches/tab").await;
     assert_eq!(status, StatusCode::OK);

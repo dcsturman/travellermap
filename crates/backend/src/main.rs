@@ -283,6 +283,17 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route("/api/milieux", get(compat::get_milieux))
         .route("/t5ss/allegiances", get(compat::get_allegiances))
         .route("/t5ss/sophonts", get(compat::get_sophonts))
+        // Semantic /data/{sector}/... aliases (port of the Global.asax.cs `/data`
+        // table). Static path segments (sec/tab/coordinates/credits/metadata)
+        // take priority over the `{tail}` capture at the same position.
+        .route("/data/{sector}", get(data_sec))
+        .route("/data/{sector}/sec", get(data_sec))
+        .route("/data/{sector}/tab", get(data_tab))
+        .route("/data/{sector}/coordinates", get(compat::data_coordinates))
+        .route("/data/{sector}/credits", get(data_credits))
+        .route("/data/{sector}/metadata", get(data_metadata))
+        .route("/data/{sector}/{tail}/coordinates", get(compat::data_coordinates_hex))
+        .route("/data/{sector}/{tail}/credits", get(data_credits_hex))
         .route("/api/res/{*path}", get(get_res))
         .route("/api/admin/flush", post(flush_cache))
         // Permissive CORS is a dev convenience (Trunk serves the wasm app from
@@ -1123,6 +1134,10 @@ struct CreditsQuery {
 /// a hex (defaults to the sector's central hex), returning sector/subsector/
 /// world/product credits as the documented JSON shape.
 async fn get_credits(Query(q): Query<CreditsQuery>, State(state): State<AppState>) -> Response {
+    credits_response(&state, q)
+}
+
+fn credits_response(state: &AppState, q: CreditsQuery) -> Response {
     let universe = match state.universe(&q.milieu) {
         Ok(u) => u,
         Err(e) => return e.into_response(),
@@ -1143,8 +1158,80 @@ async fn get_credits(Query(q): Query<CreditsQuery>, State(state): State<AppState
 
     // Default to the sector's central hex (1620), matching Astrometrics.SectorCentralHex.
     let hex = q.hex.clone().unwrap_or_else(|| "1620".to_string());
-    let result = build_credits(&state, &q.milieu, entry, &hex);
+    let result = build_credits(state, &q.milieu, entry, &hex);
     axum::Json(result).into_response()
+}
+
+// --- Semantic /data/{sector}/... URL aliases (Global.asax.cs `/data` table) ---
+
+/// Build a [`SecQuery`] for a `/data` alias with the given sector + format.
+fn data_sec_query(sector: String, type_: &str) -> SecQuery {
+    SecQuery {
+        milieu: default_milieu(),
+        sector: Some(sector),
+        sx: None,
+        sy: None,
+        subsector: None,
+        quadrant: None,
+        type_: Some(type_.to_string()),
+        metadata: None,
+        header: None,
+        sscoords: None,
+    }
+}
+
+/// `/data/{sector}` and `/data/{sector}/sec` → SecondSurvey text (with metadata).
+async fn data_sec(Path(sector): Path<String>, State(state): State<AppState>) -> Response {
+    sec_text_response(build_sec(&state, &data_sec_query(sector, "SecondSurvey")))
+}
+
+/// `/data/{sector}/tab` → TabDelimited text.
+async fn data_tab(Path(sector): Path<String>, State(state): State<AppState>) -> Response {
+    sec_text_response(build_sec(&state, &data_sec_query(sector, "TabDelimited")))
+}
+
+fn sec_text_response(r: Result<String, (StatusCode, String)>) -> Response {
+    match r {
+        Ok(text) => ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], text).into_response(),
+        Err((code, msg)) => (code, msg).into_response(),
+    }
+}
+
+/// `/data/{sector}/coordinates` and `/data/{sector}/{hex}/coordinates` live in
+/// `compat` (they share the CoordinatesHandler logic).
+
+/// `/data/{sector}/credits` → credits at the sector centre.
+async fn data_credits(Path(sector): Path<String>, State(state): State<AppState>) -> Response {
+    credits_response(
+        &state,
+        CreditsQuery { milieu: default_milieu(), sector: Some(sector), sx: None, sy: None, hex: None },
+    )
+}
+
+/// `/data/{sector}/{hex}/credits` → credits at a specific world.
+async fn data_credits_hex(
+    Path((sector, hex)): Path<(String, String)>,
+    State(state): State<AppState>,
+) -> Response {
+    credits_response(
+        &state,
+        CreditsQuery { milieu: default_milieu(), sector: Some(sector), sx: None, sy: None, hex: Some(hex) },
+    )
+}
+
+/// `/data/{sector}/metadata` → sector metadata (NOTE: XML by default in the
+/// reference; we emit JSON until XML content negotiation lands).
+async fn data_metadata(
+    Path(sector): Path<String>,
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> Response {
+    get_metadata(
+        Query(MetadataQuery { milieu: default_milieu(), sector: Some(sector), sx: None, sy: None }),
+        headers,
+        State(state),
+    )
+    .await
 }
 
 fn build_credits(

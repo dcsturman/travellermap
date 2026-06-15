@@ -92,7 +92,7 @@ fn default_milieu() -> String {
 #[derive(Debug, Deserialize)]
 pub struct CoordinatesQuery {
     #[serde(default = "default_milieu")]
-    milieu: String,
+    pub milieu: String,
     /// Sector by display name or T5SS abbreviation.
     sector: Option<String>,
     /// 4-digit hex within the sector (e.g. `1910`); defaults to `0` (→ hex 0,0).
@@ -107,6 +107,23 @@ pub struct CoordinatesQuery {
     // World-space form.
     x: Option<i32>,
     y: Option<i32>,
+}
+
+impl Default for CoordinatesQuery {
+    fn default() -> Self {
+        Self {
+            milieu: default_milieu(),
+            sector: None,
+            hex: None,
+            subsector: None,
+            sx: None,
+            sy: None,
+            hx: None,
+            hy: None,
+            x: None,
+            y: None,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -126,12 +143,44 @@ pub async fn get_coordinates(
     Query(jp): Query<Jsonp>,
     State(state): State<AppState>,
 ) -> Response {
-    let (sx, sy, hx, hy) = match resolve_location(&state, &q) {
+    coordinates_response(&state, &q, &jp.jsonp)
+}
+
+/// `/data/{sector}/{hex}/coordinates` semantic alias (CoordinatesHandler).
+pub async fn data_coordinates_hex(
+    axum::extract::Path((sector, hex)): axum::extract::Path<(String, String)>,
+    Query(jp): Query<Jsonp>,
+    State(state): State<AppState>,
+) -> Response {
+    let q = CoordinatesQuery {
+        sector: Some(sector),
+        hex: Some(hex),
+        ..CoordinatesQuery::default()
+    };
+    coordinates_response(&state, &q, &jp.jsonp)
+}
+
+/// `/data/{sector}/coordinates` semantic alias (sector centre).
+pub async fn data_coordinates(
+    axum::extract::Path(sector): axum::extract::Path<String>,
+    Query(jp): Query<Jsonp>,
+    State(state): State<AppState>,
+) -> Response {
+    let q = CoordinatesQuery {
+        sector: Some(sector),
+        ..CoordinatesQuery::default()
+    };
+    coordinates_response(&state, &q, &jp.jsonp)
+}
+
+/// Shared body for the coordinates endpoint + its `/data/...` aliases.
+fn coordinates_response(state: &AppState, q: &CoordinatesQuery, jsonp: &Option<String>) -> Response {
+    let (sx, sy, hx, hy) = match resolve_location(state, q) {
         Ok(loc) => loc,
         Err((code, msg)) => return (code, msg).into_response(),
     };
     let (x, y) = astrometrics::location_to_coordinates(sx, sy, hx, hy);
-    respond(&CoordinatesResult { sx, sy, hx, hy, x, y }, &jp.jsonp)
+    respond(&CoordinatesResult { sx, sy, hx, hy, x, y }, jsonp)
 }
 
 /// Resolve the coordinates query's various input forms to `(sx,sy,hx,hy)`.
