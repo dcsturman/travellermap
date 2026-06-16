@@ -8,11 +8,14 @@
 # domain — is documented in DEPLOY.md (it's done once, so it's not scripted here).
 #
 set -euo pipefail
-cd "$(dirname "$0")"
+# This script lives in scripts/; config sits beside it, but the Cloud Build
+# context is the repo root — so resolve both and cd to the root.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR/.."
 
 # --- config ---
-if [[ -f deploy.env ]]; then set -a; source deploy.env; set +a; fi
-: "${PROJECT_ID:?set PROJECT_ID in deploy.env}"
+if [[ -f "$SCRIPT_DIR/deploy.env" ]]; then set -a; source "$SCRIPT_DIR/deploy.env"; set +a; fi
+: "${PROJECT_ID:?set PROJECT_ID in scripts/deploy.env}"
 : "${REGION:=us-central1}"
 : "${SERVICE:=travellermap}"
 : "${REPO:=travellermap}"

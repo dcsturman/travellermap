@@ -12,18 +12,19 @@ zero on Cloud Run (no database; the dataset loads into RAM from the bundled
 | --- | --- |
 | `Dockerfile` | Multi-stage build: Trunk builds the wasm frontend, cargo builds the backend, runtime image = binary + `dist/` + `res/`. |
 | `.dockerignore` | Trims the build context to the Cargo manifests, `crates/`, and `res/`. |
-| `build.sh` | Build the image **locally** and run it on `:8080` to verify before shipping. |
-| `deploy.sh` | **Per-push:** build in Cloud Build (amd64) + deploy to Cloud Run. |
-| `deploy.env.example` | Copy to `deploy.env` (gitignored) and fill in project/region/etc. |
+| `scripts/build.sh` | Build the image **locally** and run it on `:8080` to verify before shipping. |
+| `scripts/deploy.sh` | **Per-push:** build in Cloud Build (amd64) + deploy to Cloud Run. |
+| `scripts/deploy.env.example` | Copy to `scripts/deploy.env` (gitignored) and fill in project/region/etc. |
 
-> Standing rule: anything done more than once is a script. `build.sh` / `deploy.sh`
-> are the recurring paths; only the genuinely one-time setup below is manual.
+> Standing rule: anything done more than once is a script. `scripts/build.sh` /
+> `scripts/deploy.sh` are the recurring paths; only the genuinely one-time setup
+> below is manual. See [`scripts/README.md`](scripts/README.md) for the config vars.
 
 ## Verify locally first
 
 ```sh
-cp deploy.env.example deploy.env   # then edit it
-./build.sh run                     # builds the image, runs it on http://localhost:8080
+cp scripts/deploy.env.example scripts/deploy.env   # then edit it
+scripts/build.sh run               # builds the image, runs it on http://localhost:8080
 ```
 
 Open <http://localhost:8080> — the map, the API (`/api/...`), the `res/` assets,
@@ -35,17 +36,17 @@ in production. (`PORT` is read from the environment; Cloud Run injects it.)
 Done once per project — not scripted because it never repeats.
 
 ```sh
-# Fill these to match deploy.env.
+# Fill these to match scripts/deploy.env.
 PROJECT_ID=your-gcp-project-id
 REGION=us-central1
 REPO=travellermap
 
 gcloud config set project "$PROJECT_ID"
 
-# Enable the APIs deploy.sh uses.
+# Enable the APIs scripts/deploy.sh uses.
 gcloud services enable run.googleapis.com artifactregistry.googleapis.com cloudbuild.googleapis.com
 
-# Artifact Registry repo that deploy.sh pushes images to.
+# Artifact Registry repo that scripts/deploy.sh pushes images to.
 gcloud artifacts repositories create "$REPO" \
   --repository-format=docker --location="$REGION" \
   --description="Traveller Map images"
@@ -54,7 +55,7 @@ gcloud artifacts repositories create "$REPO" \
 ## Ship
 
 ```sh
-./deploy.sh
+scripts/deploy.sh
 ```
 
 Builds the image in Cloud Build (so the architecture matches Cloud Run and no

@@ -45,5 +45,7 @@ node_modules/
 /target/
 # Trunk frontend build output
 crates/frontend/dist/
-# Deploy config (copy from deploy.env.example) — project-specific, not committed
-/deploy.env
+# Deploy config (copy from scripts/deploy.env.example) — project-specific, not
+# committed. Match deploy.env at any depth (root or scripts/) so a stray copy
+# can't be staged by accident.
+deploy.env

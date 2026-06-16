@@ -5,11 +5,13 @@
 # shipping. This builds for your machine's architecture; the production image is
 # built for amd64 in Cloud Build by deploy.sh.
 #
-#   ./build.sh        # build the image
-#   ./build.sh run    # build, then run on http://localhost:8080
+#   scripts/build.sh        # build the image
+#   scripts/build.sh run    # build, then run on http://localhost:8080
 #
 set -euo pipefail
-cd "$(dirname "$0")"
+# Build context is the repo root (Dockerfile + crates/ + res/ live there); this
+# script sits in scripts/, so step up one level.
+cd "$(dirname "$0")/.."
 
 IMAGE="${IMAGE:-tmap-local}"
 

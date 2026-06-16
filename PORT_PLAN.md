@@ -285,11 +285,12 @@ The hamburger / search-bar menu items still stubbed in the Settings panel ("Not 
   `spawn_blocking` warm-up of the M1105 universe. `.dockerignore` trims the context to the
   Cargo manifests + `crates/` + `res/`. Files: `crates/backend/src/main.rs`, `Dockerfile`,
   `.dockerignore`.
-- [x] **GCP deploy scripts → Cloud Run (DONE 2026-06-15).** `build.sh` (local image + run on
-  :8080 to verify before shipping) and `deploy.sh` (per-push: `gcloud builds submit` → amd64
-  image in Artifact Registry → `gcloud run deploy`, scale-to-zero, config from `deploy.env`).
-  One-time GCP setup + custom-domain mapping (`travellermap.callistoflight.com`) documented in
-  `DEPLOY.md`. Cold-start data latency is negligible (M1105 parse ≈150 ms + background warm-up).
+- [x] **GCP deploy scripts → Cloud Run (DONE 2026-06-15).** `scripts/build.sh` (local image +
+  run on :8080 to verify before shipping) and `scripts/deploy.sh` (per-push: `gcloud builds
+  submit` → amd64 image in Artifact Registry → `gcloud run deploy`, scale-to-zero, config from
+  `scripts/deploy.env`). One-time GCP setup + custom-domain mapping
+  (`travellermap.callistoflight.com`) documented in `DEPLOY.md` / `scripts/README.md`.
+  Cold-start data latency is negligible (M1105 parse ≈150 ms + background warm-up).
 - [x] **Pre-public hardening — admin gate (DONE 2026-06-15).** `POST /api/admin/flush` (a
   dev/profiling cache-flush, nothing in the app calls it) is now **only mounted when
   `TMAP_ENABLE_ADMIN` is truthy** (`admin_enabled()` in `main.rs`); unset → the route 404s, so
@@ -298,4 +299,4 @@ The hamburger / search-bar menu items still stubbed in the Settings panel ("Not 
   → Cloud CDN via an HTTPS load balancer (optimization, later).
 - [ ] Remaining parity features as prioritized (jump maps, world data sheet, print); `res/` contribute-back hygiene.
 
-**Test:** `./build.sh run` → full app on `http://localhost:8080`; `./deploy.sh` puts it live on Cloud Run.
+**Test:** `scripts/build.sh run` → full app on `http://localhost:8080`; `scripts/deploy.sh` puts it live on Cloud Run.

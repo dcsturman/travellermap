@@ -74,10 +74,11 @@ cd crates/frontend && trunk build --release --features callisto
 ## Run the production image locally (one origin)
 
 The single-container build (frontend + API on one port) — what actually deploys.
-`build.sh` / `deploy.sh` / `Dockerfile` live at the **repo root**; run from there:
+Build/deploy scripts live in [`../scripts/`](../scripts/); the `Dockerfile` is at
+the repo root. Run from the repo root:
 
 ```sh
-./build.sh run        # builds the image, runs it on http://localhost:8080
+scripts/build.sh run        # builds the image, runs it on http://localhost:8080
 ```
 
 ## Deploy
@@ -87,6 +88,6 @@ mapping) is in [`../DEPLOY.md`](../DEPLOY.md). Once that's done, shipping is one
 command — from the **repo root**:
 
 ```sh
-cp deploy.env.example deploy.env   # fill in PROJECT_ID, REGION, …  (one-time)
-./deploy.sh                        # Cloud Build (amd64) → Cloud Run, per push
+cp scripts/deploy.env.example scripts/deploy.env   # fill in PROJECT_ID, …  (one-time)
+scripts/deploy.sh                                  # Cloud Build (amd64) → Cloud Run
 ```
