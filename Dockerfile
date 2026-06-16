@@ -11,14 +11,15 @@ FROM rust:1-bookworm AS builder
 RUN rustup target add wasm32-unknown-unknown
 
 # Trunk drives the wasm build (it auto-fetches a matching wasm-bindgen + wasm-opt
-# on first build). Grab the prebuilt binary for the *target* architecture
-# (BuildKit sets $TARGETARCH: amd64 on Cloud Build, arm64 on Apple-silicon local
-# builds). The `trunk --version` check ensures the binary actually runs on this
-# arch — otherwise fall back to compiling that exact version from source.
-ARG TARGETARCH
+# on first build). Grab the prebuilt binary for the *target* architecture. BuildKit
+# auto-populates $TARGETARCH (arm64 on Apple-silicon local builds); the default
+# below covers builders that DON'T set it — notably Cloud Build's legacy Docker
+# engine, which is amd64 anyway. The `trunk --version` check ensures the binary
+# actually runs on this arch — otherwise fall back to compiling from source.
+ARG TARGETARCH=amd64
 ARG TRUNK_VERSION=0.21.4
 RUN set -eux; \
-    case "${TARGETARCH}" in \
+    case "${TARGETARCH:-amd64}" in \
       amd64) tarch=x86_64 ;; \
       arm64) tarch=aarch64 ;; \
       *)     tarch=x86_64 ;; \
