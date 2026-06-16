@@ -422,7 +422,37 @@ async fn main() {
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     println!("tmap-backend listening on http://{addr}");
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .unwrap();
+}
+
+/// Resolve when the process receives SIGINT (Ctrl-C) or SIGTERM (Cloud Run sends
+/// SIGTERM on scale-down). Driving `axum::serve` with this lets it stop accepting
+/// connections, drain in-flight requests, and exit cleanly — important because the
+/// container runs `tmap-backend` as PID 1, which otherwise ignores default-action
+/// signals and would hang until the platform SIGKILLs it.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c().await.expect("install Ctrl-C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("install SIGTERM handler")
+            .recv()
+            .await;
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
+    println!("shutdown signal received; draining…");
 }
 
 async fn health() -> &'static str {

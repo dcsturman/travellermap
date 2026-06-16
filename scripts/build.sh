@@ -20,7 +20,10 @@ docker build -t "$IMAGE" .
 
 if [[ "${1:-}" == "run" ]]; then
   echo ">> running $IMAGE on http://localhost:8080  (Ctrl-C to stop)"
-  exec docker run --rm -e PORT=8080 -p 8080:8080 "$IMAGE"
+  # --init runs tini as PID 1 so Ctrl-C (SIGINT) actually stops the container —
+  # otherwise the backend is PID 1, which ignores default-action signals, and the
+  # container keeps running after the foreground `docker run` exits.
+  exec docker run --rm --init -e PORT=8080 -p 8080:8080 "$IMAGE"
 fi
 
 echo ">> built $IMAGE.  Try it:  docker run --rm -e PORT=8080 -p 8080:8080 $IMAGE"
