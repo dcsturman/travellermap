@@ -28,7 +28,7 @@
 use axum::{
     body::Body,
     extract::{Query, State},
-    http::{header, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
@@ -79,6 +79,34 @@ fn respond<T: Serialize>(value: &T, jsonp: &Option<String>) -> Response {
             .body(Body::from(json))
             .unwrap(),
     }
+}
+
+/// Whether the client prefers XML (the reference's default content type for the
+/// data endpoints) — `Accept: text/xml` / `application/xml`.
+pub fn wants_xml(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|a| a.contains("xml"))
+}
+
+/// Serve `value` honoring content negotiation: `jsonp` callback (JS) wins, then
+/// `Accept: …xml` (the `xml` closure builds the body), else JSON. The XML body
+/// is produced lazily so callers only pay for it when XML is requested.
+fn respond_negotiated<T: Serialize>(
+    value: &T,
+    jsonp: &Option<String>,
+    accept_xml: bool,
+    xml: impl FnOnce() -> String,
+) -> Response {
+    if jsonp.is_none() && accept_xml {
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "text/xml; charset=utf-8")
+            .body(Body::from(xml()))
+            .unwrap();
+    }
+    respond(value, jsonp)
 }
 
 // ---------------------------------------------------------------------------
@@ -136,20 +164,34 @@ struct CoordinatesResult {
     y: i32,
 }
 
+impl CoordinatesResult {
+    /// `<Coordinates><sx>…</sx>…</Coordinates>` — the reference
+    /// `CoordinatesResult` XML (all integer elements, no escaping needed).
+    fn to_xml(&self) -> String {
+        format!(
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
+             <Coordinates><sx>{}</sx><sy>{}</sy><hx>{}</hx><hy>{}</hy><x>{}</x><y>{}</y></Coordinates>",
+            self.sx, self.sy, self.hx, self.hy, self.x, self.y
+        )
+    }
+}
+
 /// `GET /api/coordinates` — resolve a sector name / grid / world-space input to
 /// the full `{sx,sy,hx,hy,x,y}` location. Port of `CoordinatesHandler.cs`.
 pub async fn get_coordinates(
     Query(q): Query<CoordinatesQuery>,
     Query(jp): Query<Jsonp>,
+    headers: HeaderMap,
     State(state): State<AppState>,
 ) -> Response {
-    coordinates_response(&state, &q, &jp.jsonp)
+    coordinates_response(&state, &q, &jp.jsonp, wants_xml(&headers))
 }
 
 /// `/data/{sector}/{hex}/coordinates` semantic alias (CoordinatesHandler).
 pub async fn data_coordinates_hex(
     axum::extract::Path((sector, hex)): axum::extract::Path<(String, String)>,
     Query(jp): Query<Jsonp>,
+    headers: HeaderMap,
     State(state): State<AppState>,
 ) -> Response {
     let q = CoordinatesQuery {
@@ -157,30 +199,37 @@ pub async fn data_coordinates_hex(
         hex: Some(hex),
         ..CoordinatesQuery::default()
     };
-    coordinates_response(&state, &q, &jp.jsonp)
+    coordinates_response(&state, &q, &jp.jsonp, wants_xml(&headers))
 }
 
 /// `/data/{sector}/coordinates` semantic alias (sector centre).
 pub async fn data_coordinates(
     axum::extract::Path(sector): axum::extract::Path<String>,
     Query(jp): Query<Jsonp>,
+    headers: HeaderMap,
     State(state): State<AppState>,
 ) -> Response {
     let q = CoordinatesQuery {
         sector: Some(sector),
         ..CoordinatesQuery::default()
     };
-    coordinates_response(&state, &q, &jp.jsonp)
+    coordinates_response(&state, &q, &jp.jsonp, wants_xml(&headers))
 }
 
 /// Shared body for the coordinates endpoint + its `/data/...` aliases.
-fn coordinates_response(state: &AppState, q: &CoordinatesQuery, jsonp: &Option<String>) -> Response {
+fn coordinates_response(
+    state: &AppState,
+    q: &CoordinatesQuery,
+    jsonp: &Option<String>,
+    accept_xml: bool,
+) -> Response {
     let (sx, sy, hx, hy) = match resolve_location(state, q) {
         Ok(loc) => loc,
         Err((code, msg)) => return (code, msg).into_response(),
     };
     let (x, y) = astrometrics::location_to_coordinates(sx, sy, hx, hy);
-    respond(&CoordinatesResult { sx, sy, hx, hy, x, y }, jsonp)
+    let result = CoordinatesResult { sx, sy, hx, hy, x, y };
+    respond_negotiated(&result, jsonp, accept_xml, || result.to_xml())
 }
 
 /// Resolve the coordinates query's various input forms to `(sx,sy,hx,hy)`.

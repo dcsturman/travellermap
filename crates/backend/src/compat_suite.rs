@@ -435,7 +435,6 @@ async fn data_alias_sec_tab() {
 // --- Content negotiation: Accept: text/xml -------------------------------
 
 #[tokio::test]
-#[ignore = "content negotiation: Accept: text/xml on data endpoints"]
 async fn xml_content_negotiation() {
     let (status, ct, _) = get_with(
         "/api/coordinates?sector=Spinward%20Marches&hex=1910",

@@ -62,7 +62,9 @@ cargo test -p tmap-backend compat_suite -- --include-ignored  # full target (red
 cargo test -p tmap-backend compat_suite -- --ignored --list   # what's left
 ```
 
-Current: **22 active (green)** — coordinates (×6 forms + errors), milieux, t5ss allegiances/sophonts, universe envelope + known-sector shape, **universe completeness (×2: count-parity 1021/1021 + per-sector field match)**, JSONP (wrap + bad-callback reject), sec TabDelimited + SecondSurvey, **metadata JSON**, **credits JSON**, **route public bare-array shape**, **`/data/…` aliases (coordinates + tab)**, **jumpworlds JSON**. **3 ignored (red targets)** — search envelope, msec, `Accept: text/xml`.
+Current: **23 active (green)** — coordinates (×6 forms + errors), milieux, t5ss allegiances/sophonts, universe envelope + known-sector shape, universe completeness (×2: count-parity 1021/1021 + per-sector field match), JSONP (wrap + bad-callback reject), sec TabDelimited + SecondSurvey, metadata JSON, credits JSON, route public bare-array shape, `/data/…` aliases (coordinates + tab), jumpworlds JSON, **XML content negotiation (coordinates)**. **2 ignored (red targets)** — search envelope, msec.
+
+XML content negotiation: `Accept: …xml` now serves `/api/coordinates` (+ its `/data` aliases) as `<Coordinates><sx>…</sx>…</Coordinates>` via a reusable `compat::wants_xml` + `respond_negotiated` (jsonp wins, then XML, else JSON). XML for the richer result types (universe/credits/jumpworlds/metadata/sec) is deferred — each needs its specific `XmlElement`/`XmlAttribute` mapping.
 
 Semantic `/data/{sector}/...` URLs (port of the `Global.asax.cs` table) registered: `/data/{sector}` & `/sec` (SecondSurvey), `/tab`, `/coordinates`, `/credits`, `/metadata`, plus `/data/{sector}/{hex}/coordinates`, `/credits`, and `/jump/{jump}` (jumpworlds). Still TODO: the bare `/data/{sector}/{hex}` (→ jumpworlds jump=0), `/msec`, `/image` (render → N/A), and subsector/quadrant sub-paths.
 
