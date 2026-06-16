@@ -12,8 +12,9 @@ zero on Cloud Run (no database; the dataset loads into RAM from the bundled
 | --- | --- |
 | `Dockerfile` | Multi-stage build: Trunk builds the wasm frontend, cargo builds the backend, runtime image = binary + `dist/` + `res/`. |
 | `.dockerignore` | Trims the build context to the Cargo manifests, `crates/`, and `res/`. |
+| `cloudbuild.yaml` | Cloud Build config: builds via **Kaniko** (layer cache → Artifact Registry) on a bigger machine. Used by `deploy.sh`. |
 | `scripts/build.sh` | Build the image **locally** and run it on `:8080` to verify before shipping. |
-| `scripts/deploy.sh` | **Per-push:** build in Cloud Build (amd64) + deploy to Cloud Run. |
+| `scripts/deploy.sh` | **Per-push:** build in Cloud Build (amd64) + deploy to Cloud Run. Auto-creates the Artifact Registry repo if missing. |
 | `scripts/deploy.env.example` | Copy to `scripts/deploy.env` (gitignored) and fill in project/region/etc. |
 
 > Standing rule: anything done more than once is a script. `scripts/build.sh` /
@@ -33,24 +34,19 @@ in production. (`PORT` is read from the environment; Cloud Run injects it.)
 
 ## One-time GCP setup
 
-Done once per project — not scripted because it never repeats.
-
 ```sh
 # Fill these to match scripts/deploy.env.
 PROJECT_ID=your-gcp-project-id
-REGION=us-central1
-REPO=travellermap
 
 gcloud config set project "$PROJECT_ID"
 
-# Enable the APIs scripts/deploy.sh uses.
+# Enable the APIs the deploy uses. (deploy.sh also auto-enables Artifact Registry
+# and creates the repo on first run, so this is mostly belt-and-suspenders.)
 gcloud services enable run.googleapis.com artifactregistry.googleapis.com cloudbuild.googleapis.com
-
-# Artifact Registry repo that scripts/deploy.sh pushes images to.
-gcloud artifacts repositories create "$REPO" \
-  --repository-format=docker --location="$REGION" \
-  --description="Traveller Map images"
 ```
+
+The Artifact Registry repo no longer needs to be created by hand — `deploy.sh`
+creates it (idempotently) if it's missing.
 
 ## Ship
 
@@ -61,6 +57,15 @@ scripts/deploy.sh
 Builds the image in Cloud Build (so the architecture matches Cloud Run and no
 local Docker is needed), pushes it, deploys, and prints the service URL. Run it
 on every push to production.
+
+### Build speed / caching
+
+The build runs via `cloudbuild.yaml` with **Kaniko**, which caches layers (base
+image, Rust/wasm toolchain, Trunk + wasm-opt downloads, crate fetch, compiles) in
+Artifact Registry under `<repo>/cache`. The **first** build is slow (cold cache —
+it populates everything); **subsequent** builds reuse those layers and are much
+faster. The build also runs on an `E2_HIGHCPU_8` machine (vs the ~1-vCPU default)
+— edit `options.machineType` in `cloudbuild.yaml` to go bigger/smaller.
 
 ## Map the custom domain (one-time)
 

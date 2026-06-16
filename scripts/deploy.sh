@@ -28,11 +28,25 @@ if [[ -f "$SCRIPT_DIR/deploy.env" ]]; then set -a; source "$SCRIPT_DIR/deploy.en
 TAG="$(git rev-parse --short HEAD 2>/dev/null || echo latest)"
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/${SERVICE}:${TAG}"
 
-echo ">> building + pushing $IMAGE via Cloud Build…"
+# Ensure the Artifact Registry repo exists (idempotent — folds the one-time setup
+# into the deploy so a fresh project just works; no-op once it's there).
+if ! gcloud artifacts repositories describe "$REPO" \
+      --project "$PROJECT_ID" --location "$REGION" >/dev/null 2>&1; then
+  echo ">> Artifact Registry repo '$REPO' not found in $REGION — creating it…"
+  gcloud services enable artifactregistry.googleapis.com --project "$PROJECT_ID"
+  gcloud artifacts repositories create "$REPO" \
+    --project "$PROJECT_ID" --location "$REGION" \
+    --repository-format=docker --description="Traveller Map images"
+fi
+
+# Build via Kaniko (cloudbuild.yaml) so layers are cached in Artifact Registry
+# across builds — the first run populates the cache (full time); later runs reuse
+# the base image / toolchain / crate-fetch / compile layers and are much faster.
+echo ">> building + pushing $IMAGE via Cloud Build (Kaniko, cached)…"
 gcloud builds submit \
   --project "$PROJECT_ID" \
-  --tag "$IMAGE" \
-  --timeout=30m \
+  --config cloudbuild.yaml \
+  --substitutions=_IMAGE="$IMAGE" \
   .
 
 echo ">> deploying $SERVICE to Cloud Run ($REGION)…"

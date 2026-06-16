@@ -8,7 +8,7 @@ deployment walk-through (one-time GCP setup, custom-domain mapping) is in
 | File | What it does |
 | --- | --- |
 | `build.sh` | Build the deployable image **locally** and optionally run it. `scripts/build.sh run` serves the whole app (frontend + API, one origin) on http://localhost:8080 — the smoke test before shipping. Builds for your machine's arch. |
-| `deploy.sh` | **Ship to Cloud Run.** Builds the image in Cloud Build (amd64, matching Cloud Run) and deploys it. The one command to run per push. |
+| `deploy.sh` | **Ship to Cloud Run.** Builds the image in Cloud Build (amd64, via `../cloudbuild.yaml` → Kaniko with layer caching) and deploys it. Auto-creates the Artifact Registry repo if missing. The one command to run per push. |
 | `deploy.env.example` | Template for `deploy.env` (gitignored) — the project/region/sizing config `deploy.sh` reads. |
 
 ## Setup (once)

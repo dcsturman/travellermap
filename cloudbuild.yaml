@@ -1,0 +1,28 @@
+# Cloud Build config used by scripts/deploy.sh.
+#
+# Builds the image with **Kaniko** so layers — the Rust base image, the wasm
+# toolchain, the Trunk/wasm-opt downloads, the crate fetch, and the compiles —
+# are CACHED in Artifact Registry across builds. The default `gcloud builds
+# submit --tag` flow runs on a fresh VM with no persistent layer cache, so every
+# push rebuilt everything from scratch (re-pulling the ~1.5 GB base image,
+# re-downloading tooling, re-fetching crates). Kaniko stores its cache in the
+# same Artifact Registry repo (`<repo>/cache`) and reuses it next time.
+#
+# Also runs on a bigger machine to parallelize the build.
+#
+# _IMAGE is supplied by scripts/deploy.sh (the fully-qualified destination tag).
+steps:
+  - name: 'gcr.io/kaniko-project/executor:latest'
+    args:
+      - --destination=${_IMAGE}
+      - --cache=true
+      - --cache-ttl=336h          # keep cached layers 14 days
+      - --dockerfile=Dockerfile
+      - --context=dir:///workspace
+
+options:
+  # ~8 vCPU vs the default ~1 — the single biggest win for the Rust + wasm build.
+  # Bump to E2_HIGHCPU_32 if you want it even faster (Cloud Build bills per second).
+  machineType: 'E2_HIGHCPU_8'
+
+timeout: 2400s                    # 40 min ceiling for a cold (uncached) build
