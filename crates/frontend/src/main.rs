@@ -54,7 +54,7 @@ const BTN_STYLE: &str = "width:40px; height:38px; border:none; border-radius:6px
     cursor:pointer; box-shadow:0 1px 4px rgba(0,0,0,0.5);";
 /// Shared style for the floating panels (legend / settings).
 const PANEL_STYLE: &str = "position:fixed; top:56px; right:12px; width:300px; \
-    max-height:78vh; overflow:auto; box-sizing:border-box; padding:14px 18px 18px; \
+    max-height:78dvh; overflow:auto; box-sizing:border-box; padding:14px 18px 18px; \
     background:rgba(12,14,22,0.96); border:1px solid #2a3145; border-radius:10px; \
     color:#cfd6e6; font:14px system-ui,sans-serif; box-shadow:0 6px 24px rgba(0,0,0,0.6);";
 
@@ -337,19 +337,86 @@ fn legend_row(sym: &'static str, sym_color: &'static str, label: &'static str) -
     }
 }
 
-/// Size the canvas drawing buffer to the window × devicePixelRatio (crisp on
-/// retina). Returns the buffer size in device pixels.
+/// Size the canvas drawing buffer to its *rendered CSS box* × devicePixelRatio
+/// (crisp on retina). Returns the buffer size in device pixels.
+///
+/// We measure the canvas's own `clientWidth/Height`, not `window.inner*`: on iOS
+/// Safari the visual viewport (`inner_height`) lags the layout box (`100dvh`)
+/// while the toolbar animates, and sizing the buffer to the window while the CSS
+/// box is a different height makes the browser stretch the buffer to fit —
+/// the map looks oversized and its edges get clipped. The client box is what the
+/// canvas is actually displayed at, so a 1:1 buffer never stretches. (Fall back
+/// to the window before first layout, when the client box reads 0.)
 fn size_canvas(canvas: &HtmlCanvasElement) -> (u32, u32) {
     let w = win();
     let dpr = w.device_pixel_ratio();
-    let cw = w.inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(1024.0);
-    let ch = w.inner_height().ok().and_then(|v| v.as_f64()).unwrap_or(768.0);
+    let cw = match canvas.client_width() {
+        0 => w.inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(1024.0),
+        n => n as f64,
+    };
+    let ch = match canvas.client_height() {
+        0 => w.inner_height().ok().and_then(|v| v.as_f64()).unwrap_or(768.0),
+        n => n as f64,
+    };
     let bw = ((cw * dpr).round() as u32).max(1);
     let bh = ((ch * dpr).round() as u32).max(1);
     canvas.set_width(bw);
     canvas.set_height(bh);
     (bw, bh)
 }
+
+/// An in-progress touch gesture on the map canvas. iOS Safari synthesizes mouse
+/// events only for *taps* (so single-tap world-select rides the mouse path), but
+/// never for drags or pinches — so pan and zoom are driven from raw touches here.
+/// `One` remembers the last finger position for panning; `Two` remembers the
+/// prior pinch distance + midpoint so each move folds pan and zoom into one
+/// transform.
+#[derive(Clone, Copy)]
+enum TouchGesture {
+    One { last: (f64, f64) },
+    Two { dist: f64, mid: (f64, f64) },
+}
+
+/// All active touch points as CSS-pixel coordinates.
+fn touch_points(ev: &web_sys::TouchEvent) -> Vec<(f64, f64)> {
+    let list = ev.touches();
+    (0..list.length())
+        .filter_map(|i| list.get(i))
+        .map(|t| (t.client_x() as f64, t.client_y() as f64))
+        .collect()
+}
+
+fn pt_dist(a: (f64, f64), b: (f64, f64)) -> f64 {
+    ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt()
+}
+
+fn pt_mid(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
+    ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0)
+}
+
+/// Schedule a one-shot timer; returns its handle so it can be cancelled. Used to
+/// detect a long-press (the mobile equivalent of the desktop double-click).
+#[cfg(feature = "callisto")]
+fn set_timeout(ms: i32, f: impl FnMut() + 'static) -> i32 {
+    let cb = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(f);
+    let id = win()
+        .set_timeout_with_callback_and_timeout_and_arguments_0(cb.as_ref().unchecked_ref(), ms)
+        .unwrap_or(0);
+    cb.forget(); // one-shot — leak the tiny closure rather than track its lifetime
+    id
+}
+
+#[cfg(feature = "callisto")]
+fn clear_timeout(id: i32) {
+    win().clear_timeout_with_handle(id);
+}
+
+/// How long a stationary finger must be held to trigger the solar-system view,
+/// and how far it may drift before that's treated as a pan instead.
+#[cfg(feature = "callisto")]
+const LONG_PRESS_MS: i32 = 500;
+#[cfg(feature = "callisto")]
+const LONG_PRESS_SLOP: f64 = 10.0;
 
 /// The canvas's CSS (logical) size — the coordinate space we draw in (the
 /// context is DPR-scaled in `render::draw`).
@@ -578,9 +645,14 @@ fn App() -> impl IntoView {
             set_canvas_size.set(size_canvas(&cv));
         }
     });
-    win()
-        .add_event_listener_with_callback("resize", resize_cb.as_ref().unchecked_ref())
-        .ok();
+    let cb_ref = resize_cb.as_ref().unchecked_ref();
+    win().add_event_listener_with_callback("resize", cb_ref).ok();
+    // iOS Safari shows/hides its toolbar without reliably firing window "resize";
+    // the visual-viewport "resize" does fire, so listen there too to keep the
+    // backing buffer matched to the (dynamic) visible area — no stretch/clip.
+    if let Some(vv) = win().visual_viewport() {
+        vv.add_event_listener_with_callback("resize", cb_ref).ok();
+    }
     resize_cb.forget(); // lives for the app's lifetime
 
     // Esc dismisses the callisto solar-system popup (back to the map view).
@@ -994,35 +1066,36 @@ fn App() -> impl IntoView {
         drag.set(None);
         down_pos.set(None);
     };
-    // Double-click a world → solar-system image popup (Callisto, dev-only). The
-    // preceding single-clicks already selected the world (or cleared the
-    // selection over empty space), so reuse `selected` rather than re-hit-testing.
-    // We fetch the image first and open the popup only on success, so an
-    // unreachable service or an unrenderable world just does nothing.
+    // Build the worldgen solar-system request from a world's T5 fields and open
+    // the popup (spinner immediately, then the render or an error). Shared by the
+    // desktop double-click and the mobile long-press. The service does the
+    // seeding/parsing/render; it needs the full-LOD fields (stellar/pbg/worlds).
+    #[cfg(feature = "callisto")]
+    let launch_system = move |sector_name: &str, w: &World| {
+        let enc = |s: &str| String::from(js_sys::encode_uri_component(s));
+        let mut url = format!(
+            "{SYSTEM_SERVICE}?sector={}&hex={}&name={}&uwp={}&pbg={}&stellar={}&scale=2.0",
+            enc(sector_name), enc(&w.hex), enc(&w.name), enc(&w.uwp), enc(&w.pbg), enc(&w.stellar),
+        );
+        if let Some(n) = w.worlds {
+            url.push_str(&format!("&worlds={n}"));
+        }
+        let name = if w.name.is_empty() { w.hex.clone() } else { w.name.clone() };
+        let title = format!("{name} — {} {}", sector_name, w.hex);
+        launch_render(
+            system_view, sys_zoom, sys_pan, sys_elapsed, sys_timer, sys_gen, url, title,
+        );
+    };
+    // Double-click a world → solar-system popup (Callisto, dev-only). The
+    // preceding single-clicks already selected + upgraded the world to full LOD,
+    // so reuse `selected` rather than re-hit-testing.
     #[cfg(feature = "callisto")]
     let on_dblclick = move |_ev: web_sys::MouseEvent| {
         if route_open.get_untracked() {
             return; // route-planning mode owns clicks
         }
         let Some(sw) = selected.get_untracked() else { return };
-        let w = &sw.world;
-        let enc = |s: &str| String::from(js_sys::encode_uri_component(s));
-        // Build the worldgen-service request from the world's T5 fields (which the
-        // detail panel already holds). The service does the seeding/parsing/render.
-        let mut url = format!(
-            "{SYSTEM_SERVICE}?sector={}&hex={}&name={}&uwp={}&pbg={}&stellar={}&scale=2.0",
-            enc(&sw.sector_name), enc(&w.hex), enc(&w.name), enc(&w.uwp), enc(&w.pbg), enc(&w.stellar),
-        );
-        if let Some(n) = w.worlds {
-            url.push_str(&format!("&worlds={n}"));
-        }
-        let name = if w.name.is_empty() { w.hex.clone() } else { w.name.clone() };
-        let title = format!("{name} — {} {}", sw.sector_name, w.hex);
-        // Opens the popup immediately with a spinner, then swaps in the render (or
-        // an error) — so a slow first generation no longer looks like a dead click.
-        launch_render(
-            system_view, sys_zoom, sys_pan, sys_elapsed, sys_timer, sys_gen, url, title,
-        );
+        launch_system(&sw.sector_name, &sw.world);
     };
     #[cfg(not(feature = "callisto"))]
     let on_dblclick = move |_ev: web_sys::MouseEvent| {};
@@ -1048,6 +1121,45 @@ fn App() -> impl IntoView {
     };
     #[cfg(not(feature = "callisto"))]
     let on_world_map = move |()| {};
+
+    // Long-press a world (mobile) → solar-system popup. Unlike the double-click,
+    // nothing has selected the world yet, so first hit-test it (reusing
+    // `select_world`, which also opens the detail panel + kicks the full-LOD
+    // fetch), then render. If the world is already full we render now; otherwise
+    // fetch the full sector first (the solar-system render needs stellar/pbg/worlds,
+    // which overview LOD omits) and render when it lands.
+    #[cfg(feature = "callisto")]
+    let open_system_at = move |px: (f64, f64)| {
+        if route_open.get_untracked() {
+            return; // route-planning mode owns taps
+        }
+        select_world(px); // opens the panel + (if needed) starts the full fetch
+        let Some(sw) = selected.get_untracked() else { return };
+        if sw.full {
+            launch_system(&sw.sector_name, &sw.world);
+            return;
+        }
+        // Not cached at full LOD yet — fetch it ourselves, then render. (This may
+        // duplicate the fetch select_world just kicked; an idempotent GET, so the
+        // extra request is harmless for this dev-only feature.)
+        let sector_name = sw.sector_name.clone();
+        let sector_coord = sw.sector_coord;
+        let hex = sw.world.hex.clone();
+        let encoded = String::from(js_sys::encode_uri_component(&sector_name));
+        let m = milieu.get_untracked();
+        spawn_local(async move {
+            let url = format!("/api/sector/{m}/{encoded}?lod=full");
+            let Ok(full) = fetch_json::<SectorData>(&url).await else { return };
+            if milieu.get_untracked() != m {
+                return; // milieu switched mid-fetch
+            }
+            let Some(fw) = full.worlds.iter().find(|w| w.hex == hex).cloned() else { return };
+            full_sectors.update_value(|fs| {
+                fs.insert(sector_coord, full);
+            });
+            launch_system(&sector_name, &fw);
+        });
+    };
 
     // --- search ---
     let on_search = move |ev: web_sys::Event| {
@@ -1082,6 +1194,105 @@ fn App() -> impl IntoView {
             anchor.1 - (cursor.1 - h / 2.0) / scale,
         );
         set_view.set(Some(ViewState { scale, center }));
+    };
+
+    // --- touch input: one finger pans, two fingers pinch-zoom. The canvas sets
+    //     `touch-action:none`, so the browser does no default scrolling/zooming
+    //     and these handlers fully own the gesture; tap-to-select still rides the
+    //     synthesized mouse path (iOS only fakes mouse events for stationary
+    //     taps, never for drags/pinches). ---
+    let touch = RwSignal::new(None::<TouchGesture>);
+    // Long-press state (callisto): a pending timer handle + the finger's origin.
+    // A single stationary finger held LONG_PRESS_MS opens the solar-system view
+    // (the mobile counterpart of the desktop double-click); any pan, second
+    // finger, or lift cancels it.
+    #[cfg(feature = "callisto")]
+    let lp_timer = RwSignal::new(None::<i32>);
+    #[cfg(feature = "callisto")]
+    let lp_origin = RwSignal::new((0.0_f64, 0.0_f64));
+    #[cfg(feature = "callisto")]
+    let cancel_long_press = move || {
+        if let Some(id) = lp_timer.get_untracked() {
+            clear_timeout(id);
+            lp_timer.set(None);
+        }
+    };
+    // Seed (or re-seed) the gesture from whatever fingers are down. Used on
+    // touchstart and after a finger lifts, so a pinch→pan handoff doesn't jump.
+    let seed_touch = move |pts: &[(f64, f64)]| match *pts {
+        [a, b, ..] => touch.set(Some(TouchGesture::Two { dist: pt_dist(a, b), mid: pt_mid(a, b) })),
+        [a] => touch.set(Some(TouchGesture::One { last: a })),
+        _ => touch.set(None),
+    };
+    let on_touch_start = move |ev: web_sys::TouchEvent| {
+        let pts = touch_points(&ev);
+        seed_touch(&pts);
+        // Arm a long-press only for a single fresh finger outside route mode.
+        #[cfg(feature = "callisto")]
+        {
+            cancel_long_press();
+            if let [a] = *pts.as_slice() {
+                if !route_open.get_untracked() {
+                    lp_origin.set(a);
+                    let id = set_timeout(LONG_PRESS_MS, move || {
+                        lp_timer.set(None);
+                        open_system_at(lp_origin.get_untracked());
+                    });
+                    lp_timer.set(Some(id));
+                }
+            }
+        }
+    };
+    let on_touch_end = move |ev: web_sys::TouchEvent| {
+        #[cfg(feature = "callisto")]
+        cancel_long_press(); // a lift before the timer = a tap, not a long-press
+        seed_touch(&touch_points(&ev));
+    };
+    let on_touch_move = move |ev: web_sys::TouchEvent| {
+        let Some(canvas_el) = canvas_ref.get_untracked() else { return };
+        let (w, h) = logical_dims(&canvas_el);
+        let Some(v) = view.get_untracked() else { return };
+        match *touch_points(&ev).as_slice() {
+            // Two fingers: pan + zoom together — the parsec point under the prior
+            // midpoint is moved under the current one, scaled by the pinch ratio.
+            [a, b, ..] => {
+                #[cfg(feature = "callisto")]
+                cancel_long_press(); // a second finger means pinch, not long-press
+                let (cur_d, cur_m) = (pt_dist(a, b), pt_mid(a, b));
+                if let Some(TouchGesture::Two { dist: prev_d, mid: prev_m }) = touch.get_untracked() {
+                    if prev_d > 0.0 {
+                        let scale =
+                            (v.scale * cur_d / prev_d).clamp(render::MIN_SCALE, render::MAX_SCALE);
+                        let anchor = v.to_parsec(w, h, prev_m);
+                        let center = (
+                            anchor.0 - (cur_m.0 - w / 2.0) / scale,
+                            anchor.1 - (cur_m.1 - h / 2.0) / scale,
+                        );
+                        set_view.set(Some(ViewState { scale, center }));
+                    }
+                }
+                touch.set(Some(TouchGesture::Two { dist: cur_d, mid: cur_m }));
+            }
+            // One finger: drag-pan (mirrors the mouse `on_move` drag branch).
+            [a] => {
+                // Drifting past the slop means the user is panning, not pressing.
+                #[cfg(feature = "callisto")]
+                if pt_dist(a, lp_origin.get_untracked()) > LONG_PRESS_SLOP {
+                    cancel_long_press();
+                }
+                if let Some(TouchGesture::One { last }) = touch.get_untracked() {
+                    set_view.set(Some(ViewState {
+                        center: (
+                            v.center.0 - (a.0 - last.0) / v.scale,
+                            v.center.1 - (a.1 - last.1) / v.scale,
+                        ),
+                        ..v
+                    }));
+                }
+                touch.set(Some(TouchGesture::One { last: a }));
+            }
+            _ => {}
+        }
     };
 
     // Compute the jump route at jump rating `j` from the two planner endpoints
@@ -1349,8 +1560,9 @@ fn App() -> impl IntoView {
     view! {
         <main style="margin:0; padding:0; overflow:hidden; background:#000;">
             <canvas node_ref=canvas_ref
-                    style="position:fixed; top:0; left:0; width:100vw; height:100vh; \
-                           display:block; touch-action:none;"
+                    style="position:fixed; top:0; left:0; width:100vw; height:100dvh; \
+                           display:block; touch-action:none; -webkit-touch-callout:none; \
+                           -webkit-user-select:none; user-select:none;"
                     style:cursor=move || {
                         if route_open.get() { "crosshair" }
                         else if drag.get().is_some() { "grabbing" }
@@ -1362,7 +1574,11 @@ fn App() -> impl IntoView {
                     on:mouseup=on_up
                     on:mouseleave=on_leave
                     on:dblclick=on_dblclick
-                    on:wheel=on_wheel></canvas>
+                    on:wheel=on_wheel
+                    on:touchstart=on_touch_start
+                    on:touchmove=on_touch_move
+                    on:touchend=on_touch_end
+                    on:touchcancel=on_touch_end></canvas>
             <div style="position:fixed; top:10px; left:12px; width:320px; \
                         font:14px system-ui,sans-serif; color:#cfd6e6;">
                 <div style="display:flex; gap:6px; align-items:stretch;">
@@ -1399,7 +1615,7 @@ fn App() -> impl IntoView {
                         </svg>
                     </button>
                 </div>
-                <div style="margin-top:4px; max-height:60vh; overflow:auto; \
+                <div style="margin-top:4px; max-height:60dvh; overflow:auto; \
                             background:rgba(10,12,20,0.92); border-radius:6px;">
                     <For each=move || results.get()
                          key=|r| format!("{}/{}", r.sector, r.hex.clone().unwrap_or_default())
@@ -1430,7 +1646,7 @@ fn App() -> impl IntoView {
             <Show when=move || route_open.get()>
                 <div style="position:fixed; top:56px; left:12px; width:300px; \
                             max-width:calc(100vw - 24px); box-sizing:border-box; \
-                            max-height:min(350px, calc(100vh - 70px)); display:flex; flex-direction:column; \
+                            max-height:min(350px, calc(100dvh - 70px)); display:flex; flex-direction:column; \
                             padding:10px 14px 12px; border-radius:0; background:#fff; \
                             border:1px solid #000; box-shadow:0 6px 26px rgba(0,0,0,0.5); \
                             font:13px system-ui,sans-serif; color:#222;">

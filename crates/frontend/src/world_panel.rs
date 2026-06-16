@@ -262,7 +262,7 @@ pub fn WorldPanel(
 
                 view! {
                     <div style="position:fixed; top:56px; right:12px; width:300px; \
-                                max-width:calc(100vw - 24px); max-height:calc(100vh - 90px); \
+                                max-width:calc(100vw - 24px); max-height:calc(100dvh - 90px); \
                                 box-sizing:border-box; display:flex; flex-direction:column; \
                                 padding:12px 14px 14px; border-radius:8px; \
                                 background:rgba(12,15,24,0.96); border:1px solid #2a3145; \
