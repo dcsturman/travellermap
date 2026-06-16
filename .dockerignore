@@ -1,0 +1,15 @@
+# The repo mixes the Rust rewrite with the upstream C#/JS reference tree. The
+# image only needs the Cargo manifests, the crate sources, and the res/ data —
+# so ignore everything, then re-include just those (keeps the build context tiny
+# and avoids copying the reference server, .git, docs, node_modules, etc.).
+*
+
+!Cargo.toml
+!Cargo.lock
+!crates
+!res
+!Dockerfile
+
+# Re-exclude build artifacts that the broad includes above would pull back in.
+crates/frontend/dist
+**/target

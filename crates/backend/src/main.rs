@@ -34,6 +34,7 @@ use tmap_core::{
     world_util::{allegiance_base, allegiance_name, encode_legacy_bases, synthesize_abbreviation},
 };
 use tower_http::cors::CorsLayer;
+use tower_http::services::{ServeDir, ServeFile};
 
 mod compat;
 #[cfg(test)]
@@ -324,7 +325,7 @@ impl AppState {
 /// Assemble the application router. Shared by `main` and the compatibility test
 /// suite (`compat_suite`), so tests exercise the exact routing/handlers we ship.
 pub(crate) fn build_router(state: AppState) -> Router {
-    Router::new()
+    let mut router = Router::new()
         .route("/api/health", get(health))
         .route("/api/universe", get(get_universe))
         .route("/api/overlays", get(get_overlays))
@@ -352,10 +353,18 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route("/data/{sector}/{tail}/coordinates", get(compat::data_coordinates_hex))
         .route("/data/{sector}/{tail}/credits", get(data_credits_hex))
         .route("/data/{sector}/{tail}/jump/{jump}", get(data_jumpworlds))
-        .route("/api/res/{*path}", get(get_res))
-        .route("/api/admin/flush", post(flush_cache))
-        // Permissive CORS is a dev convenience (Trunk serves the wasm app from
-        // a different origin). Tighten before any real deployment.
+        .route("/api/res/{*path}", get(get_res));
+
+    // Admin/profiling routes (cache flush) are OFF unless TMAP_ENABLE_ADMIN is
+    // set, so a public deployment never exposes them. Enable locally (e.g.
+    // `TMAP_ENABLE_ADMIN=1`) when profiling. See flush_cache.
+    if admin_enabled() {
+        router = router.route("/api/admin/flush", post(flush_cache));
+    }
+
+    router
+        // Permissive CORS for the public, read-only data API (third-party tools
+        // call it cross-origin); the same-origin frontend itself needs none.
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
@@ -366,9 +375,51 @@ async fn main() {
     let res_dir = std::env::var("TMAP_RES_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("res"));
-    let app = build_router(AppState::new(res_dir));
+    let state = AppState::new(res_dir);
 
-    let addr = "127.0.0.1:3000";
+    // Warm the default-milieu cache in the background. On a Cloud Run cold start
+    // the triggering request is the static `index.html`; the browser then spends
+    // time downloading + initializing the WASM bundle before it asks for data, so
+    // building the M1105 universe concurrently usually has it cached by the time
+    // the first `/api/universe` lands — hiding the parse instead of blocking the
+    // port (which would stall even the HTML). spawn_blocking keeps the synchronous
+    // parse off the async workers. See PORT_PLAN.md / DEPLOY.md.
+    {
+        let warm = state.clone();
+        tokio::task::spawn_blocking(move || {
+            let t0 = std::time::Instant::now();
+            match warm.universe(DEFAULT_MILIEU) {
+                Ok(u) => println!(
+                    "warm-up: {DEFAULT_MILIEU} universe ({} sectors) ready in {:?}",
+                    u.sectors.len(),
+                    t0.elapsed()
+                ),
+                Err((_, e)) => eprintln!("warm-up: {DEFAULT_MILIEU} universe failed: {e}"),
+            }
+        });
+    }
+
+    let mut app = build_router(state);
+
+    // In a deployed image the built WASM frontend (Trunk `dist/`) is served from
+    // the SAME origin as the API: the API / `/data` / `/t5ss` routes match first,
+    // and anything else falls through to the static bundle, with an `index.html`
+    // fallback so SPA deep-links / refreshes resolve. Skipped in local dev (no
+    // `dist/`), where Trunk serves the frontend and proxies `/api` here.
+    let dist_dir = std::env::var("TMAP_DIST_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("dist"));
+    if dist_dir.is_dir() {
+        let serve_dist =
+            ServeDir::new(&dist_dir).fallback(ServeFile::new(dist_dir.join("index.html")));
+        app = app.fallback_service(serve_dist);
+        println!("serving static frontend from {}", dist_dir.display());
+    }
+
+    // Cloud Run (and most PaaS) inject the port via $PORT; bind all interfaces so
+    // the platform can reach it. Falls back to :3000 for local `cargo run`.
+    let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(3000);
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     println!("tmap-backend listening on http://{addr}");
     axum::serve(listener, app).await.unwrap();
@@ -378,12 +429,21 @@ async fn health() -> &'static str {
     "ok"
 }
 
+/// Whether the admin/profiling routes are mounted. OFF by default so a public
+/// deployment never exposes them; enable with `TMAP_ENABLE_ADMIN` set to a
+/// truthy value (`1`/`true`/`yes`/`on`). Read once at router-build time.
+fn admin_enabled() -> bool {
+    std::env::var("TMAP_ENABLE_ADMIN")
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
 /// `POST /api/admin/flush` — drop the built-response cache so the next request
 /// for each sector/overlay re-parses from `res/` (the cold-cache path). The
 /// parsed-index caches (universe/search) stay warm on purpose: for profiling we
 /// want to measure sector parse + serialize, not re-parse the milieu index on
-/// every request. Returns how many entries were evicted. Unauthenticated — a
-/// dev/profiling convenience; gate or remove before any real deployment.
+/// every request. Returns how many entries were evicted. A dev/profiling
+/// convenience — the route is only mounted when [`admin_enabled`] is true.
 async fn flush_cache(State(state): State<AppState>) -> Response {
     let mut cache = state.response_cache.lock().unwrap();
     let n = cache.len();

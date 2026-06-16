@@ -177,6 +177,24 @@ artifacts stay clean). Build/run locally with `--features <name>` on both crates
   broke standalone/CI builds — hence the move to a standalone HTTP service the client
   calls (and which can scale/deploy independently). The service spec is in
   `worldgen/docs/library-integration.md` consumers' notes.
+- [x] **Callisto — "World Map" button → main-world surface map (DONE 2026-06-15).**
+  A double-click *inside* the solar-system PNG can't pick a world (it's a flat image
+  with no per-planet hit-test data), so instead the detail panel gets a **"🌍 World
+  Map"** button that renders the *selected* world's surface. Same `callisto` feature,
+  same external service: `https://tools.callistoflight.com/api/world?sector=&hex=&
+  name=&uwp=&scale=2.0` (`orbit` defaults to 3 = main world; same deterministic seed
+  chain + GCS cache as `/api/system`, so the first render of a world can take 20–30 s
+  but is instant after). Because of that latency the popup was generalized to a
+  **Loading / Ready / Error** state machine (`ImgView`): clicking opens the popup
+  *immediately* with a **rotating-ring spinner + live elapsed-seconds counter** ("first
+  render can take up to a minute… cached after that"), then swaps to the existing
+  zoom/pan viewer on success or an **error card** (surfacing the service's 422 reason
+  for a partial/placeholder UWP). A generation counter ignores a stale fetch if the
+  user cancels/closes; a 1 Hz interval drives the counter. The **double-click
+  solar-system flow now routes through the same Loading state** too (it previously sat
+  silent for ~30 s on a cache miss). Files: `crates/frontend/src/main.rs`
+  (`WORLD_SERVICE`, `ImgView`, `launch_render`, `start_elapsed_timer`, `on_world_map`,
+  rebuilt modal), `crates/frontend/src/world_panel.rs` (`on_world_map` prop + button).
 
 ### Rendering / visual parity
 
@@ -256,10 +274,28 @@ The hamburger / search-bar menu items still stubbed in the Settings panel ("Not 
 
 ## Container & GCP/Cloud Run deployment (last)
 
-Do this after the backlog above. Stays last by request.
-
-- [ ] **Containerize** the backend (Unix/Linux). Multi-stage Docker images: builder stage (`cargo build --release`) → slim runtime (distroless/`debian-slim`), `res/` baked in or mounted, `TMAP_RES_DIR` configurable, listens on `$PORT` — Cloud Run injects it, and the backend currently **hardcodes `127.0.0.1:3000`**; it must bind `0.0.0.0:$PORT`. Frontend: build wasm with Trunk → serve the static `dist/` (separate static-host/CDN, or a second container).
-- [ ] **GCP deploy scripts → Cloud Run (for now).** Build + deploy scripts targeting the user's GCP project as **Cloud Run** services (start here; revisit GKE later if needed). Likely `gcloud builds submit` / Artifact Registry push + `gcloud run deploy` (stateless, scales to zero — fits the no-datastore, read-only, CDN-cacheable design; map `Cache-Control`/ETag to Cloud CDN). Note the `$PORT` bind requirement above. Keep scripts in-repo (e.g. `deploy/`). Before deploy: **gate or remove the unauthenticated `POST /api/admin/flush`** and tighten the permissive CORS.
+- [x] **Containerize as a single service (DONE 2026-06-15).** Decision: **one container
+  serves both the API and the WASM frontend from one origin** (not a separate static host) —
+  the frontend already uses relative `/api` URLs, so same-origin "just works" and the whole
+  app lives at one URL. `Dockerfile` is multi-stage: Trunk builds the frontend
+  (`--release --features callisto`) → cargo builds the backend → `debian-slim` runtime with
+  the binary + `dist/` + `res/`. Backend now binds `0.0.0.0:$PORT` (default 3000 locally),
+  and `main()` adds a `ServeDir`+`ServeFile` SPA fallback (mounted after the API routes, only
+  when a `dist/` exists, so local `cargo run` + Trunk dev is unchanged) plus a background
+  `spawn_blocking` warm-up of the M1105 universe. `.dockerignore` trims the context to the
+  Cargo manifests + `crates/` + `res/`. Files: `crates/backend/src/main.rs`, `Dockerfile`,
+  `.dockerignore`.
+- [x] **GCP deploy scripts → Cloud Run (DONE 2026-06-15).** `build.sh` (local image + run on
+  :8080 to verify before shipping) and `deploy.sh` (per-push: `gcloud builds submit` → amd64
+  image in Artifact Registry → `gcloud run deploy`, scale-to-zero, config from `deploy.env`).
+  One-time GCP setup + custom-domain mapping (`travellermap.callistoflight.com`) documented in
+  `DEPLOY.md`. Cold-start data latency is negligible (M1105 parse ≈150 ms + background warm-up).
+- [x] **Pre-public hardening — admin gate (DONE 2026-06-15).** `POST /api/admin/flush` (a
+  dev/profiling cache-flush, nothing in the app calls it) is now **only mounted when
+  `TMAP_ENABLE_ADMIN` is truthy** (`admin_enabled()` in `main.rs`); unset → the route 404s, so
+  the public deployment never exposes it. Permissive CORS is kept intentionally (public,
+  read-only data API meant for cross-origin third-party tools). Still open: `Cache-Control`/ETag
+  → Cloud CDN via an HTTPS load balancer (optimization, later).
 - [ ] Remaining parity features as prioritized (jump maps, world data sheet, print); `res/` contribute-back hygiene.
 
-**Test:** `docker run` the backend locally, full app works against it; `gcloud run deploy` puts it live on the GCP project.
+**Test:** `./build.sh run` → full app on `http://localhost:8080`; `./deploy.sh` puts it live on Cloud Run.

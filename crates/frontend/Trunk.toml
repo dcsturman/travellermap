@@ -1,6 +1,14 @@
 [build]
 target = "index.html"
 
+[tools]
+# Pin the binaryen (wasm-opt) release used by `trunk build --release`. Trunk's
+# default (version_116) ships no aarch64-linux tarball, so an arm64 image build
+# (Apple-silicon Docker) 404s on the auto-download; version_123 ships BOTH
+# x86_64-linux (Cloud Build / Cloud Run) and aarch64-linux (local). wasm-opt only
+# runs on release builds, so this doesn't affect `trunk serve`.
+wasm_opt = "version_123"
+
 [serve]
 port = 8080
 open = false

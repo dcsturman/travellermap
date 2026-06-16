@@ -45,3 +45,5 @@ node_modules/
 /target/
 # Trunk frontend build output
 crates/frontend/dist/
+# Deploy config (copy from deploy.env.example) — project-specific, not committed
+/deploy.env
