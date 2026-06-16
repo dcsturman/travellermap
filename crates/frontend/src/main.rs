@@ -89,6 +89,29 @@ fn open_print_html(html: &str) {
 #[cfg(feature = "callisto")]
 const SYSTEM_SERVICE: &str = "https://tools.callistoflight.com/api/system";
 
+/// Base URL of the external worldgen planet-surface image service (Callisto). The
+/// "World Map" button in the detail panel calls this directly. Same deterministic
+/// seed chain + GCS cache as `/api/system`, so the first render of a given world
+/// can take 20–30 s but is instant thereafter.
+#[cfg(feature = "callisto")]
+const WORLD_SERVICE: &str = "https://tools.callistoflight.com/api/world";
+
+/// State of the full-screen Callisto image popup (dev-only). One popup serves
+/// both the double-click solar-system render and the detail-panel world-surface
+/// render; the variant drives whether we show a spinner, the zoom/pan viewer, or
+/// an error card. `Ready` carries `(object_url, service_url, title)` — the object
+/// URL backs the `<img>`/download, the service URL backs Print.
+#[cfg(feature = "callisto")]
+#[derive(Clone)]
+enum ImgView {
+    /// Render in flight — show a spinner + elapsed-seconds counter.
+    Loading { title: String },
+    /// Render arrived — zoom/pan viewer over the PNG.
+    Ready { obj: String, svc: String, title: String },
+    /// Render failed (unreachable service, or a 422 from a partial/placeholder UWP).
+    Error { title: String, msg: String },
+}
+
 /// Wrap PNG bytes in an object URL for the solar-system popup `<img>` /
 /// download. Fetching the bytes (rather than pointing `<img>` at the remote
 /// service) lets us open the popup only on a real image, and makes a download
@@ -137,6 +160,93 @@ fn print_image_url(url: &str, title: &str) {
          </body></html>"
     );
     open_print_html(&html);
+}
+
+/// Start a 1 Hz timer that increments `elapsed` (reset to 0 first), returning the
+/// interval handle so the caller can stop it with `clear_interval_with_handle`.
+/// The tick closure is leaked (`forget`) — one tiny leak per popup open, which is
+/// fine for this dev-only feature; clearing the handle stops the ticks regardless.
+#[cfg(feature = "callisto")]
+fn start_elapsed_timer(elapsed: RwSignal<u32>) -> i32 {
+    elapsed.set(0);
+    let cb = Closure::<dyn FnMut()>::new(move || elapsed.update(|n| *n += 1));
+    let id = win()
+        .set_interval_with_callback_and_timeout_and_arguments_0(cb.as_ref().unchecked_ref(), 1000)
+        .unwrap_or(-1);
+    cb.forget();
+    id
+}
+
+/// Open the popup on `url`: show the spinner immediately, fetch in the background,
+/// then swap to the zoom/pan viewer (success) or an error card (failure). A
+/// generation counter (`gen`) guards against a stale fetch landing after the user
+/// closed the popup or launched a newer render. Shared by the solar-system
+/// double-click and the world-surface button.
+#[cfg(feature = "callisto")]
+#[allow(clippy::too_many_arguments)]
+fn launch_render(
+    system_view: RwSignal<Option<ImgView>>,
+    sys_zoom: RwSignal<f64>,
+    sys_pan: RwSignal<(f64, f64)>,
+    sys_elapsed: RwSignal<u32>,
+    sys_timer: RwSignal<Option<i32>>,
+    sys_gen: RwSignal<u64>,
+    url: String,
+    title: String,
+) {
+    // Revoke a prior object URL and stop a prior timer so nothing leaks.
+    if let Some(ImgView::Ready { obj, .. }) = system_view.get_untracked() {
+        let _ = web_sys::Url::revoke_object_url(&obj);
+    }
+    if let Some(id) = sys_timer.get_untracked() {
+        win().clear_interval_with_handle(id);
+    }
+    sys_zoom.set(1.0);
+    sys_pan.set((0.0, 0.0));
+    let gen = sys_gen.get_untracked().wrapping_add(1);
+    sys_gen.set(gen);
+    system_view.set(Some(ImgView::Loading { title: title.clone() }));
+    sys_timer.set(Some(start_elapsed_timer(sys_elapsed)));
+
+    spawn_local(async move {
+        let result = gloo_net::http::Request::get(&url).send().await;
+        // A newer launch or a close bumped the generation — drop this result.
+        if sys_gen.get_untracked() != gen {
+            return;
+        }
+        if let Some(id) = sys_timer.get_untracked() {
+            win().clear_interval_with_handle(id);
+            sys_timer.set(None);
+        }
+        let state = match result {
+            Ok(resp) if resp.ok() => match resp.binary().await {
+                Ok(bytes) => match blob_url_from_png(&bytes) {
+                    Some(obj) => ImgView::Ready { obj, svc: url, title },
+                    None => ImgView::Error {
+                        title,
+                        msg: "The service returned data that wasn't a PNG image.".into(),
+                    },
+                },
+                Err(_) => ImgView::Error { title, msg: "Couldn't read the image data.".into() },
+            },
+            // Non-2xx: surface the service's plain-text reason (422 = bad/partial UWP).
+            Ok(resp) => {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                let msg = if body.trim().is_empty() {
+                    format!("The map service returned HTTP {status}.")
+                } else {
+                    body
+                };
+                ImgView::Error { title, msg }
+            }
+            Err(_) => ImgView::Error { title, msg: "Couldn't reach the map service.".into() },
+        };
+        // Re-check generation after the await on the body, then apply.
+        if sys_gen.get_untracked() == gen {
+            system_view.set(Some(state));
+        }
+    });
 }
 
 /// Trigger a browser download of a canvas as a PNG (via a data-URL `<a download>`).
@@ -374,13 +484,22 @@ fn App() -> impl IntoView {
     // popup is a zoom/pan viewer (the render is high-res); `sys_zoom`/`sys_pan`
     // hold the view transform and `sys_drag` the in-progress pan.
     #[cfg(feature = "callisto")]
-    let system_view = RwSignal::new(None::<(String, String, String)>);
+    let system_view = RwSignal::new(None::<ImgView>);
     #[cfg(feature = "callisto")]
     let sys_zoom = RwSignal::new(1.0_f64);
     #[cfg(feature = "callisto")]
     let sys_pan = RwSignal::new((0.0_f64, 0.0_f64));
     #[cfg(feature = "callisto")]
     let sys_drag = RwSignal::new(None::<(f64, f64, f64, f64)>);
+    // Loading-spinner support for the popup: elapsed-seconds counter, the active
+    // tick-timer handle, and a generation counter that invalidates a stale fetch
+    // (closed/superseded popup) so its late result is ignored.
+    #[cfg(feature = "callisto")]
+    let sys_elapsed = RwSignal::new(0_u32);
+    #[cfg(feature = "callisto")]
+    let sys_timer = RwSignal::new(None::<i32>);
+    #[cfg(feature = "callisto")]
+    let sys_gen = RwSignal::new(0_u64);
     let (route_status, set_route_status) = signal(String::new());
     // Distinguish a click (set endpoint) from a drag (pan): remember press origin.
     let down_pos = RwSignal::new(None::<(f64, f64)>);
@@ -469,8 +588,15 @@ fn App() -> impl IntoView {
     {
         let keydown_cb = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |ev: web_sys::KeyboardEvent| {
             if ev.key() == "Escape" {
-                if let Some((old, _, _)) = system_view.get_untracked() {
-                    let _ = web_sys::Url::revoke_object_url(&old);
+                if let Some(view) = system_view.get_untracked() {
+                    if let ImgView::Ready { obj, .. } = &view {
+                        let _ = web_sys::Url::revoke_object_url(obj);
+                    }
+                    if let Some(id) = sys_timer.get_untracked() {
+                        win().clear_interval_with_handle(id);
+                        sys_timer.set(None);
+                    }
+                    sys_gen.update(|g| *g = g.wrapping_add(1)); // invalidate any in-flight fetch
                     system_view.set(None);
                 }
             }
@@ -892,27 +1018,36 @@ fn App() -> impl IntoView {
         }
         let name = if w.name.is_empty() { w.hex.clone() } else { w.name.clone() };
         let title = format!("{name} — {} {}", sw.sector_name, w.hex);
-        spawn_local(async move {
-            // Fetch the image first; open the popup only on a real PNG, so an
-            // unreachable service or an unrenderable world (422) is a silent
-            // no-op. The blob backs both the <img> and a working cross-origin
-            // download; Print uses the absolute service URL.
-            let Ok(resp) = gloo_net::http::Request::get(&url).send().await else { return };
-            if !resp.ok() {
-                return;
-            }
-            let Ok(bytes) = resp.binary().await else { return };
-            let Some(obj) = blob_url_from_png(&bytes) else { return };
-            if let Some((old, _, _)) = system_view.get_untracked() {
-                let _ = web_sys::Url::revoke_object_url(&old); // replace, don't leak
-            }
-            sys_zoom.set(1.0);
-            sys_pan.set((0.0, 0.0));
-            system_view.set(Some((obj, url, title)));
-        });
+        // Opens the popup immediately with a spinner, then swaps in the render (or
+        // an error) — so a slow first generation no longer looks like a dead click.
+        launch_render(
+            system_view, sys_zoom, sys_pan, sys_elapsed, sys_timer, sys_gen, url, title,
+        );
     };
     #[cfg(not(feature = "callisto"))]
     let on_dblclick = move |_ev: web_sys::MouseEvent| {};
+
+    // "World Map" button (detail panel, callisto-only): render the selected main
+    // world's surface map. Builds the `/api/world` request from the world's T5
+    // fields and opens the same popup (spinner → image), `orbit` left to the
+    // service default (3 = main world).
+    #[cfg(feature = "callisto")]
+    let on_world_map = move |()| {
+        let Some(sw) = selected.get_untracked() else { return };
+        let w = &sw.world;
+        let enc = |s: &str| String::from(js_sys::encode_uri_component(s));
+        let name = if w.name.is_empty() { w.hex.clone() } else { w.name.clone() };
+        let url = format!(
+            "{WORLD_SERVICE}?sector={}&hex={}&name={}&uwp={}&scale=2.0",
+            enc(&sw.sector_name), enc(&w.hex), enc(&name), enc(&w.uwp),
+        );
+        let title = format!("{name} — {} {} · World Map", sw.sector_name, w.hex);
+        launch_render(
+            system_view, sys_zoom, sys_pan, sys_elapsed, sys_timer, sys_gen, url, title,
+        );
+    };
+    #[cfg(not(feature = "callisto"))]
+    let on_world_map = move |()| {};
 
     // --- search ---
     let on_search = move |ev: web_sys::Event| {
@@ -1072,9 +1207,14 @@ fn App() -> impl IntoView {
     // nothing.
     #[cfg(feature = "callisto")]
     let close_system = move || {
-        if let Some((old, _, _)) = system_view.get_untracked() {
-            let _ = web_sys::Url::revoke_object_url(&old);
+        if let Some(ImgView::Ready { obj, .. }) = system_view.get_untracked() {
+            let _ = web_sys::Url::revoke_object_url(&obj);
         }
+        if let Some(id) = sys_timer.get_untracked() {
+            win().clear_interval_with_handle(id);
+            sys_timer.set(None);
+        }
+        sys_gen.update(|g| *g = g.wrapping_add(1)); // ignore any in-flight fetch
         system_view.set(None);
     };
     #[cfg(feature = "callisto")]
@@ -1133,38 +1273,72 @@ fn App() -> impl IntoView {
         <Show when=move || system_view.get().is_some()>
             <div style="position:fixed; inset:0; z-index:30; display:flex; flex-direction:column; \
                         background:rgba(0,0,0,0.9);">
-                <div style="flex:none; display:flex; align-items:center; gap:8px; padding:10px 14px;">
-                    <span style="flex:1; min-width:0; font:700 15px system-ui; color:#fff; \
-                                 overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
-                        {move || system_view.get().map(|(_, _, t)| t).unwrap_or_default()}
-                    </span>
-                    <button style=btn on:click=move |_| reset_sys()>"⟳  Reset"</button>
-                    <button style=btn on:click=move |_| {
+                {move || match system_view.get() {
+                    // Render in flight — spinner + reassuring copy + live elapsed counter.
+                    Some(ImgView::Loading { title }) => view! {
+                        <style>"@keyframes tmap-spin{to{transform:rotate(360deg)}}"</style>
+                        <div style="flex:1; display:flex; flex-direction:column; align-items:center; \
+                                    justify-content:center; gap:20px; text-align:center; padding:24px;">
+                            <div style="width:66px; height:66px; border:6px solid rgba(255,255,255,0.14); \
+                                        border-top-color:#e32736; border-radius:50%; \
+                                        animation:tmap-spin 0.9s linear infinite;"></div>
+                            <div style="font:700 17px system-ui; color:#fff; max-width:32ch;">{title}</div>
+                            <div style="font:13px system-ui; color:#9aa3b8; max-width:38ch; line-height:1.5;">
+                                "Generating the map — the first render of a world can take up to a minute. \
+                                 It's cached after that, so it'll be instant next time."
+                            </div>
+                            <div style="font:700 30px ui-monospace,monospace; color:#e9eef9; letter-spacing:0.04em;">
+                                {move || format!("{}s", sys_elapsed.get())}
+                            </div>
+                            <button style=btn on:click=move |_| close_system()>"Cancel"</button>
+                        </div>
+                    }.into_any(),
+                    // Generation failed — surface the service's reason (e.g. a 422 partial UWP).
+                    Some(ImgView::Error { title, msg }) => view! {
+                        <div style="flex:1; display:flex; flex-direction:column; align-items:center; \
+                                    justify-content:center; gap:16px; text-align:center; padding:24px;">
+                            <div style="font-size:40px; line-height:1;">"🛰"</div>
+                            <div style="font:700 17px system-ui; color:#fff; max-width:32ch;">{title}</div>
+                            <div style="font:14px system-ui; color:#e3a3a8; max-width:40ch; line-height:1.5;">{msg}</div>
+                            <button style=btn on:click=move |_| close_system()>"Close"</button>
+                        </div>
+                    }.into_any(),
+                    // Rendered — the zoom (wheel) / pan (drag) viewer with Reset / Print / Download.
+                    Some(ImgView::Ready { obj, svc, title }) => {
+                        let (svc_p, title_p) = (svc.clone(), title.clone());
+                        let (obj_d, title_d) = (obj.clone(), title.clone());
+                        view! {
+                            <div style="flex:none; display:flex; align-items:center; gap:8px; padding:10px 14px;">
+                                <span style="flex:1; min-width:0; font:700 15px system-ui; color:#fff; \
+                                             overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                                    {title.clone()}
+                                </span>
+                                <button style=btn on:click=move |_| reset_sys()>"⟳  Reset"</button>
                                 // Print uses the absolute service URL (a blob: print doc can't resolve our object URL).
-                                if let Some((_, svc, t)) = system_view.get_untracked() { print_image_url(&svc, &t); }
-                            }>"🖨  Print"</button>
-                    <button style=btn on:click=move |_| {
+                                <button style=btn on:click=move |_| print_image_url(&svc_p, &title_p)>"🖨  Print"</button>
                                 // Download uses the object URL (cross-origin download attr is ignored otherwise).
-                                if let Some((obj, _, t)) = system_view.get_untracked() { download_url(&obj, &format!("{t}.png")); }
-                            }>"⬇  Download"</button>
-                    <span on:click=move |_| close_system()
-                          style="cursor:pointer; color:#fff; font-size:24px; line-height:1; padding:0 6px;">"✕"</span>
-                </div>
-                <div on:wheel=on_sys_wheel on:mousedown=on_sys_down on:mousemove=on_sys_move
-                     on:mouseup=on_sys_up on:mouseleave=on_sys_up
-                     style="flex:1; overflow:hidden; display:flex; align-items:center; justify-content:center; \
-                            touch-action:none;"
-                     style:cursor=move || if sys_drag.get().is_some() { "grabbing" } else { "grab" }>
-                    <img src=move || system_view.get().map(|(obj, _, _)| obj).unwrap_or_default()
-                         draggable="false"
-                         style="max-width:98%; max-height:98%; transform-origin:center center; \
-                                user-select:none; -webkit-user-drag:none;"
-                         style:transform=move || {
-                             let z = sys_zoom.get();
-                             let (px, py) = sys_pan.get();
-                             format!("translate({px}px, {py}px) scale({z})")
-                         } />
-                </div>
+                                <button style=btn on:click=move |_| download_url(&obj_d, &format!("{title_d}.png"))>"⬇  Download"</button>
+                                <span on:click=move |_| close_system()
+                                      style="cursor:pointer; color:#fff; font-size:24px; line-height:1; padding:0 6px;">"✕"</span>
+                            </div>
+                            <div on:wheel=on_sys_wheel on:mousedown=on_sys_down on:mousemove=on_sys_move
+                                 on:mouseup=on_sys_up on:mouseleave=on_sys_up
+                                 style="flex:1; overflow:hidden; display:flex; align-items:center; justify-content:center; \
+                                        touch-action:none;"
+                                 style:cursor=move || if sys_drag.get().is_some() { "grabbing" } else { "grab" }>
+                                <img src=obj draggable="false"
+                                     style="max-width:98%; max-height:98%; transform-origin:center center; \
+                                            user-select:none; -webkit-user-drag:none;"
+                                     style:transform=move || {
+                                         let z = sys_zoom.get();
+                                         let (px, py) = sys_pan.get();
+                                         format!("translate({px}px, {py}px) scale({z})")
+                                     } />
+                            </div>
+                        }.into_any()
+                    }
+                    None => ().into_any(),
+                }}
             </div>
         </Show>
     }
@@ -1378,6 +1552,7 @@ fn App() -> impl IntoView {
                         open_print_html(&world_print::build_world_print_html(&sel));
                     }
                 }
+                on_world_map=on_world_map
                 on_jump_range=move |n: i32| {
                     let Some(sel) = selected.get_untracked() else { return };
                     let id = (sel.sector_coord, sel.world.hex.clone());

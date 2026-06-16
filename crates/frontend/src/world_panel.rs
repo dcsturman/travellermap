@@ -220,9 +220,15 @@ pub fn WorldPanel(
     #[prop(into)] on_plan_route: Callback<String>,
     #[prop(into)] on_print: Callback<()>,
     #[prop(into)] on_jump_range: Callback<i32>,
+    /// Render the selected world's surface map (Callisto, dev-only). The button
+    /// that fires this is only built under the `callisto` feature; in a default
+    /// build the callback is unused.
+    #[prop(into)] on_world_map: Callback<()>,
     #[prop(into)] active_jump: Signal<i32>,
 ) -> impl IntoView {
     let expanded = RwSignal::new(true);
+    #[cfg(not(feature = "callisto"))]
+    let _ = on_world_map;
 
     view! {
         <Show when=move || selected.get().is_some()>
@@ -235,6 +241,24 @@ pub fn WorldPanel(
                 let wiki = wiki_world_url(&title, &sel.sector_name, &w.hex);
                 let thumb = thumb_url(&d);
                 let plan_label = title.clone();
+
+                // "World Map" action (Callisto, dev-only): a full-width button that
+                // renders the main world's surface map. Built as an `AnyView` so the
+                // panel embeds `{world_map_btn}` unconditionally; off by default.
+                #[cfg(feature = "callisto")]
+                let world_map_btn = view! {
+                    <div style="flex:none; margin-top:8px;">
+                        <button on:click=move |_| on_world_map.run(())
+                                title="Generate this world's surface map"
+                                style="width:100%; padding:7px 0; border-radius:15px; cursor:pointer; \
+                                       border:1px solid #2a3145; background:rgba(40,44,58,0.7); \
+                                       color:#cdd5e6; font:600 12px system-ui;">
+                            "🌍  World Map"
+                        </button>
+                    </div>
+                }.into_any();
+                #[cfg(not(feature = "callisto"))]
+                let world_map_btn = ().into_any();
 
                 view! {
                     <div style="position:fixed; top:56px; right:12px; width:300px; \
@@ -282,6 +306,9 @@ pub fn WorldPanel(
                                            color:#cdd5e6; font:600 13px system-ui;">
                                 {move || if expanded.get() { "▾" } else { "▸" }}</button>
                         </div>
+
+                        // --- world surface-map button (callisto, dev-only) ---
+                        {world_map_btn}
 
                         // --- jump-range pills: J-N opens a scoped jump-N
                         //     neighborhood cutout (toggle the same N off). ---
