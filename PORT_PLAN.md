@@ -271,7 +271,7 @@ The hamburger / search-bar menu items still stubbed in the Settings panel ("Not 
 ### Cross-cutting quality
 
 - [ ] **Reference-parity harness:** diff our parsed data / rendered frames against travellermap.com (or a local reference build) to catch regressions.
-- [ ] **CI:** `cargo test` + `cargo check -p tmap-frontend --target wasm32-unknown-unknown` on each change.
+- [x] **CI — DONE 2026-06-16 (`.github/workflows/ci.yml`).** Two parallel jobs on push/PR to `main` (path-filtered to `crates/**`, manifests, `res/**`, the workflow): **native** = `cargo clippy -p tmap-core -p tmap-backend -- -D warnings` then `cargo test --locked`; **wasm** = `cargo check -p tmap-frontend --target wasm32-unknown-unknown` for both the default and `callisto` feature sets. `dtolnay/rust-toolchain@stable` + `Swatinem/rust-cache@v2`; concurrency-cancels superseded runs. Fixed the 4 native clippy warnings to make the deny-warnings gate green (range pattern, `is_multiple_of`, dangling doc comment, `RouteKey` type alias). *Not yet gated:* frontend (wasm) clippy has many pre-existing warnings — a separate cleanup before it can join the gate; `cargo fmt --check` likewise (the tree isn't rustfmt-clean).
 
 ## Container & GCP/Cloud Run deployment (last)
 

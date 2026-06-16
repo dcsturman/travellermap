@@ -878,7 +878,7 @@ fn decode_remark(code: &str) -> String {
         return match i {
             0 => "Research Station".to_string(),
             1 => "Refugee World".to_string(),
-            2 | 3 | 4 => "Controlled".to_string(),
+            2..=4 => "Controlled".to_string(),
             5 => "Military rule".to_string(),
             6 | 7 => "Homeworld".to_string(),
             8 => format!("Homeworld, Population {}0%", &caps[1]),
@@ -909,7 +909,7 @@ fn number_with_commas(n: u128) -> String {
     let bytes = s.as_bytes();
     let mut out = String::with_capacity(s.len() + s.len() / 3);
     for (i, b) in bytes.iter().enumerate() {
-        if i > 0 && (bytes.len() - i) % 3 == 0 {
+        if i > 0 && (bytes.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(*b as char);

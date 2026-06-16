@@ -1404,8 +1404,8 @@ fn sec_text_response(r: Result<String, (StatusCode, String)>) -> Response {
     }
 }
 
-/// `/data/{sector}/coordinates` and `/data/{sector}/{hex}/coordinates` live in
-/// `compat` (they share the CoordinatesHandler logic).
+// `/data/{sector}/coordinates` and `/data/{sector}/{hex}/coordinates` live in
+// `compat` (they share the CoordinatesHandler logic).
 
 /// `/data/{sector}/credits` → credits at the sector centre.
 async fn data_credits(Path(sector): Path<String>, State(state): State<AppState>) -> Response {
@@ -1827,7 +1827,9 @@ pub(crate) fn build_sector_bytes(
 
     // Routes: per-sector first, then inline (dedup by start/end + offsets).
     let mut routes: Vec<tmap_core::dto::Route> = meta.routes.iter().map(render_route).collect();
-    let mut seen_routes: HashSet<(String, String, (i32, i32), (i32, i32))> = routes
+    // (start, end, start_offset, end_offset) — identity for route dedup.
+    type RouteKey = (String, String, (i32, i32), (i32, i32));
+    let mut seen_routes: HashSet<RouteKey> = routes
         .iter()
         .map(|r| (r.start.clone(), r.end.clone(), r.start_offset, r.end_offset))
         .collect();
