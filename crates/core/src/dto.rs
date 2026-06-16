@@ -499,23 +499,82 @@ pub struct Overlays {
     pub minor_labels: Vec<MapLabel>,
 }
 
-/// One search hit — a world or sector — with where to jump to.
+/// The canonical travellermap.com `/api/search` envelope:
+/// `{"Results":{"Count":N,"Items":[{"World":{…}},{"Sector":{…}},…]}}`. PascalCase
+/// and structure match the reference `SearchHandler` exactly so third-party tools
+/// that target the documented API parse our responses unchanged.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SearchResult {
-    pub name: String,
-    /// `"world"` or `"sector"`.
-    pub kind: String,
-    pub sector: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hex: Option<String>,
-    /// Absolute world hex (col, row) to center the view on.
-    pub coord: Coord,
+pub struct SearchResults {
+    #[serde(rename = "Results")]
+    pub results: SearchResultsBody,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SearchResults {
-    pub query: String,
-    pub results: Vec<SearchResult>,
+pub struct SearchResultsBody {
+    #[serde(rename = "Count")]
+    pub count: usize,
+    #[serde(rename = "Items")]
+    pub items: Vec<SearchItem>,
+}
+
+/// One hit — exactly one of `World`/`Sector`/`Subsector`. Externally tagged, so
+/// it serializes as the public `{"World":{…}}` wrapper.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum SearchItem {
+    World(SearchWorld),
+    Sector(SearchSector),
+    Subsector(SearchSubsector),
+}
+
+/// A world hit. `HexX`/`HexY` are the *local* sector hex (1–32 / 1–40); combine
+/// with `SectorX`/`SectorY` (the sector grid cell) for the absolute coordinate.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SearchWorld {
+    #[serde(rename = "HexX")]
+    pub hex_x: i32,
+    #[serde(rename = "HexY")]
+    pub hex_y: i32,
+    #[serde(rename = "Sector")]
+    pub sector: String,
+    #[serde(rename = "Uwp")]
+    pub uwp: String,
+    #[serde(rename = "SectorX")]
+    pub sector_x: i32,
+    #[serde(rename = "SectorY")]
+    pub sector_y: i32,
+    #[serde(rename = "Name")]
+    pub name: String,
+    #[serde(rename = "SectorTags")]
+    pub sector_tags: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SearchSector {
+    #[serde(rename = "SectorX")]
+    pub sector_x: i32,
+    #[serde(rename = "SectorY")]
+    pub sector_y: i32,
+    #[serde(rename = "Name")]
+    pub name: String,
+    #[serde(rename = "SectorTags")]
+    pub sector_tags: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SearchSubsector {
+    #[serde(rename = "Sector")]
+    pub sector: String,
+    /// Subsector letter `A`–`P`.
+    #[serde(rename = "Index")]
+    pub index: String,
+    #[serde(rename = "SectorX")]
+    pub sector_x: i32,
+    #[serde(rename = "SectorY")]
+    pub sector_y: i32,
+    #[serde(rename = "Name")]
+    pub name: String,
+    #[serde(rename = "SectorTags")]
+    pub sector_tags: String,
 }
 
 /// A jump-route request (mirrors the reference `RouteHandler` query params).

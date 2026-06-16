@@ -11,7 +11,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use tmap_core::astrometrics::{parse_hex, PARSEC_SCALE_X};
 use tmap_core::dto::{
-    Overlays, RouteResult, SearchResult, SearchResults, SectorData, UniverseResult, World,
+    Overlays, RouteResult, SearchItem, SearchResults, SectorData, UniverseResult, World,
 };
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
@@ -47,6 +47,50 @@ const START: (i32, i32) = (-4, -1);
 /// Safety cap: when zoomed out far enough to see more than this many sectors,
 /// don't stream per-sector (Phase 5 macro overlays cover that range).
 const MAX_STREAM: usize = 48;
+
+/// A flattened search hit for the results list: display name, where it lives, and
+/// the absolute world hex `(col, row)` to center on. Built from the public
+/// [`SearchItem`] envelope (`{"World"|"Sector"|"Subsector":{…}}`).
+#[derive(Clone, PartialEq)]
+struct Hit {
+    name: String,
+    sector: String,
+    hex: Option<String>,
+    coord: (i32, i32),
+}
+
+impl Hit {
+    fn from_item(item: SearchItem) -> Hit {
+        match item {
+            SearchItem::World(w) => Hit {
+                name: w.name,
+                sector: w.sector,
+                hex: Some(format!("{:02}{:02}", w.hex_x, w.hex_y)),
+                coord: (w.sector_x * 32 + w.hex_x, w.sector_y * 40 + w.hex_y),
+            },
+            SearchItem::Sector(s) => Hit {
+                name: s.name.clone(),
+                sector: s.name,
+                hex: None,
+                // Sector center (hex 16,20 of a 32×40 sector).
+                coord: (s.sector_x * 32 + 16, s.sector_y * 40 + 20),
+            },
+            SearchItem::Subsector(s) => {
+                // Subsector center: 4×4 grid of 8×10-parsec cells, index A–P.
+                let i = (s.index.chars().next().unwrap_or('A') as u8).saturating_sub(b'A') as i32;
+                Hit {
+                    name: s.name,
+                    sector: s.sector,
+                    hex: None,
+                    coord: (
+                        s.sector_x * 32 + (i % 4) * 8 + 4,
+                        s.sector_y * 40 + (i / 4) * 10 + 5,
+                    ),
+                }
+            }
+        }
+    }
+}
 
 /// Shared style for the top-right control buttons (home / key / hamburger).
 const BTN_STYLE: &str = "width:40px; height:38px; border:none; border-radius:6px; \
@@ -528,7 +572,7 @@ fn App() -> impl IntoView {
     // overlays differ, but the macro overlays are milieu-independent so they stay.
     let milieu = RwSignal::new(url_milieu.unwrap_or(DEFAULT_MILIEU));
     let (view, set_view) = signal(None::<ViewState>);
-    let (results, set_results) = signal(Vec::<SearchResult>::new());
+    let (results, set_results) = signal(Vec::<Hit>::new());
     let drag = RwSignal::new(None::<(f64, f64)>);
     // True while the cursor hovers directly over a world (callisto only): flips
     // the map cursor to an arrow to signal it's clickable / double-clickable.
@@ -1243,7 +1287,7 @@ fn App() -> impl IntoView {
         let m = milieu.get_untracked();
         spawn_local(async move {
             if let Ok(r) = fetch_json::<SearchResults>(&format!("/api/search?q={encoded}&milieu={m}")).await {
-                set_results.set(r.results);
+                set_results.set(r.results.items.into_iter().map(Hit::from_item).collect());
             }
         });
     };
@@ -1726,7 +1770,7 @@ fn App() -> impl IntoView {
                         <div on:click=move |_| {
                                  set_view.set(Some(ViewState {
                                      scale: 64.0,
-                                     center: render::world_to_parsec(r.coord.x, r.coord.y),
+                                     center: render::world_to_parsec(r.coord.0, r.coord.1),
                                  }));
                                  set_results.set(Vec::new());
                              }

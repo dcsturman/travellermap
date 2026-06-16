@@ -21,8 +21,9 @@ use serde::Deserialize;
 use tmap_core::{
     astrometrics::{self, parse_hex, Coord},
     dto::{
-        DataFileMeta, Overlays, SearchResults, SectorData, SectorInfo, SectorName, Subsector,
-        Universe, UniverseResult, UniverseSector, VectorObject, World, WorldLabel,
+        DataFileMeta, Overlays, SearchResults, SearchResultsBody, SectorData, SectorInfo,
+        SectorName, Subsector, Universe, UniverseResult, UniverseSector, VectorObject, World,
+        WorldLabel,
     },
     parse::{
         border_region, milieu_sector_block, parse_column, parse_map_labels, parse_milieu_index,
@@ -780,10 +781,12 @@ async fn get_search(
     State(state): State<AppState>,
 ) -> Result<Json<SearchResults>, (StatusCode, String)> {
     let idx = state.search_index(&q.milieu)?;
-    let results = search::search(&idx, &q.q, 25);
+    let items = search::search(&idx, &q.q, 25);
     Ok(Json(SearchResults {
-        query: q.q,
-        results,
+        results: SearchResultsBody {
+            count: items.len(),
+            items,
+        },
     }))
 }
 

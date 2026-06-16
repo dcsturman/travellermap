@@ -8,36 +8,60 @@
 use std::path::Path;
 
 use tmap_core::{
-    astrometrics::{parse_hex, Coord},
-    dto::{SearchResult, Universe},
+    astrometrics::parse_hex,
+    dto::{SearchItem, SearchSector, SearchWorld, Universe},
     parse::parse_tab,
 };
 
 pub struct SearchEntry {
     name_lower: String,
-    result: SearchResult,
+    item: SearchItem,
 }
 
-fn push(entries: &mut Vec<SearchEntry>, result: SearchResult) {
+/// The displayed name of an item — the field searches match against.
+fn item_name(item: &SearchItem) -> &str {
+    match item {
+        SearchItem::World(w) => &w.name,
+        SearchItem::Sector(s) => &s.name,
+        SearchItem::Subsector(s) => &s.name,
+    }
+}
+
+fn push(entries: &mut Vec<SearchEntry>, item: SearchItem) {
     entries.push(SearchEntry {
-        name_lower: result.name.to_lowercase(),
-        result,
+        name_lower: item_name(&item).to_lowercase(),
+        item,
     });
 }
 
-/// Build the index for a milieu: every named world plus every sector.
+/// The sector's `SectorTags` — its own review tags plus the milieu metafile tag,
+/// deduped preserving order (matches the `/api/universe` `Tags` builder).
+fn sector_tags(tags: &str, metafile_tag: Option<&str>) -> String {
+    let mut seen = std::collections::HashSet::new();
+    [tags, metafile_tag.unwrap_or("")]
+        .into_iter()
+        .flat_map(str::split_whitespace)
+        .filter(|t| seen.insert(*t))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Build the index for a milieu: every named world plus every sector. Each entry
+/// is already in the public [`SearchItem`] shape so the handler just wraps the
+/// hits in the `{"Results":{…}}` envelope.
 pub fn build_index(res_dir: &Path, milieu: &str, universe: &Universe) -> Vec<SearchEntry> {
     let mut entries = Vec::new();
     for sector in &universe.sectors {
+        let (sx, sy) = (sector.location.x, sector.location.y);
+        let tags = sector_tags(&sector.tags, sector.metafile_tag.as_deref());
         push(
             &mut entries,
-            SearchResult {
+            SearchItem::Sector(SearchSector {
+                sector_x: sx,
+                sector_y: sy,
                 name: sector.name.clone(),
-                kind: "sector".into(),
-                sector: sector.name.clone(),
-                hex: None,
-                coord: Coord::new(sector.location.x * 32 + 16, sector.location.y * 40 + 20),
-            },
+                sector_tags: tags.clone(),
+            }),
         );
         let path = res_dir
             .join("Sectors")
@@ -58,13 +82,16 @@ pub fn build_index(res_dir: &Path, milieu: &str, universe: &Universe) -> Vec<Sea
             };
             push(
                 &mut entries,
-                SearchResult {
-                    name: world.name,
-                    kind: "world".into(),
+                SearchItem::World(SearchWorld {
+                    hex_x: col,
+                    hex_y: row,
                     sector: sector.name.clone(),
-                    coord: Coord::new(sector.location.x * 32 + col, sector.location.y * 40 + row),
-                    hex: Some(world.hex),
-                },
+                    uwp: world.uwp,
+                    sector_x: sx,
+                    sector_y: sy,
+                    name: world.name,
+                    sector_tags: tags.clone(),
+                }),
             );
         }
     }
@@ -73,7 +100,7 @@ pub fn build_index(res_dir: &Path, milieu: &str, universe: &Universe) -> Vec<Sea
 
 /// Top `limit` results for `query`, ranked exact > prefix > contains, then by
 /// shorter/alphabetical name.
-pub fn search(entries: &[SearchEntry], query: &str, limit: usize) -> Vec<SearchResult> {
+pub fn search(entries: &[SearchEntry], query: &str, limit: usize) -> Vec<SearchItem> {
     let q = query.trim().to_lowercase();
     if q.is_empty() {
         return Vec::new();
@@ -94,9 +121,10 @@ pub fn search(entries: &[SearchEntry], query: &str, limit: usize) -> Vec<SearchR
         })
         .collect();
     scored.sort_by(|a, b| {
+        let (na, nb) = (item_name(&a.1.item), item_name(&b.1.item));
         b.0.cmp(&a.0)
-            .then_with(|| a.1.result.name.len().cmp(&b.1.result.name.len()))
-            .then_with(|| a.1.result.name.cmp(&b.1.result.name))
+            .then_with(|| na.len().cmp(&nb.len()))
+            .then_with(|| na.cmp(nb))
     });
-    scored.into_iter().take(limit).map(|(_, e)| e.result.clone()).collect()
+    scored.into_iter().take(limit).map(|(_, e)| e.item.clone()).collect()
 }
