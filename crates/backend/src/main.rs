@@ -213,19 +213,59 @@ pub(crate) fn read_text(path: impl AsRef<FsPath>) -> std::io::Result<String> {
 /// Scan a milieu directory, parsing each per-sector `.xml` head into an index
 /// entry. Non-sector XML (the milieu region list) is skipped automatically.
 fn load_universe(res_dir: &FsPath, milieu: &str) -> Universe {
-    let dir = res_dir.join("Sectors").join(milieu);
-    let milieu_file = format!("{milieu}.xml");
-    let mut by_name: HashMap<String, tmap_core::dto::SectorIndexEntry> = HashMap::new();
+    let sectors_dir = res_dir.join("Sectors");
+    // Dedup by grid position within the milieu (reference `MilieuMap.TryAdd`,
+    // first wins), so two metafiles can't list the same sector twice.
+    let mut by_pos: HashMap<(i32, i32), tmap_core::dto::SectorIndexEntry> = HashMap::new();
+    let mut order: Vec<(i32, i32)> = Vec::new();
+    let mut insert = |e: tmap_core::dto::SectorIndexEntry| {
+        let key = (e.location.x, e.location.y);
+        if let std::collections::hash_map::Entry::Vacant(v) = by_pos.entry(key) {
+            order.push(key);
+            v.insert(e);
+        }
+    };
 
-    // 1. The milieu region list is authoritative: full coords + DataFile/Type,
-    //    including sectors whose own `.xml` omits coordinates.
-    if let Ok(text) = read_text(dir.join(&milieu_file)) {
-        for e in parse_milieu_index(&text) {
-            by_name.entry(e.name.clone()).or_insert(e);
+    // 1. Aggregate every metafile listed in `milieu.tab` (reference `SectorMap`),
+    //    keeping only sectors whose `CanonicalMilieu` (the sector's `Milieu`
+    //    attribute, else the default `M1105`) matches the requested milieu.
+    //    `meta`-tagged metafiles (e.g. legend.xml) are excluded from the universe.
+    for (path, tags) in milieu_metafiles(res_dir) {
+        if tags.split(',').any(|t| t.trim() == "meta") {
+            continue;
+        }
+        let metafile_path = sectors_dir.join(&path);
+        let Ok(text) = read_text(&metafile_path) else { continue };
+        // Per-sector files (DataFile/MetadataFile) are relative to the metafile.
+        let base_dir = metafile_path.parent().map(FsPath::to_path_buf).unwrap_or_else(|| sectors_dir.clone());
+        let metafile_tag = tags.split(',').map(str::trim).find(|t| !t.is_empty()).map(str::to_owned);
+        for mut e in parse_milieu_index(&text) {
+            let canonical = e.milieu.as_deref().unwrap_or(DEFAULT_MILIEU);
+            if !canonical.eq_ignore_ascii_case(milieu) {
+                continue;
+            }
+            e.metafile_tag = metafile_tag.clone();
+            // Merge the authoritative name list from the per-sector MetadataFile
+            // (reference `Sector.Merge`): when it has names, they replace the
+            // metafile's sparse list (canonical first).
+            if let Some(mf) = &e.metadata_file {
+                if let Ok(mtext) = read_text(base_dir.join(mf)) {
+                    let names = tmap_core::parse::parse_sector_names(&mtext);
+                    if !names.is_empty() {
+                        e.name = names[0].text.clone();
+                        e.names = names;
+                    }
+                }
+            }
+            insert(e);
         }
     }
-    // 2. Fall back to per-sector `.xml` for any sector not in the region list
-    //    (defaults to a `<name>.tab` TabDelimited data file).
+
+    // 2. Fall back to loose per-sector `.xml` in this milieu's own directory for
+    //    any sector its metafile didn't list (keyed by position so it can't
+    //    duplicate an aggregated entry).
+    let dir = sectors_dir.join(milieu);
+    let milieu_file = format!("{milieu}.xml");
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -236,18 +276,34 @@ fn load_universe(res_dir: &FsPath, milieu: &str) -> Universe {
             }
             if let Ok(text) = read_text(&path) {
                 if let Ok(e) = sector_index_entry(&text) {
-                    by_name.entry(e.name.clone()).or_insert(e);
+                    insert(e);
                 }
             }
         }
     }
 
-    let mut sectors: Vec<_> = by_name.into_values().collect();
+    let mut sectors: Vec<_> = order.into_iter().filter_map(|k| by_pos.remove(&k)).collect();
     sectors.sort_by(|a, b| a.name.cmp(&b.name));
     Universe {
         milieu: milieu.to_string(),
         sectors,
     }
+}
+
+/// `(metafile-path, tags-csv)` for every entry in `res/Sectors/milieu.tab`.
+fn milieu_metafiles(res_dir: &FsPath) -> Vec<(String, String)> {
+    let Ok(text) = read_text(res_dir.join("Sectors").join("milieu.tab")) else {
+        return Vec::new();
+    };
+    text.lines()
+        .skip(1)
+        .filter_map(|line| {
+            let mut f = line.split('\t');
+            let path = f.next()?.trim();
+            let tags = f.next().unwrap_or("").trim();
+            (!path.is_empty()).then(|| (path.to_string(), tags.to_string()))
+        })
+        .collect()
 }
 
 impl AppState {
@@ -505,14 +561,25 @@ async fn get_overlays(headers: HeaderMap, State(state): State<AppState>) -> Resp
     })
 }
 
+/// The default milieu (Imperial year 1105) — sectors with no `Milieu` attribute
+/// belong to it (reference `SectorMap.DEFAULT_MILIEU`).
+const DEFAULT_MILIEU: &str = "M1105";
+
 fn default_milieu() -> String {
-    "M1105".to_string()
+    DEFAULT_MILIEU.to_string()
 }
 
 #[derive(Debug, Deserialize)]
 struct UniverseQuery {
-    #[serde(default = "default_milieu")]
-    milieu: String,
+    /// Milieu (era snapshot). `era` is an accepted alias; `milieu` wins.
+    milieu: Option<String>,
+    era: Option<String>,
+    /// When true, omit positioned-but-dataless sectors. Reference `requireData`.
+    #[serde(rename = "requireData")]
+    require_data: Option<String>,
+    /// Restrict to sectors carrying any of these tags (repeatable / comma-sep).
+    #[serde(default)]
+    tag: Vec<String>,
 }
 
 /// `GET /api/universe?milieu=M1105` — the sector index for navigation, in the
@@ -524,25 +591,54 @@ async fn get_universe(
     headers: HeaderMap,
     State(state): State<AppState>,
 ) -> Response {
-    let key = format!("universe/{}", q.milieu);
+    // `milieu` wins over its `era` alias; both default to M1105.
+    let milieu = q
+        .milieu
+        .clone()
+        .filter(|s| !s.is_empty())
+        .or_else(|| q.era.clone().filter(|s| !s.is_empty()))
+        .unwrap_or_else(default_milieu);
+    let require_data = bool_opt(&q.require_data, false);
+    // `tag=a&tag=b` or `tag=a,b` — match a sector carrying ANY listed tag.
+    let want_tags: Vec<String> = q
+        .tag
+        .iter()
+        .flat_map(|t| t.split(','))
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect();
+
+    let key = format!("universe/{milieu}/rd{}/tag{}", require_data, want_tags.join(","));
     serve_cached(&state.response_cache, &key, &headers, || {
-        let u = state.universe(&q.milieu)?;
-        // The milieu's metafile tag (e.g. "OTU") is appended to each sector's own
-        // review tags ("Official" → "Official OTU"), matching the reference.
-        let mtag = milieu_tag(&state.res_dir, &q.milieu);
+        let u = state.universe(&milieu)?;
+        // A dir-fallback sector has no metafile tag; use the requested milieu's.
+        let default_tag = milieu_tag(&state.res_dir, &milieu);
         let sectors = u
             .sectors
             .iter()
-            .map(|s| {
-                let tags = [s.tags.as_str(), mtag.as_deref().unwrap_or("")]
+            .filter(|s| !require_data || s.data_file.is_some())
+            .filter_map(|s| {
+                let mtag = s.metafile_tag.as_deref().or(default_tag.as_deref()).unwrap_or("");
+                // Sector's own review tags ("Official") + metafile tag ("OTU"),
+                // deduped preserving order (reference `Tags` is an OrderedHashSet,
+                // so e.g. a Faraway sector tagged "Faraway" + metafile "Faraway"
+                // collapses to one).
+                let mut seen = std::collections::HashSet::new();
+                let tags = [s.tags.as_str(), mtag]
                     .into_iter()
-                    .filter(|t| !t.is_empty())
+                    .flat_map(str::split_whitespace)
+                    .filter(|t| seen.insert(*t))
                     .collect::<Vec<_>>()
                     .join(" ");
+                if !want_tags.is_empty()
+                    && !tags.split_whitespace().any(|t| want_tags.iter().any(|w| w == t))
+                {
+                    return None;
+                }
                 // Always emit at least the canonical name (older per-sector xml
                 // without a localized list still has `s.name`).
                 let names = if s.names.is_empty() {
-                    vec![SectorName { text: s.name.clone(), lang: None }]
+                    vec![SectorName { text: s.name.clone(), lang: None, source: None }]
                 } else {
                     s.names.clone()
                 };
@@ -554,14 +650,14 @@ async fn get_universe(
                         .then(|| names.first().and_then(|n| synthesize_abbreviation(&n.text)))
                         .flatten()
                 });
-                UniverseSector {
+                Some(UniverseSector {
                     x: s.location.x,
                     y: s.location.y,
-                    milieu: q.milieu.clone(),
+                    milieu: milieu.clone(),
                     abbreviation,
                     tags,
                     names,
-                }
+                })
             })
             .collect();
         serde_json::to_vec(&UniverseResult { sectors })
@@ -1760,9 +1856,11 @@ mod tests {
         AppState::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../res"))
     }
 
-    /// Every placed sector in M1105 must load and serialize to valid
+    /// Every **data-bearing** sector in M1105 must load and serialize to valid
     /// `SectorData` — guards against encoding, data-file-resolution, parse, and
-    /// metadata regressions (the bugs found during Phase 10 testing).
+    /// metadata regressions (the bugs found during Phase 10 testing). The
+    /// universe also includes positioned-but-dataless sectors (no `.tab`); those
+    /// have no world payload, so they're skipped here.
     #[test]
     fn all_m1105_sectors_load() {
         let state = test_state();
@@ -1773,8 +1871,24 @@ mod tests {
             universe.sectors.len()
         );
 
+        // Only sectors whose data file actually resolves on disk are expected to
+        // load. The aggregated index also lists sectors whose declared data file
+        // isn't in this checkout (upstream data drift) or that are positioned-
+        // but-dataless — those legitimately 404 and are skipped.
+        let dir = state.res_dir.join("Sectors").join("M1105");
+        let loadable: Vec<_> = universe
+            .sectors
+            .iter()
+            .filter(|s| resolve_and_parse_worlds(&dir, &s.name, Some(s)).is_some())
+            .collect();
+        assert!(
+            loadable.len() > 150,
+            "expected the full M1105 data-bearing set, got only {}",
+            loadable.len()
+        );
+
         let mut failures = Vec::new();
-        for s in &universe.sectors {
+        for s in &loadable {
             match build_sector_bytes(&state, "M1105", &s.name, "overview") {
                 Ok(bytes) => {
                     // Must round-trip back into the wire type the client decodes.
@@ -1787,9 +1901,9 @@ mod tests {
         }
         assert!(
             failures.is_empty(),
-            "{} of {} M1105 sectors failed to load:\n  {}",
+            "{} of {} loadable M1105 sectors failed:\n  {}",
             failures.len(),
-            universe.sectors.len(),
+            loadable.len(),
             failures.join("\n  ")
         );
 

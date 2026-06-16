@@ -284,6 +284,16 @@ pub struct SectorIndexEntry {
     /// backend-only. The name often differs from the sector's display name.
     #[serde(default, skip_serializing)]
     pub metadata_file: Option<String>,
+    /// The sector's `Milieu` attribute (or its `DataFile`'s), if any — the
+    /// reference's `CanonicalMilieu` before defaulting to `M1105`. `None` means
+    /// "belongs to the default milieu". Backend-only.
+    #[serde(default, skip_serializing)]
+    pub milieu: Option<String>,
+    /// Tag carried by the `milieu.tab` metafile this sector was loaded from
+    /// (e.g. `"OTU"`, `"Faraway"`) — appended to the sector's own `tags` in the
+    /// universe response. Set during aggregation; backend-only.
+    #[serde(default, skip_serializing)]
+    pub metafile_tag: Option<String>,
 }
 
 /// The set of sectors in a milieu and where they sit — the navigation index.
@@ -314,6 +324,8 @@ pub struct SectorName {
     pub text: String,
     #[serde(rename = "Lang", default, skip_serializing_if = "Option::is_none")]
     pub lang: Option<String>,
+    #[serde(rename = "Source", default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 /// One sector in the public `/api/universe` response (port of

@@ -358,14 +358,22 @@ pub fn sector_index_entry(xml: &str) -> Result<SectorIndexEntry, ParseError> {
         data_file: None,
         data_format: None,
         metadata_file: None,
+        milieu: root.attribute("Milieu").map(str::to_owned),
+        metafile_tag: None,
     })
 }
 
-/// Parse a milieu **region list** (e.g. `M1105.xml`) into index entries —
-/// `<Sector>` elements with `<X>/<Y>/<Name>` and a `<DataFile Type="…">file</>`.
-/// This is the authoritative source: it covers sectors whose per-sector `.xml`
-/// omits coords, and gives the exact data file + format to load. Entries
-/// without a `DataFile` (named regions with no data) are skipped.
+/// The `<Name>` list from a **per-sector metadata `.xml`** (its root is a
+/// `<Sector>`), canonical first. Used to merge the authoritative localized name
+/// list onto a region-list entry (reference `Sector.Merge`: per-sector metadata
+/// names replace the metafile's when present). Empty if none/unparseable.
+pub fn parse_sector_names(xml: &str) -> Vec<SectorName> {
+    match roxmltree::Document::parse(xml) {
+        Ok(doc) => sector_names(doc.root_element()),
+        Err(_) => Vec::new(),
+    }
+}
+
 /// All `<Name>` children of a `<Sector>` node, canonical first, each with its
 /// optional `Lang` attribute. Drives the public-API `Names` array.
 fn sector_names(sector: roxmltree::Node) -> Vec<SectorName> {
@@ -377,11 +385,18 @@ fn sector_names(sector: roxmltree::Node) -> Vec<SectorName> {
             Some(SectorName {
                 text,
                 lang: n.attribute("Lang").map(str::to_owned),
+                source: n.attribute("Source").map(str::to_owned),
             })
         })
         .collect()
 }
 
+/// Parse a milieu **region list** / sector collection (e.g. `M1105.xml`) into
+/// index entries — `<Sector>` elements with `<X>/<Y>/<Name>`, an optional
+/// `<DataFile Type="…">file</>`, and an optional `Milieu` attribute. This is the
+/// authoritative source: it covers sectors whose per-sector `.xml` omits coords,
+/// and gives the exact data file + format to load. Positioned-but-dataless
+/// sectors (no `<DataFile>`) are **kept** (`data_file: None`).
 pub fn parse_milieu_index(xml: &str) -> Vec<SectorIndexEntry> {
     let Ok(doc) = roxmltree::Document::parse(xml) else {
         return Vec::new();
@@ -399,23 +414,37 @@ pub fn parse_milieu_index(xml: &str) -> Vec<SectorIndexEntry> {
             let (x, y) = (child_int("X")?, child_int("Y")?);
             let names = sector_names(sector);
             let name = names.first()?.text.clone();
-            let data = sector.children().find(|n| n.has_tag_name("DataFile"))?;
-            let data_file = data.text().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty())?;
+            // DataFile is optional: positioned-but-dataless sectors (no `.tab`)
+            // are still part of the universe (the reference includes them; only
+            // `requireData=true` drops them).
+            let data = sector.children().find(|n| n.has_tag_name("DataFile"));
+            let data_file = data
+                .and_then(|n| n.text())
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty());
             let metadata_file = sector
                 .children()
                 .find(|n| n.has_tag_name("MetadataFile"))
                 .and_then(|n| n.text())
                 .map(|s| s.trim().to_owned())
                 .filter(|s| !s.is_empty());
+            // Canonical milieu: the `Milieu` attribute on `<Sector>`, else the
+            // `Milieu` attribute on `<DataFile>` (reference `CanonicalMilieu`).
+            let milieu = sector
+                .attribute("Milieu")
+                .or_else(|| data.and_then(|n| n.attribute("Milieu")))
+                .map(str::to_owned);
             Some(SectorIndexEntry {
                 name,
                 abbreviation: sector.attribute("Abbreviation").map(str::to_owned),
                 location: Coord::new(x, y),
                 names,
                 tags: sector.attribute("Tags").unwrap_or("").to_owned(),
-                data_format: data.attribute("Type").map(str::to_owned),
-                data_file: Some(data_file),
+                data_format: data.and_then(|n| n.attribute("Type")).map(str::to_owned),
+                data_file,
                 metadata_file,
+                milieu,
+                metafile_tag: None,
             })
         })
         .collect()
