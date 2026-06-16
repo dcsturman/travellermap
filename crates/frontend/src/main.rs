@@ -395,8 +395,7 @@ fn pt_mid(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
 }
 
 /// Schedule a one-shot timer; returns its handle so it can be cancelled. Used to
-/// detect a long-press (the mobile equivalent of the desktop double-click).
-#[cfg(feature = "callisto")]
+/// debounce the share-URL update and (callisto) to detect a long-press.
 fn set_timeout(ms: i32, f: impl FnMut() + 'static) -> i32 {
     let cb = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(f);
     let id = win()
@@ -406,7 +405,6 @@ fn set_timeout(ms: i32, f: impl FnMut() + 'static) -> i32 {
     id
 }
 
-#[cfg(feature = "callisto")]
 fn clear_timeout(id: i32) {
     win().clear_timeout_with_handle(id);
 }
@@ -425,6 +423,51 @@ fn logical_dims(canvas: &HtmlCanvasElement) -> (f64, f64) {
         canvas.client_width().max(1) as f64,
         canvas.client_height().max(1) as f64,
     )
+}
+
+/// Build the shareable URL for the current view. **Our own param scheme**
+/// (`cx`,`cy` = center in parsec space, `scale` = px/parsec, `milieu` unless the
+/// default) — deliberately encapsulated here so swapping in a travellermap.com-
+/// compatible `p=x!y!logScale` format later is a one-function change. Returns the
+/// absolute URL (origin + path + query) so it's directly shareable/embeddable.
+/// Fixed precision keeps the URL short and free of float noise.
+fn build_share_url(view: ViewState, milieu: &str) -> String {
+    let loc = win().location();
+    let origin = loc.origin().unwrap_or_default();
+    let path = loc.pathname().unwrap_or_else(|_| "/".to_string());
+    let mut q = format!(
+        "?cx={:.3}&cy={:.3}&scale={:.2}",
+        view.center.0, view.center.1, view.scale,
+    );
+    if milieu != DEFAULT_MILIEU {
+        q.push_str("&milieu=");
+        q.push_str(milieu);
+    }
+    format!("{origin}{path}{q}")
+}
+
+/// Parse the initial view + milieu from the page URL's query (inverse of
+/// [`build_share_url`]). Either may be absent; an unknown milieu is ignored.
+fn parse_share_params() -> (Option<ViewState>, Option<&'static str>) {
+    let Ok(search) = win().location().search() else {
+        return (None, None);
+    };
+    let Ok(params) = web_sys::UrlSearchParams::new_with_str(&search) else {
+        return (None, None);
+    };
+    let num = |k: &str| params.get(k).and_then(|s| s.parse::<f64>().ok());
+    let view = match (num("cx"), num("cy"), num("scale")) {
+        (Some(cx), Some(cy), Some(scale)) if scale > 0.0 => Some(ViewState {
+            center: (cx, cy),
+            scale: scale.clamp(render::MIN_SCALE, render::MAX_SCALE),
+        }),
+        _ => None,
+    };
+    // Map the milieu string back to one of our known &'static codes.
+    let milieu = params
+        .get("milieu")
+        .and_then(|m| MILIEUX.iter().map(|(c, _)| *c).find(|c| *c == m));
+    (view, milieu)
 }
 
 /// Fetch + decode a JSON value from the backend (proxied via Trunk at /api).
@@ -477,10 +520,13 @@ async fn fetch_route(
 fn App() -> impl IntoView {
     let canvas_ref = NodeRef::<leptos::html::Canvas>::new();
     let (status, set_status) = signal("Loading universe…".to_string());
+    // A share/permalink in the URL (?cx&cy&scale&milieu) seeds the initial view
+    // and milieu; both fall back to defaults when absent. See `parse_share_params`.
+    let (url_view, url_milieu) = parse_share_params();
     // Active milieu (era snapshot). Changing it tears down and re-streams the
     // universe for that era (see the universe-load effect); per-milieu caches and
     // overlays differ, but the macro overlays are milieu-independent so they stay.
-    let milieu = RwSignal::new(DEFAULT_MILIEU);
+    let milieu = RwSignal::new(url_milieu.unwrap_or(DEFAULT_MILIEU));
     let (view, set_view) = signal(None::<ViewState>);
     let (results, set_results) = signal(Vec::<SearchResult>::new());
     let drag = RwSignal::new(None::<(f64, f64)>);
@@ -516,6 +562,28 @@ fn App() -> impl IntoView {
                 .map(strip_html)
                 .unwrap_or_default()
         })
+    });
+
+    // Shareable URL for the current view (shown live in the Share panel) and the
+    // address-bar permalink. The panel field updates every frame, but the
+    // history write is DEBOUNCED: Safari rate-limits replaceState (~100/30s) and a
+    // single drag fires far more, so we only rewrite the URL once movement settles.
+    let share_url = RwSignal::new(String::new());
+    let url_timer = RwSignal::new(None::<i32>);
+    Effect::new(move |_| {
+        let Some(v) = view.get() else { return };
+        let url = build_share_url(v, milieu.get());
+        share_url.set(url.clone()); // live for the panel
+        if let Some(id) = url_timer.get_untracked() {
+            clear_timeout(id);
+        }
+        let id = set_timeout(400, move || {
+            url_timer.set(None);
+            if let Ok(hist) = win().history() {
+                let _ = hist.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&url));
+            }
+        });
+        url_timer.set(Some(id));
     });
 
     // Jump-route planner state.
@@ -841,7 +909,10 @@ fn App() -> impl IntoView {
             Some(v) => v,
             None => {
                 let (lw, lh) = logical_dims(&canvas_el);
-                set_view.set(Some(render::fit_sector(lw, lh, START.0, START.1)));
+                // A shared link's view wins over the default Spinward-Marches fit.
+                set_view.set(Some(
+                    url_view.unwrap_or_else(|| render::fit_sector(lw, lh, START.0, START.1)),
+                ));
                 return;
             }
         };
@@ -1557,6 +1628,38 @@ fn App() -> impl IntoView {
     #[cfg(not(feature = "callisto"))]
     let system_modal = ().into_any();
 
+    // --- Share panel helpers: a read-only field + Copy button, fed by memos off
+    //     the live `share_url` (link as-is; embed wrapped in an <iframe>). ---
+    let copy_to_clipboard = move |text: String| {
+        let _ = win().navigator().clipboard().write_text(&text);
+    };
+    let link_value = Memo::new(move |_| share_url.get());
+    let embed_value = Memo::new(move |_| {
+        let u = share_url.get();
+        if u.is_empty() {
+            String::new()
+        } else {
+            format!("<iframe width=400 height=300 src=\"{u}\">")
+        }
+    });
+    let share_field = move |label: &'static str, value: Memo<String>| {
+        view! {
+            <div style="margin-bottom:10px;">
+                <div style="color:#cfd6e6; font-size:12px; margin-bottom:4px;">{label}</div>
+                <div style="display:flex; gap:6px;">
+                    <input prop:value=move || value.get() readonly=true
+                           style="flex:1; min-width:0; padding:6px 8px; border-radius:6px; \
+                                  border:1px solid #2a3145; background:#0c0f18; color:#cfd6e6; \
+                                  font:12px ui-monospace,monospace;" />
+                    <button on:click=move |_| copy_to_clipboard(value.get_untracked())
+                            style="flex:none; padding:6px 12px; border-radius:6px; cursor:pointer; \
+                                   border:1px solid #2a3145; background:rgba(40,44,58,0.7); \
+                                   color:#cdd5e6; font:600 12px system-ui;">"Copy"</button>
+                </div>
+            </div>
+        }
+    };
+
     view! {
         <main style="margin:0; padding:0; overflow:hidden; background:#000;">
             <canvas node_ref=canvas_ref
@@ -1903,6 +2006,17 @@ fn App() -> impl IntoView {
                 </button>
                 <button title="Settings & layers" style=BTN_STYLE
                         on:click=move |_| panel.update(|p| *p = if *p == 2 { 0 } else { 2 })>"☰"</button>
+                <button title="Share / embed this view" style=BTN_STYLE
+                        on:click=move |_| panel.update(|p| *p = if *p == 4 { 0 } else { 4 })>
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
+                         stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                         style="vertical-align:middle;">
+                        <circle cx="18" cy="5" r="3"></circle>
+                        <circle cx="6" cy="12" r="3"></circle>
+                        <circle cx="18" cy="19" r="3"></circle>
+                        <path d="M8.6 13.5 L15.4 17.5 M15.4 6.5 L8.6 10.5"></path>
+                    </svg>
+                </button>
             </div>
 
             // --- milieu / time selector panel ---
@@ -1933,6 +2047,24 @@ fn App() -> impl IntoView {
                             </div>
                         }
                     }).collect_view()}
+                </div>
+            </Show>
+
+            // --- share panel: permalink + embed code for the current view ---
+            <Show when=move || panel.get() == 4>
+                <div style=PANEL_STYLE>
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <span style="font-weight:700; letter-spacing:0.05em;">"SHARE"</span>
+                        <span on:click=move |_| panel.set(0)
+                              style="cursor:pointer; color:#8a93a8; font-size:18px;">"✕"</span>
+                    </div>
+                    <hr style="border:none; border-top:1px solid #2a3145; margin:8px 0 8px;" />
+                    <div style="color:#8a93a8; font-size:12px; margin-bottom:8px;">
+                        "A link to exactly what's on screen — position, zoom, and milieu. \
+                         Opening it restores this view."
+                    </div>
+                    {share_field("Share this link", link_value)}
+                    {share_field("Embed this HTML", embed_value)}
                 </div>
             </Show>
 
