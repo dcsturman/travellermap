@@ -88,6 +88,13 @@ impl Hit {
                     ),
                 }
             }
+            // A labeled region (e.g. "Outrim Void") — center on its anchor hex.
+            SearchItem::Label(l) => Hit {
+                name: l.name,
+                sector: String::new(),
+                hex: None,
+                coord: (l.sector_x * 32 + l.hex_x, l.sector_y * 40 + l.hex_y),
+            },
         }
     }
 }
