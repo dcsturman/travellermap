@@ -885,15 +885,71 @@ struct SearchQuery {
     q: String,
     #[serde(default = "default_milieu")]
     milieu: String,
+    /// Comma/space-separated result kinds (`worlds|subsectors|sectors|labels|
+    /// default`); defaults to `default` (all kinds). Mirrors the reference
+    /// `types=` query param.
+    #[serde(default)]
+    types: Option<String>,
 }
 
-/// `GET /api/search?q=Regina&milieu=M1105` — name search over worlds + sectors.
+/// Per-type cap and final cap (reference `SearchHandler.NUM_RESULTS`).
+const NUM_RESULTS: usize = 160;
+
+/// The handler-level query preprocessing (port of `SearchHandler.Process`):
+/// translate `*`→`%` and `?`→`_` wildcards, then prepend `uwp:` when the whole
+/// query is a UWP (`^\w{7}-\w$`: seven word-chars, hyphen, one word-char).
+fn preprocess_query(raw: &str) -> String {
+    let q: String = raw.chars().map(|c| match c {
+        '*' => '%',
+        '?' => '_',
+        other => other,
+    }).collect();
+    if is_uwp_shortcut(&q) {
+        format!("uwp:{q}")
+    } else {
+        q
+    }
+}
+
+/// `^\w{7}-\w$` — seven `\w` chars, a hyphen, one `\w` char (`\w` = `[A-Za-z0-9_]`).
+fn is_uwp_shortcut(q: &str) -> bool {
+    let b = q.as_bytes();
+    let is_word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    b.len() == 9 && b[..7].iter().all(|&c| is_word(c)) && b[7] == b'-' && is_word(b[8])
+}
+
+/// Parse the `types=` param into a [`SearchTypes`] set. Unknown tokens are
+/// ignored; `default` enables all kinds (reference `GetStringsOption`).
+fn parse_types(raw: Option<&str>) -> tmap_core::searchlang::SearchTypes {
+    use tmap_core::searchlang::SearchTypes;
+    let Some(raw) = raw.filter(|s| !s.trim().is_empty()) else {
+        return SearchTypes::DEFAULT;
+    };
+    let mut t = SearchTypes::NONE;
+    for tok in raw.split([',', ' ', '\t']).filter(|s| !s.is_empty()) {
+        match tok {
+            "worlds" => t.worlds = true,
+            "subsectors" => t.subsectors = true,
+            "sectors" => t.sectors = true,
+            "labels" => t.labels = true,
+            "default" => t = SearchTypes::DEFAULT,
+            _ => {}
+        }
+    }
+    t
+}
+
+/// `GET /api/search?q=Regina&milieu=M1105&types=default` — the full
+/// travellermap.com search query language over worlds, sectors, subsectors, and
+/// labeled regions.
 async fn get_search(
     Query(q): Query<SearchQuery>,
     State(state): State<AppState>,
 ) -> Result<Json<SearchResults>, (StatusCode, String)> {
     let idx = state.search_index(&q.milieu)?;
-    let items = search::search(&idx, &q.q, 25);
+    let query = preprocess_query(&q.q);
+    let pq = tmap_core::searchlang::parse_query(&query, parse_types(q.types.as_deref()));
+    let items = search::run_query(&idx, &pq, NUM_RESULTS);
     Ok(Json(SearchResults {
         results: SearchResultsBody {
             count: items.len(),

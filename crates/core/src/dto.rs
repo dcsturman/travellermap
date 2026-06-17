@@ -517,13 +517,14 @@ pub struct SearchResultsBody {
     pub items: Vec<SearchItem>,
 }
 
-/// One hit — exactly one of `World`/`Sector`/`Subsector`. Externally tagged, so
-/// it serializes as the public `{"World":{…}}` wrapper.
+/// One hit — exactly one of `World`/`Sector`/`Subsector`/`Label`. Externally
+/// tagged, so it serializes as the public `{"World":{…}}` wrapper.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SearchItem {
     World(SearchWorld),
     Sector(SearchSector),
     Subsector(SearchSubsector),
+    Label(SearchLabel),
 }
 
 /// A world hit. `HexX`/`HexY` are the *local* sector hex (1–32 / 1–40); combine
@@ -567,6 +568,28 @@ pub struct SearchSubsector {
     /// Subsector letter `A`–`P`.
     #[serde(rename = "Index")]
     pub index: String,
+    #[serde(rename = "SectorX")]
+    pub sector_x: i32,
+    #[serde(rename = "SectorY")]
+    pub sector_y: i32,
+    #[serde(rename = "Name")]
+    pub name: String,
+    #[serde(rename = "SectorTags")]
+    pub sector_tags: String,
+}
+
+/// A labeled-region hit (port of the reference `LabelResult`). `HexX`/`HexY` are
+/// the *local* sector hex of the label's averaged centre coordinate; `Scale` is
+/// the zoom bucket derived from the region radius (`>80→4`, `>40→8`, `>20→32`,
+/// else `64`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SearchLabel {
+    #[serde(rename = "HexX")]
+    pub hex_x: i32,
+    #[serde(rename = "HexY")]
+    pub hex_y: i32,
+    #[serde(rename = "Scale")]
+    pub scale: i32,
     #[serde(rename = "SectorX")]
     pub sector_x: i32,
     #[serde(rename = "SectorY")]
