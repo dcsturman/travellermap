@@ -755,3 +755,181 @@ async fn xml_content_negotiation() {
     assert_eq!(status, StatusCode::OK);
     assert!(ct.contains("xml"), "ct={ct}");
 }
+
+// --- JSONP + XML content negotiation across the data endpoints ------------
+//
+// Each endpoint extended in this change gets (a) a JSONP test (`&jsonp=foo` →
+// body wrapped as `foo(…);`, content-type JS) and (b) an XML test
+// (`Accept: text/xml` → XML content-type + a key element/attribute present).
+// JSON stays the default (covered by the endpoint's own JSON tests above), so
+// these only assert the opt-in formats.
+
+/// GET `path` from the live reference with extra request headers (e.g.
+/// `Accept: text/xml`). Mirrors `fetch_live` but lets the caller negotiate.
+async fn fetch_live_with(path: &str, headers: &[(&str, &str)]) -> (StatusCode, String) {
+    let url = format!("{REFERENCE_BASE}{path}");
+    let mut req = reqwest::Client::builder()
+        .user_agent("tmap-parity-check (+https://github.com/dcsturman/travellermap)")
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .expect("reqwest client")
+        .get(&url);
+    for (k, v) in headers {
+        req = req.header(*k, *v);
+    }
+    let resp = req.send().await.unwrap_or_else(|e| panic!("live GET {url}: {e}"));
+    let status = StatusCode::from_u16(resp.status().as_u16()).unwrap();
+    (status, resp.text().await.unwrap_or_default())
+}
+
+/// Assert a JSONP request wraps the endpoint's JSON body as `foo(<json>);` with
+/// a JavaScript content type, and that the inner payload is valid JSON.
+async fn assert_jsonp(path: &str) {
+    let sep = if path.contains('?') { '&' } else { '?' };
+    let (status, ct, body) = get(&format!("{path}{sep}jsonp=foo")).await;
+    assert_eq!(status, StatusCode::OK, "jsonp {path}: {body}");
+    assert!(ct.contains("javascript"), "jsonp {path} ct={ct}");
+    assert!(body.starts_with("foo(") && body.ends_with(");"), "jsonp not wrapped: {body}");
+    // Inner payload parses as JSON.
+    let inner = &body[4..body.len() - 2];
+    let _ = jv(inner);
+}
+
+#[tokio::test]
+async fn universe_jsonp() {
+    assert_jsonp("/api/universe?milieu=M1105").await;
+}
+
+#[tokio::test]
+async fn universe_xml() {
+    let (status, ct, body) =
+        get_with("/api/universe?milieu=M1105", &[("accept", "text/xml")]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(ct.contains("xml"), "ct={ct}");
+    assert!(body.contains("<Universe>"), "missing <Universe> root: {}", &body[..body.len().min(200)]);
+    assert!(body.contains("<Sector "), "missing <Sector> elements");
+    assert!(body.contains("<Milieu>M1105</Milieu>"), "missing <Milieu> element");
+    // Live parity: the reference serves XML for this endpoint. Compare a known
+    // sector's (X,Y) presence rather than byte-exact (live wraps with xmlns +
+    // pretty-prints), so we don't over-pin cosmetic differences.
+    if parity_enabled() {
+        let (ls, lb) = fetch_live_with("/api/universe?milieu=M1105", &[("accept", "text/xml")]).await;
+        assert_eq!(ls, StatusCode::OK);
+        assert!(lb.contains("<Universe"), "live XML lacks <Universe>: {}", &lb[..lb.len().min(120)]);
+        // Both must carry the Spinward Marches abbreviation attribute.
+        assert!(body.contains("Abbreviation=\"Spin\""), "ours lacks Spin abbreviation");
+        assert!(lb.contains("Abbreviation=\"Spin\""), "live lacks Spin abbreviation");
+    }
+}
+
+#[tokio::test]
+async fn search_jsonp() {
+    assert_jsonp("/api/search?q=Regina").await;
+}
+
+#[tokio::test]
+async fn search_xml() {
+    let (status, ct, body) = get_with("/api/search?q=Regina", &[("accept", "text/xml")]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(ct.contains("xml"), "ct={ct}");
+    assert!(body.contains("<results Count="), "missing <results Count=>: {}", &body[..body.len().min(200)]);
+    assert!(body.contains("name=\"Regina\""), "missing Regina world hit");
+    assert!(body.contains("uwp=\"A788899-C\""), "missing Regina uwp attr");
+    if parity_enabled() {
+        let (ls, lb) = fetch_live_with("/api/search?q=Regina", &[("accept", "text/xml")]).await;
+        assert_eq!(ls, StatusCode::OK);
+        // Live prefixes xmlns decls inside the root tag, so `Count=` follows the
+        // namespaces rather than immediately after `<results`.
+        assert!(lb.contains("<results "), "live XML lacks <results>");
+        assert!(lb.contains("Count="), "live XML lacks Count attribute");
+        assert!(lb.contains("name=\"Regina\""), "live lacks Regina");
+    }
+}
+
+#[tokio::test]
+async fn credits_jsonp() {
+    assert_jsonp("/api/credits?sector=Spinward%20Marches&hex=1910").await;
+}
+
+#[tokio::test]
+async fn credits_xml() {
+    let (status, ct, body) =
+        get_with("/api/credits?sector=Spinward%20Marches&hex=1910", &[("accept", "text/xml")]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(ct.contains("xml"), "ct={ct}");
+    assert!(body.contains("<Data>"), "missing <Data> root: {}", &body[..body.len().min(200)]);
+    assert!(body.contains("<WorldName>Regina</WorldName>"), "missing <WorldName>Regina");
+    assert!(body.contains("<SubsectorIndex>C</SubsectorIndex>"), "missing <SubsectorIndex>C");
+    if parity_enabled() {
+        let (ls, lb) =
+            fetch_live_with("/api/credits?sector=Spinward%20Marches&hex=1910", &[("accept", "text/xml")]).await;
+        assert_eq!(ls, StatusCode::OK);
+        assert!(lb.contains("<WorldName>Regina</WorldName>"), "live lacks <WorldName>Regina");
+    }
+}
+
+#[tokio::test]
+async fn jumpworlds_jsonp() {
+    assert_jsonp("/api/jumpworlds?sector=Spinward%20Marches&hex=1910&jump=2").await;
+}
+
+#[tokio::test]
+async fn jumpworlds_xml() {
+    let (status, ct, body) = get_with(
+        "/api/jumpworlds?sector=Spinward%20Marches&hex=1910&jump=2",
+        &[("accept", "text/xml")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(ct.contains("xml"), "ct={ct}");
+    assert!(body.contains("<JumpWorlds>"), "missing <JumpWorlds> root: {}", &body[..body.len().min(200)]);
+    assert!(body.contains("<World>"), "missing <World> elements");
+    assert!(body.contains("<Name>Regina</Name>"), "missing Regina world");
+    // Empty string members serialize as self-closing (matching the .NET serializer).
+    assert!(body.contains("<Bases />") || body.contains("<Bases>"), "Bases element missing");
+    if parity_enabled() {
+        let (ls, lb) = fetch_live_with(
+            "/api/jumpworlds?sector=Spinward%20Marches&hex=1910&jump=2",
+            &[("accept", "text/xml")],
+        )
+        .await;
+        assert_eq!(ls, StatusCode::OK);
+        assert!(lb.contains("<JumpWorlds"), "live XML lacks <JumpWorlds>");
+        assert!(lb.contains("<Name>Regina</Name>"), "live lacks Regina");
+    }
+}
+
+#[tokio::test]
+async fn route_jsonp() {
+    assert_jsonp("/api/route?start=Spinward%20Marches%201910&end=Spinward%20Marches%202410&jump=2").await;
+}
+
+#[tokio::test]
+async fn route_xml() {
+    let (status, ct, body) = get_with(
+        "/api/route?start=Spinward%20Marches%201910&end=Spinward%20Marches%202410&jump=2",
+        &[("accept", "text/xml")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(ct.contains("xml"), "ct={ct}");
+    assert!(body.contains("<ArrayOfRouteStop>"), "missing <ArrayOfRouteStop> root: {}", &body[..body.len().min(200)]);
+    assert!(body.contains("<RouteStop>"), "missing <RouteStop> elements");
+    assert!(body.contains("<Name>Regina</Name>"), "missing Regina start");
+    if parity_enabled() {
+        let (ls, lb) = fetch_live_with(
+            "/api/route?start=Spinward%20Marches%201910&end=Spinward%20Marches%202410&jump=2",
+            &[("accept", "text/xml")],
+        )
+        .await;
+        assert_eq!(ls, StatusCode::OK);
+        assert!(lb.contains("<ArrayOfRouteStop"), "live XML lacks <ArrayOfRouteStop>");
+        assert!(lb.contains("<Name>Regina</Name>"), "live lacks Regina");
+    }
+}
+
+// Metadata: JSONP only (XML deferred — see the TODO in `get_metadata`).
+#[tokio::test]
+async fn metadata_jsonp() {
+    assert_jsonp("/api/metadata?sector=Spinward%20Marches").await;
+}

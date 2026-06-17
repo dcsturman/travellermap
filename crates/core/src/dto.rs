@@ -13,6 +13,66 @@
 use crate::astrometrics::Coord;
 use serde::{Deserialize, Serialize};
 
+/// Escape the five XML metacharacters (`& < > " '`) for element text or a
+/// double-quoted attribute value. Hand-rolled so the `to_xml` serializers below
+/// can build the reference XML shapes without an XML-serde dependency (keeps
+/// `tmap-core` lean and wasm-friendly).
+fn xml_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// `<Tag>escaped-text</Tag>` (text-content element).
+fn xml_el(out: &mut String, tag: &str, text: &str) {
+    out.push('<');
+    out.push_str(tag);
+    out.push('>');
+    out.push_str(&xml_escape(text));
+    out.push_str("</");
+    out.push_str(tag);
+    out.push('>');
+}
+
+/// `<Tag>text</Tag>` only when `text` is `Some` (a null field is dropped, like
+/// the reference XML serializer skips null members).
+fn xml_el_opt(out: &mut String, tag: &str, text: &Option<String>) {
+    if let Some(t) = text {
+        xml_el(out, tag, t);
+    }
+}
+
+/// ` name="escaped-value"` (attribute fragment, leading space included).
+fn xml_attr(out: &mut String, name: &str, value: &str) {
+    out.push(' ');
+    out.push_str(name);
+    out.push_str("=\"");
+    out.push_str(&xml_escape(value));
+    out.push('"');
+}
+
+/// A non-null string element, emitting `<Tag />` when empty (the .NET
+/// `XmlSerializer` writes an empty-but-present string member as a self-closing
+/// element, e.g. `<Bases />`).
+fn xml_el_str(out: &mut String, tag: &str, text: &str) {
+    if text.is_empty() {
+        out.push('<');
+        out.push_str(tag);
+        out.push_str(" />");
+    } else {
+        xml_el(out, tag, text);
+    }
+}
+
 /// A single world (system main world) within a sector — one T5 `.tab` row.
 /// Empty/absent fields are omitted from the wire form to keep payloads lean.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -131,6 +191,44 @@ pub struct WorldResult {
 pub struct JumpWorldsResult {
     #[serde(rename = "Worlds")]
     pub worlds: Vec<WorldResult>,
+}
+
+impl JumpWorldsResult {
+    /// `<JumpWorlds><World>…</World>…</JumpWorlds>` — the reference
+    /// `JumpWorldsResult` XML (`JumpWorldsHandler.cs`), which serializes the
+    /// `World` domain type. The .NET `XmlSerializer` emits only **settable**
+    /// members (the computed getters `SS`/`Subsector`/`Quadrant`/`WorldX/Y`/
+    /// `Sector`/`SubsectorName`/`SectorAbbreviation`/`AllegianceName` are
+    /// read-only, so they are absent from XML though present in JSON), in
+    /// declaration order: Name, Hex, UWP, PBG, Zone, Bases, Allegiance, Stellar,
+    /// Ix, Ex, Cx, Nobility, Worlds, ResourceUnits, Remarks, LegacyBaseCode.
+    pub fn to_xml(&self) -> String {
+        let mut out = String::from("<?xml version=\"1.0\"?>\n<JumpWorlds>");
+        for w in &self.worlds {
+            out.push_str("<World>");
+            xml_el(&mut out, "Name", &w.name);
+            xml_el(&mut out, "Hex", &w.hex);
+            xml_el(&mut out, "UWP", &w.uwp);
+            xml_el(&mut out, "PBG", &w.pbg);
+            xml_el_str(&mut out, "Zone", &w.zone);
+            xml_el_str(&mut out, "Bases", &w.bases);
+            xml_el(&mut out, "Allegiance", &w.allegiance);
+            xml_el_str(&mut out, "Stellar", &w.stellar);
+            xml_el_opt(&mut out, "Ix", &w.ix);
+            xml_el_opt(&mut out, "Ex", &w.ex);
+            xml_el_opt(&mut out, "Cx", &w.cx);
+            xml_el_str(&mut out, "Nobility", &w.nobility);
+            xml_el(&mut out, "Worlds", &w.worlds.to_string());
+            if let Some(ru) = w.resource_units {
+                xml_el(&mut out, "ResourceUnits", &ru.to_string());
+            }
+            xml_el_str(&mut out, "Remarks", &w.remarks);
+            xml_el_str(&mut out, "LegacyBaseCode", &w.legacy_base_code);
+            out.push_str("</World>");
+        }
+        out.push_str("</JumpWorlds>");
+        out
+    }
 }
 
 /// One named subsector within a sector. `index` is the letter `A`–`P` (a 4×4
@@ -354,6 +452,40 @@ pub struct UniverseResult {
     pub sectors: Vec<UniverseSector>,
 }
 
+impl UniverseResult {
+    /// `<Universe><Sector Abbreviation Tags><X/><Y/><Milieu/><Name/>…` — the
+    /// reference `UniverseResult` XML (`UniverseHandler.cs`). `X`/`Y`/`Milieu`/
+    /// `Name` are child elements; `Abbreviation`/`Tags` are attributes (dropped
+    /// when empty, matching the .NET `[XmlAttribute]` null/empty handling).
+    pub fn to_xml(&self) -> String {
+        let mut out = String::from("<?xml version=\"1.0\"?>\n<Universe>");
+        for s in &self.sectors {
+            out.push_str("<Sector");
+            if let Some(abbr) = &s.abbreviation {
+                out.push_str(&format!(" Abbreviation=\"{}\"", xml_escape(abbr)));
+            }
+            if !s.tags.is_empty() {
+                out.push_str(&format!(" Tags=\"{}\"", xml_escape(&s.tags)));
+            }
+            out.push('>');
+            xml_el(&mut out, "X", &s.x.to_string());
+            xml_el(&mut out, "Y", &s.y.to_string());
+            xml_el(&mut out, "Milieu", &s.milieu);
+            for n in &s.names {
+                match &n.lang {
+                    Some(lang) => out.push_str(&format!("<Name Lang=\"{}\">", xml_escape(lang))),
+                    None => out.push_str("<Name>"),
+                }
+                out.push_str(&xml_escape(&n.text));
+                out.push_str("</Name>");
+            }
+            out.push_str("</Sector>");
+        }
+        out.push_str("</Universe>");
+        out
+    }
+}
+
 /// The public `/api/credits` response (port of `CreditsHandler`'s
 /// `CreditsResult`). PascalCase; every string field is omitted when absent
 /// (the reference's JSON serializer drops nulls). `SectorX`/`SectorY` are
@@ -423,6 +555,47 @@ pub struct CreditsResult {
     pub product_author: Option<String>,
     #[serde(rename = "ProductRef", default, skip_serializing_if = "Option::is_none")]
     pub product_ref: Option<String>,
+}
+
+impl CreditsResult {
+    /// `<Data>…</Data>` — the reference `CreditsResult` XML (`CreditsHandler.cs`).
+    /// Every member is a child element in declaration order; null members are
+    /// dropped (the .NET serializer omits nulls). `SectorX`/`SectorY` always
+    /// emit (non-nullable ints).
+    pub fn to_xml(&self) -> String {
+        let mut out = String::from("<?xml version=\"1.0\"?>\n<Data>");
+        xml_el_opt(&mut out, "Credits", &self.credits);
+        xml_el(&mut out, "SectorX", &self.sector_x.to_string());
+        xml_el(&mut out, "SectorY", &self.sector_y.to_string());
+        xml_el_opt(&mut out, "SectorName", &self.sector_name);
+        xml_el_opt(&mut out, "SectorAuthor", &self.sector_author);
+        xml_el_opt(&mut out, "SectorSource", &self.sector_source);
+        xml_el_opt(&mut out, "SectorPublisher", &self.sector_publisher);
+        xml_el_opt(&mut out, "SectorCopyright", &self.sector_copyright);
+        xml_el_opt(&mut out, "SectorRef", &self.sector_ref);
+        xml_el_opt(&mut out, "SectorMilieu", &self.sector_milieu);
+        xml_el_opt(&mut out, "SectorTags", &self.sector_tags);
+        xml_el_opt(&mut out, "RouteCredits", &self.route_credits);
+        xml_el_opt(&mut out, "SubsectorName", &self.subsector_name);
+        xml_el_opt(&mut out, "SubsectorIndex", &self.subsector_index);
+        xml_el_opt(&mut out, "SubsectorCredits", &self.subsector_credits);
+        xml_el_opt(&mut out, "WorldName", &self.world_name);
+        xml_el_opt(&mut out, "WorldHex", &self.world_hex);
+        xml_el_opt(&mut out, "WorldUwp", &self.world_uwp);
+        xml_el_opt(&mut out, "WorldRemarks", &self.world_remarks);
+        xml_el_opt(&mut out, "WorldIx", &self.world_ix);
+        xml_el_opt(&mut out, "WorldEx", &self.world_ex);
+        xml_el_opt(&mut out, "WorldCx", &self.world_cx);
+        xml_el_opt(&mut out, "WorldPbg", &self.world_pbg);
+        xml_el_opt(&mut out, "WorldAllegiance", &self.world_allegiance);
+        xml_el_opt(&mut out, "WorldCredits", &self.world_credits);
+        xml_el_opt(&mut out, "ProductPublisher", &self.product_publisher);
+        xml_el_opt(&mut out, "ProductTitle", &self.product_title);
+        xml_el_opt(&mut out, "ProductAuthor", &self.product_author);
+        xml_el_opt(&mut out, "ProductRef", &self.product_ref);
+        out.push_str("</Data>");
+        out
+    }
 }
 
 /// One connected sub-path of a [`VectorObject`]. A border/rift can comprise
@@ -600,6 +773,68 @@ pub struct SearchLabel {
     pub sector_tags: String,
 }
 
+impl SearchResults {
+    /// `<results Count="N">` with one `<world>`/`<subsector>`/`<sector>`/`<label>`
+    /// per item — the reference `SearchResults` XML (`SearchHandler.cs`). All
+    /// fields are attributes: the `Item` base (`sectorX`, `sectorY`, `name`,
+    /// `sectorTags`) first, then the subtype's (`hexX`/`hexY`/`sector`/`uwp` for
+    /// worlds, `sector`/`index` for subsectors, `hexX`/`hexY`/`radius` for
+    /// labels).
+    pub fn to_xml(&self) -> String {
+        let mut out = format!(
+            "<?xml version=\"1.0\"?>\n<results Count=\"{}\">",
+            self.results.count
+        );
+        for item in &self.results.items {
+            match item {
+                SearchItem::World(w) => {
+                    out.push_str("<world");
+                    xml_attr(&mut out, "sectorX", &w.sector_x.to_string());
+                    xml_attr(&mut out, "sectorY", &w.sector_y.to_string());
+                    xml_attr(&mut out, "name", &w.name);
+                    xml_attr(&mut out, "sectorTags", &w.sector_tags);
+                    xml_attr(&mut out, "hexX", &w.hex_x.to_string());
+                    xml_attr(&mut out, "hexY", &w.hex_y.to_string());
+                    xml_attr(&mut out, "sector", &w.sector);
+                    xml_attr(&mut out, "uwp", &w.uwp);
+                    out.push_str(" />");
+                }
+                SearchItem::Subsector(s) => {
+                    out.push_str("<subsector");
+                    xml_attr(&mut out, "sectorX", &s.sector_x.to_string());
+                    xml_attr(&mut out, "sectorY", &s.sector_y.to_string());
+                    xml_attr(&mut out, "name", &s.name);
+                    xml_attr(&mut out, "sectorTags", &s.sector_tags);
+                    xml_attr(&mut out, "sector", &s.sector);
+                    xml_attr(&mut out, "index", &s.index);
+                    out.push_str(" />");
+                }
+                SearchItem::Sector(s) => {
+                    out.push_str("<sector");
+                    xml_attr(&mut out, "sectorX", &s.sector_x.to_string());
+                    xml_attr(&mut out, "sectorY", &s.sector_y.to_string());
+                    xml_attr(&mut out, "name", &s.name);
+                    xml_attr(&mut out, "sectorTags", &s.sector_tags);
+                    out.push_str(" />");
+                }
+                SearchItem::Label(l) => {
+                    out.push_str("<label");
+                    xml_attr(&mut out, "sectorX", &l.sector_x.to_string());
+                    xml_attr(&mut out, "sectorY", &l.sector_y.to_string());
+                    xml_attr(&mut out, "name", &l.name);
+                    xml_attr(&mut out, "sectorTags", &l.sector_tags);
+                    xml_attr(&mut out, "hexX", &l.hex_x.to_string());
+                    xml_attr(&mut out, "hexY", &l.hex_y.to_string());
+                    xml_attr(&mut out, "radius", &l.scale.to_string());
+                    out.push_str(" />");
+                }
+            }
+        }
+        out.push_str("</results>");
+        out
+    }
+}
+
 /// A jump-route request (mirrors the reference `RouteHandler` query params).
 /// `start`/`end` are `"Sector Name 0101"` strings the backend resolves to
 /// worlds; the algorithm itself works on resolved [`Coord`]s.
@@ -709,4 +944,31 @@ pub struct RouteStop {
     pub zone: String,
     #[serde(rename = "AllegianceName")]
     pub allegiance_name: String,
+}
+
+/// `<ArrayOfRouteStop><RouteStop>…</RouteStop>…</ArrayOfRouteStop>` — the
+/// reference `/api/route` XML (`RouteHandler.cs` serializes a bare
+/// `List<RouteStop>`, which the .NET `XmlSerializer` wraps as `ArrayOfRouteStop`).
+/// Child elements in `RouteStop` declaration order: Sector, SectorX, SectorY,
+/// Subsector, Name, Hex, HexX, HexY, UWP, PBG, Zone, AllegianceName.
+pub fn route_stops_to_xml(stops: &[RouteStop]) -> String {
+    let mut out = String::from("<?xml version=\"1.0\"?>\n<ArrayOfRouteStop>");
+    for s in stops {
+        out.push_str("<RouteStop>");
+        xml_el(&mut out, "Sector", &s.sector);
+        xml_el(&mut out, "SectorX", &s.sector_x.to_string());
+        xml_el(&mut out, "SectorY", &s.sector_y.to_string());
+        xml_el_opt(&mut out, "Subsector", &s.subsector);
+        xml_el(&mut out, "Name", &s.name);
+        xml_el(&mut out, "Hex", &s.hex);
+        xml_el(&mut out, "HexX", &s.hex_x.to_string());
+        xml_el(&mut out, "HexY", &s.hex_y.to_string());
+        xml_el_str(&mut out, "UWP", &s.uwp);
+        xml_el_str(&mut out, "PBG", &s.pbg);
+        xml_el_str(&mut out, "Zone", &s.zone);
+        xml_el_str(&mut out, "AllegianceName", &s.allegiance_name);
+        out.push_str("</RouteStop>");
+    }
+    out.push_str("</ArrayOfRouteStop>");
+    out
 }
