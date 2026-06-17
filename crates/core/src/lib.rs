@@ -18,5 +18,6 @@ pub mod dto;
 pub mod metadata;
 pub mod parse;
 pub mod route;
+pub mod searchlang;
 pub mod sector_writer;
 pub mod world_util;

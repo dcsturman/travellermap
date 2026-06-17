@@ -393,11 +393,150 @@ async fn universe_all_returned_sectors_match() {
 // --- Search: documented Results.Items envelope ---------------------------
 
 #[tokio::test]
-#[ignore = "search: emit public {Results:{Count,Items:[{World|Sector|Subsector|Label}]}} (needs Tantivy)"]
 async fn search_public_envelope() {
     let (status, _, body) = get("/api/search?q=Regina").await;
     assert_eq!(status, StatusCode::OK);
     assert_json_matches(&body, "search_regina.json");
+    parity_json("/api/search?q=Regina").await;
+}
+
+// --- Search query language: the documented examples ----------------------
+//
+// These exercise the full ported query language (`tmap_core::searchlang` + the
+// `search` index). Assertions are robust against importance-based ordering: they
+// check membership ("contains a World named X"), counts, and the documented
+// negative cases — not full ordering, which the reference ranks by `Importance`.
+
+/// Run a search and return `(kind, name)` for every item, where `kind` is the
+/// JSON wrapper key (`World`/`Sector`/`Subsector`/`Label`).
+async fn search_items(query: &str) -> Vec<(String, String)> {
+    let (status, _, body) = get(&format!("/api/search?q={query}")).await;
+    assert_eq!(status, StatusCode::OK, "query {query}");
+    let v: Value = jv(&body);
+    v["Results"]["Items"]
+        .as_array()
+        .expect("Items array")
+        .iter()
+        .map(|item| {
+            let obj = item.as_object().expect("item object");
+            let (kind, payload) = obj.iter().next().expect("one-key item");
+            let name = payload["Name"].as_str().unwrap_or("").to_string();
+            (kind.clone(), name)
+        })
+        .collect()
+}
+
+/// Does the result set contain a world with this exact name?
+fn has_world(items: &[(String, String)], name: &str) -> bool {
+    items.iter().any(|(k, n)| k == "World" && n == name)
+}
+
+#[tokio::test]
+async fn search_wildcard_r_star_a_matches_regina() {
+    // `r*a` (→ `r%a`) word-boundary off (wildcard) → full LIKE; matches Regina.
+    let items = search_items("r*a").await;
+    assert!(has_world(&items, "Regina"), "r*a should match Regina: {items:?}");
+}
+
+#[tokio::test]
+async fn search_re_star_in_excludes_regina_but_re_star_in_star_includes_it() {
+    // `re*in` (→ `re%in`): anchored full-string LIKE, no trailing % → NOT Regina.
+    let items = search_items("re*in").await;
+    assert!(!has_world(&items, "Regina"), "re*in must NOT match Regina: {items:?}");
+    // `re*in*` (→ `re%in%`): trailing % → matches Regina.
+    let items = search_items("re*in*").await;
+    assert!(has_world(&items, "Regina"), "re*in* should match Regina: {items:?}");
+}
+
+#[tokio::test]
+async fn search_exact_sol_excludes_solomani_rim() {
+    // `exact:sol` → `name LIKE 'sol'` (full match): "Sol" but not "Solomani Rim".
+    let items = search_items("exact:sol").await;
+    assert!(
+        !items.iter().any(|(_, n)| n == "Solomani Rim"),
+        "exact:sol must not include Solomani Rim: {items:?}"
+    );
+    // Every hit must be exactly "Sol" (case-insensitive).
+    assert!(
+        items.iter().all(|(_, n)| n.eq_ignore_ascii_case("sol")),
+        "exact:sol hits must all be 'Sol': {items:?}"
+    );
+    assert!(!items.is_empty(), "exact:sol should find the Sol subsector");
+}
+
+#[tokio::test]
+async fn search_like_tear_finds_terra_via_soundex() {
+    // `like:tear` → SOUNDEX(name) == SOUNDEX('tear') == T600 → Terra (T600).
+    let items = search_items("like:tear").await;
+    assert!(has_world(&items, "Terra"), "like:tear should find Terra via soundex: {items:?}");
+}
+
+#[tokio::test]
+async fn search_multi_word_and_solomani_rim() {
+    // `so ri` → two word-boundary clauses ANDed → "Solomani Rim" sector.
+    let items = search_items("so%20ri").await;
+    assert!(
+        items.iter().any(|(k, n)| k == "Sector" && n == "Solomani Rim"),
+        "so ri should match the Solomani Rim sector: {items:?}"
+    );
+}
+
+#[tokio::test]
+async fn search_uwp_scope_restricts_to_worlds() {
+    // `uwp:A788899-C` is Regina's UWP → exactly Regina (worlds only).
+    let items = search_items("uwp:A788899-C").await;
+    assert!(has_world(&items, "Regina"), "uwp:A788899-C should match Regina: {items:?}");
+    assert!(items.iter().all(|(k, _)| k == "World"), "uwp: restricts to worlds: {items:?}");
+}
+
+#[tokio::test]
+async fn search_in_scope_filters_by_sector() {
+    // `t* in:spin` → worlds beginning with T in a sector whose name contains
+    // "spin" (Spinward Marches). Every hit is a world; Trin is one of them.
+    let items = search_items("t*%20in:spin").await;
+    assert!(!items.is_empty(), "t* in:spin should find worlds");
+    assert!(items.iter().all(|(k, _)| k == "World"), "in: restricts to worlds: {items:?}");
+    assert!(has_world(&items, "Trin"), "t* in:spin should include Trin: {items:?}");
+}
+
+#[tokio::test]
+async fn search_uwp_shortcut_prefixes_uwp() {
+    // A bare `XXXXXXX-X` is rewritten to `uwp:XXXXXXX-X`. Regina's UWP returns
+    // Regina and only worlds.
+    let items = search_items("A788899-C").await;
+    assert!(has_world(&items, "Regina"), "UWP shortcut should match Regina: {items:?}");
+    assert!(items.iter().all(|(k, _)| k == "World"), "UWP shortcut → worlds only: {items:?}");
+}
+
+#[tokio::test]
+async fn search_default_word_boundary_rules() {
+    // "sol" matches "Sol" / "Solomani Rim" (start of name) but the start-of-word
+    // rule means a substring like "marsol" is NOT matched.
+    let items = search_items("sol").await;
+    assert!(
+        items.iter().any(|(_, n)| n == "Solomani Rim"),
+        "sol should match Solomani Rim: {items:?}"
+    );
+    assert!(
+        !items.iter().any(|(_, n)| n.eq_ignore_ascii_case("marsol")),
+        "sol must not match Marsol (mid-word): {items:?}"
+    );
+}
+
+#[tokio::test]
+async fn search_sector_hex_shortcut() {
+    // `Spinward Marches 1910` → the world at Spinward Marches 1910 = Regina.
+    let items = search_items("Spinward%20Marches%201910").await;
+    assert!(has_world(&items, "Regina"), "sector+hex should match Regina: {items:?}");
+    assert!(items.iter().all(|(k, _)| k == "World"), "sector+hex → worlds only: {items:?}");
+}
+
+#[tokio::test]
+async fn search_types_param_restricts_kinds() {
+    // `types=sectors` over "spinward" → only Sector items.
+    let items = search_items("spinward&types=sectors").await;
+    assert!(!items.is_empty(), "expected sector hits for spinward");
+    assert!(items.iter().all(|(k, _)| k == "Sector"), "types=sectors → sectors only: {items:?}");
 }
 
 // --- Data: single world by hex -------------------------------------------
