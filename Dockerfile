@@ -34,16 +34,33 @@ COPY . .
 # Frontend → crates/frontend/dist. `--features callisto` enables the worldgen
 # solar-system / world-map popups (they call the external Callisto HTTP service;
 # no worldgen crate is pulled into this build).
-RUN cd crates/frontend && trunk build --release --features callisto
+#
+# The cache mounts persist cargo's crate registry + the target/ incremental
+# compile cache in the BuildKit daemon across builds, so a code change recompiles
+# only what changed (deps are built once, never again). dist/ lives outside
+# target/, so the wasm assets still commit to this layer normally. NOTE: this
+# requires building with BuildKit/buildx — Kaniko ignores cache mounts (see
+# scripts/deploy.sh, which builds locally via `docker buildx`).
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,id=tmap-target-${TARGETARCH},target=/src/target \
+    cd crates/frontend && trunk build --release --features callisto
 
-# Native backend (release profile: LTO, opt-level 3 — see root Cargo.toml).
-RUN cargo build --release -p tmap-backend
+# Native backend (release profile: LTO, opt-level 3 — see root Cargo.toml). The
+# binary lands INSIDE the target/ cache mount, which is NOT part of the committed
+# layer, so copy it out to /out before the RUN ends — the runtime stage COPYs
+# from there. (Same shared cache mounts as the wasm step above.)
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,id=tmap-target-${TARGETARCH},target=/src/target \
+    cargo build --release -p tmap-backend && \
+    mkdir -p /out && cp target/release/tmap-backend /out/tmap-backend
 
 # ---- Runtime stage: just the binary + static bundle + the res/ data tree ----
 FROM debian:bookworm-slim AS runtime
 WORKDIR /app
 
-COPY --from=builder /src/target/release/tmap-backend /app/tmap-backend
+COPY --from=builder /out/tmap-backend                /app/tmap-backend
 COPY --from=builder /src/crates/frontend/dist        /app/dist
 COPY --from=builder /src/res                          /app/res
 

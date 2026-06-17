@@ -89,5 +89,5 @@ command — from the **repo root**:
 
 ```sh
 cp scripts/deploy.env.example scripts/deploy.env   # fill in PROJECT_ID, …  (one-time)
-scripts/deploy.sh                                  # Cloud Build (amd64) → Cloud Run
+scripts/deploy.sh                                  # local buildx (amd64, cached) → Cloud Run
 ```

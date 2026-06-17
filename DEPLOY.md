@@ -10,11 +10,10 @@ zero on Cloud Run (no database; the dataset loads into RAM from the bundled
 
 | File | Role |
 | --- | --- |
-| `Dockerfile` | Multi-stage build: Trunk builds the wasm frontend, cargo builds the backend, runtime image = binary + `dist/` + `res/`. |
+| `Dockerfile` | Multi-stage build: Trunk builds the wasm frontend, cargo builds the backend, runtime image = binary + `dist/` + `res/`. Uses BuildKit cache mounts (`target/` + cargo registry) for fast incremental rebuilds — build it with `docker buildx`, not Kaniko. |
 | `.dockerignore` | Trims the build context to the Cargo manifests, `crates/`, and `res/`. |
-| `cloudbuild.yaml` | Cloud Build config: builds via **Kaniko** (layer cache → Artifact Registry) on a bigger machine. Used by `deploy.sh`. |
 | `scripts/build.sh` | Build the image **locally** and run it on `:8080` to verify before shipping. |
-| `scripts/deploy.sh` | **Per-push:** build in Cloud Build (amd64) + deploy to Cloud Run. Auto-creates the Artifact Registry repo if missing. |
+| `scripts/deploy.sh` | **Per-push:** build locally with `docker buildx` (linux/amd64, cached) + push + deploy to Cloud Run. Auto-creates the Artifact Registry repo if missing. |
 | `scripts/deploy.env.example` | Copy to `scripts/deploy.env` (gitignored) and fill in project/region/etc. |
 
 > Standing rule: anything done more than once is a script. `scripts/build.sh` /
@@ -42,7 +41,8 @@ gcloud config set project "$PROJECT_ID"
 
 # Enable the APIs the deploy uses. (deploy.sh also auto-enables Artifact Registry
 # and creates the repo on first run, so this is mostly belt-and-suspenders.)
-gcloud services enable run.googleapis.com artifactregistry.googleapis.com cloudbuild.googleapis.com
+# Cloud Build is no longer used — the image is built locally with docker buildx.
+gcloud services enable run.googleapis.com artifactregistry.googleapis.com
 ```
 
 The Artifact Registry repo no longer needs to be created by hand — `deploy.sh`
@@ -54,18 +54,24 @@ creates it (idempotently) if it's missing.
 scripts/deploy.sh
 ```
 
-Builds the image in Cloud Build (so the architecture matches Cloud Run and no
-local Docker is needed), pushes it, deploys, and prints the service URL. Run it
-on every push to production.
+Builds the image locally with `docker buildx` (linux/amd64, matching Cloud Run),
+pushes it to Artifact Registry, deploys, and prints the service URL. Requires a
+running local Docker (Docker Desktop). Run it on every push to production.
 
 ### Build speed / caching
 
-The build runs via `cloudbuild.yaml` with **Kaniko**, which caches layers (base
-image, Rust/wasm toolchain, Trunk + wasm-opt downloads, crate fetch, compiles) in
-Artifact Registry under `<repo>/cache`. The **first** build is slow (cold cache —
-it populates everything); **subsequent** builds reuse those layers and are much
-faster. The build also runs on an `E2_HIGHCPU_8` machine (vs the ~1-vCPU default)
-— edit `options.machineType` in `cloudbuild.yaml` to go bigger/smaller.
+The build uses **BuildKit cache mounts** (in the `Dockerfile`): cargo's crate
+registry and the `target/` incremental-compile cache persist in the local
+BuildKit daemon across builds, so a code change recompiles **only what changed**
+— dependencies are compiled once and never again. The **first** build is slow
+(cold cache, and on Apple Silicon the amd64 toolchain runs under QEMU emulation);
+**subsequent** builds are fast incremental recompiles.
+
+`deploy.sh` also pushes a registry layer-cache (`<service>:buildcache`) via
+`--cache-to/--cache-from`, which lets a *fresh* machine reuse layers — but the big
+incremental win is the local cache mounts, which the registry cache can't carry.
+The buildx builder (`tmap-builder`, docker-container driver) is created
+idempotently on first run.
 
 ## Map the custom domain (one-time)
 

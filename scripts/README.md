@@ -1,14 +1,14 @@
 # scripts/
 
 Build & deploy scripts for the Rust rewrite. Run them from anywhere — each
-`cd`s to the repo root itself (the Docker / Cloud Build context). The full
+`cd`s to the repo root itself (the Docker build context). The full
 deployment walk-through (one-time GCP setup, custom-domain mapping) is in
 [`../DEPLOY.md`](../DEPLOY.md).
 
 | File | What it does |
 | --- | --- |
 | `build.sh` | Build the deployable image **locally** and optionally run it. `scripts/build.sh run` serves the whole app (frontend + API, one origin) on http://localhost:8080 — the smoke test before shipping. Builds for your machine's arch. |
-| `deploy.sh` | **Ship to Cloud Run.** Builds the image in Cloud Build (amd64, via `../cloudbuild.yaml` → Kaniko with layer caching) and deploys it. Auto-creates the Artifact Registry repo if missing. The one command to run per push. |
+| `deploy.sh` | **Ship to Cloud Run.** Builds the image locally with `docker buildx` (linux/amd64, BuildKit cache mounts for fast incremental rebuilds), pushes it, and deploys. Auto-creates the Artifact Registry repo if missing. Needs a running local Docker. The one command to run per push. |
 | `deploy.env.example` | Template for `deploy.env` (gitignored) — the project/region/sizing config `deploy.sh` reads. |
 
 ## Setup (once)
@@ -37,7 +37,7 @@ environment.
 
 ```sh
 scripts/build.sh run    # verify locally on :8080
-scripts/deploy.sh       # Cloud Build → Cloud Run
+scripts/deploy.sh       # local buildx (amd64, cached) → push → Cloud Run
 ```
 
 The container's own runtime env vars (`PORT`, `TMAP_RES_DIR`, `TMAP_DIST_DIR`,

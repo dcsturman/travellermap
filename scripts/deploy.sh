@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 #
-# Ship to Cloud Run. Builds the image in Cloud Build (amd64, matching Cloud Run)
-# and deploys it. This is the one command to run on every push to production.
+# Ship to Cloud Run. Builds the image LOCALLY (docker buildx, linux/amd64 to
+# match Cloud Run) with BuildKit cache mounts for fast incremental rebuilds,
+# pushes it to Artifact Registry, and deploys. The one command to run per push.
 #
-# Config comes from deploy.env (copy deploy.env.example). One-time setup —
-# enabling APIs, creating the Artifact Registry repo, and mapping the custom
-# domain — is documented in DEPLOY.md (it's done once, so it's not scripted here).
+# Requires a running local Docker (Docker Desktop). Config comes from deploy.env
+# (copy deploy.env.example). One-time setup — enabling APIs, creating the
+# Artifact Registry repo, and mapping the custom domain — is in DEPLOY.md.
 #
 set -euo pipefail
-# This script lives in scripts/; config sits beside it, but the Cloud Build
+# This script lives in scripts/; config sits beside it, but the docker build
 # context is the repo root — so resolve both and cd to the root.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR/.."
@@ -39,14 +40,33 @@ if ! gcloud artifacts repositories describe "$REPO" \
     --repository-format=docker --description="Traveller Map images"
 fi
 
-# Build via Kaniko (cloudbuild.yaml) so layers are cached in Artifact Registry
-# across builds — the first run populates the cache (full time); later runs reuse
-# the base image / toolchain / crate-fetch / compile layers and are much faster.
-echo ">> building + pushing $IMAGE via Cloud Build (Kaniko, cached)…"
-gcloud builds submit \
-  --project "$PROJECT_ID" \
-  --config cloudbuild.yaml \
-  --substitutions=_IMAGE="$IMAGE" \
+# Build LOCALLY with buildx + BuildKit cache mounts (see Dockerfile). Unlike the
+# old Kaniko-in-Cloud-Build path — which recompiled the whole workspace on every
+# push because any source change busts the `COPY . . && cargo build` layer — the
+# target/ cache mount persists cargo's incremental compile cache in the local
+# BuildKit daemon, so a code change recompiles only what changed. Cloud Run is
+# amd64-only, so we build linux/amd64 (emulated on Apple Silicon; still fast once
+# the cache is warm, as the recompile is incremental).
+#
+# Both setup steps are idempotent: configure Docker to push to Artifact Registry,
+# and ensure a buildx builder on the docker-container driver (the default 'docker'
+# driver supports neither cache export nor persistent cache mounts).
+gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+docker buildx inspect tmap-builder >/dev/null 2>&1 \
+  || docker buildx create --name tmap-builder --driver docker-container --use
+docker buildx use tmap-builder
+
+# The registry cache (--cache-to/from) carries LAYERS across machines/fresh
+# checkouts; the big incremental win (the target/ mount) lives in the local
+# daemon and persists automatically between local builds.
+BUILDCACHE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/${SERVICE}:buildcache"
+echo ">> building + pushing $IMAGE locally via buildx (linux/amd64, cached)…"
+docker buildx build \
+  --platform linux/amd64 \
+  --cache-from=type=registry,ref="$BUILDCACHE" \
+  --cache-to=type=registry,ref="$BUILDCACHE",mode=max \
+  -t "$IMAGE" \
+  --push \
   .
 
 echo ">> deploying $SERVICE to Cloud Run ($REGION)…"
