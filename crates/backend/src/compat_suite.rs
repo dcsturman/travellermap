@@ -216,27 +216,13 @@ async fn parity_text(path: &str) {
     }
 }
 
-/// Order-insensitive normalizer for `/api/search`: sorts `Results.Items` by
-/// canonical form (serde_json `Value::to_string()` is sorted-key, so it's a
-/// stable canonical sort key) so the *set* of hits is compared, not ordering.
-fn norm_search_set(s: &str) -> Value {
-    let mut v = jv(s);
-    if let Some(items) =
-        v.get_mut("Results").and_then(|r| r.get_mut("Items")).and_then(|i| i.as_array_mut())
-    {
-        items.sort_by_key(|it| it.to_string());
-    }
-    v
-}
-
-/// Live parity for `/api/search` comparing the **set** of `Results.Items`
-/// (order-insensitive). The reference ranks hits by `Importance`, which we have
-/// not yet ported, so a strict-order diff would false-fail; set-equality verifies
-/// we return the same worlds/sectors/subsectors/labels as travellermap.com.
+/// Live parity for `/api/search` comparing `Results.Items` **in order** — this is
+/// the strict ranking check: the array order is the reference's `Importance`
+/// ranking, and serde_json `Value` array comparison is order-sensitive (object
+/// key order and `\/`-escaping are still normalized by parsing).
 ///
-/// Guards the `NUM_RESULTS` (160) cap: if either side truncates, *ranking* decides
-/// which items survive, so a set comparison is meaningless — the test fails loudly
-/// asking for a narrower query rather than reporting a spurious deviation.
+/// Guards the `NUM_RESULTS` (160) cap: if either side truncates, the query is too
+/// broad to compare meaningfully — the test fails loudly asking for a narrower one.
 async fn parity_search(query: &str) {
     if !parity_enabled() {
         return;
@@ -257,15 +243,11 @@ async fn parity_search(query: &str) {
         assert!(
             n < crate::NUM_RESULTS,
             "query {query:?} hit the {}-result cap on {who} ({n} items); ranking decides \
-             truncation, so set parity is meaningless — pick a narrower query",
+             truncation, so the comparison is meaningless — pick a narrower query",
             crate::NUM_RESULTS
         );
     }
-    assert_eq!(
-        norm_search_set(&ours_body),
-        norm_search_set(&live_body),
-        "search set parity for {query:?}"
-    );
+    assert_eq!(jv(&ours_body), jv(&live_body), "search ordered parity for {query:?}");
 }
 
 // ========================================================================

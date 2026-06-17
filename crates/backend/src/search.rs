@@ -456,13 +456,12 @@ pub struct SearchIndex {
 
 /// The per-hit ranking + payload, stored as one JSON `blob` field per document so
 /// retrieval reconstructs the public `SearchItem` and the reference ranking keys
-/// (`kind`, `{Ix}` importance, original insertion order for stable tie-breaks)
-/// without a parallel side table.
+/// (`kind` + `{Ix}` importance; the within-importance tie-break is the coordinate
+/// order derived from the item, see [`coord_key`]) without a parallel side table.
 #[derive(Serialize, Deserialize)]
 struct Blob {
     kind: u8,
     importance: Option<i32>,
-    ord: u32,
     item: SearchItem,
 }
 
@@ -500,7 +499,7 @@ pub fn build_index(res_dir: &Path, milieu: &str, universe: &Universe) -> SearchI
 
     let index = Index::create_in_ram(schema);
     let mut writer = index.writer(15_000_000).expect("tantivy index writer");
-    for (ord, e) in entries.iter().enumerate() {
+    for e in &entries {
         let mut d = TantivyDocument::default();
         d.add_text(f.name, &e.name_lower);
         d.add_text(f.name_soundex, soundex(&e.name_lower));
@@ -535,7 +534,6 @@ pub fn build_index(res_dir: &Path, milieu: &str, universe: &Universe) -> SearchI
         let blob = Blob {
             kind: e.kind,
             importance: e.importance,
-            ord: ord as u32,
             item: e.item.clone(),
         };
         d.add_text(f.blob, serde_json::to_string(&blob).expect("serialize search blob"));
@@ -575,9 +573,10 @@ pub fn run_query(idx: &SearchIndex, pq: &ParsedQuery, limit: usize) -> Vec<Searc
         serde_json::from_str::<Blob>(raw).ok()
     });
 
-    // Per-kind importance-desc + cap (ties keep insertion order via `ord`), then
-    // concat in kind order, then stable global importance-desc, then cap. `None`
-    // importance sorts last (Option: `None < Some`).
+    // Per-kind importance-desc + cap (ties broken by coordinate order, matching
+    // the reference SQL `SELECT DISTINCT` on each table's coordinate columns),
+    // then concat in (Sector, Subsector, World, Label) order, then a stable global
+    // importance-desc sort, then cap. `None` importance sorts last (`None < Some`).
     let mut by_kind: [Vec<Blob>; 4] = Default::default();
     for h in hits {
         let bucket = h.kind as usize;
@@ -586,13 +585,37 @@ pub fn run_query(idx: &SearchIndex, pq: &ParsedQuery, limit: usize) -> Vec<Searc
         }
     }
     for bucket in by_kind.iter_mut() {
-        bucket.sort_by_key(|h| (std::cmp::Reverse(h.importance), h.ord));
+        bucket.sort_by_key(|h| (std::cmp::Reverse(h.importance), coord_key(&h.item)));
         bucket.truncate(limit);
     }
     let mut merged: Vec<Blob> = by_kind.into_iter().flatten().collect();
-    // Stable sort: ties keep concat order = (kind asc, ord asc).
+    // Stable sort: ties keep concat order = (kind asc, then coord within kind).
     merged.sort_by_key(|h| std::cmp::Reverse(h.importance));
     merged.into_iter().take(limit).map(|h| h.item).collect()
+}
+
+/// The within-importance tie-break key, mirroring the reference `SELECT DISTINCT`
+/// column order per table (`SearchEngine.PerformSearch`): worlds by
+/// `(sector_x, sector_y, hex_x, hex_y)`, sectors by `(x, y)`, subsectors by
+/// `(sector_x, sector_y, subsector_index)`, labels by absolute `(x, y)`. Only
+/// compared within a single kind, so the differing per-kind meanings never mix.
+fn coord_key(item: &SearchItem) -> (i64, i64, i64, i64) {
+    match item {
+        SearchItem::Sector(s) => (s.sector_x as i64, s.sector_y as i64, 0, 0),
+        SearchItem::Subsector(s) => (
+            s.sector_x as i64,
+            s.sector_y as i64,
+            s.index.chars().next().map_or(0, |c| c as i64),
+            0,
+        ),
+        SearchItem::World(w) => {
+            (w.sector_x as i64, w.sector_y as i64, w.hex_x as i64, w.hex_y as i64)
+        }
+        SearchItem::Label(l) => {
+            let (x, y) = location_to_coordinates(l.sector_x, l.sector_y, l.hex_x, l.hex_y);
+            (x as i64, y as i64, 0, 0)
+        }
+    }
 }
 
 /// Build the Tantivy query for a parsed query: a kind filter (from `types`)
