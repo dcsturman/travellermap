@@ -219,7 +219,7 @@ pub(crate) fn read_text(path: impl AsRef<FsPath>) -> std::io::Result<String> {
 /// Run and CI — does not, silently dropping those sectors' metadata and worlds.
 /// Returns the directly-joined path when it exists (the fast common case), else
 /// the first case-insensitive directory match.
-fn resolve_ci(dir: &FsPath, name: &str) -> Option<PathBuf> {
+pub(crate) fn resolve_ci(dir: &FsPath, name: &str) -> Option<PathBuf> {
     let direct = dir.join(name);
     if direct.exists() {
         return Some(direct);
@@ -399,7 +399,7 @@ fn load_universe(res_dir: &FsPath, milieu: &str) -> Universe {
 }
 
 /// `(metafile-path, tags-csv)` for every entry in `res/Sectors/milieu.tab`.
-fn milieu_metafiles(res_dir: &FsPath) -> Vec<(String, String)> {
+pub(crate) fn milieu_metafiles(res_dir: &FsPath) -> Vec<(String, String)> {
     let Ok(text) = read_text(res_dir.join("Sectors").join("milieu.tab")) else {
         return Vec::new();
     };
@@ -764,7 +764,7 @@ async fn get_overlays(headers: HeaderMap, State(state): State<AppState>) -> Resp
 
 /// The default milieu (Imperial year 1105) — sectors with no `Milieu` attribute
 /// belong to it (reference `SectorMap.DEFAULT_MILIEU`).
-const DEFAULT_MILIEU: &str = "M1105";
+pub(crate) const DEFAULT_MILIEU: &str = "M1105";
 
 fn default_milieu() -> String {
     DEFAULT_MILIEU.to_string()
@@ -1872,30 +1872,30 @@ pub(crate) fn resolve_and_parse_worlds(
         .map(|df| std::path::Path::new(df).file_stem().and_then(|s| s.to_str()).unwrap_or(name))
         .unwrap_or(name)
         .to_string();
-    let infer_fmt = |file: &str| match std::path::Path::new(file).extension().and_then(|e| e.to_str()) {
-        Some("txt") => "SecondSurvey",
-        Some("sec") => "SEC",
-        _ => "TabDelimited",
-    };
     // Resolve filenames case-insensitively — the region list declares e.g.
     // `Blaskon.txt` but the on-disk file is `blaskon.txt` (see `resolve_ci`).
-    let (data_file, data_format) = entry
+    // The declared `Type` wins; `None` means "sniff the content" (deferred until
+    // the file is read), mirroring the reference `WorldCollection.Deserialize`.
+    let (data_file, declared_format) = entry
         .and_then(|s| s.data_file.clone())
         .filter(|df| resolve_ci(dir, df).is_some())
-        .map(|df| {
-            let fmt = entry
-                .and_then(|s| s.data_format.clone())
-                .unwrap_or_else(|| infer_fmt(&df).to_string());
-            (df, fmt)
-        })
+        .map(|df| (df, entry.and_then(|s| s.data_format.clone())))
         .or_else(|| {
-            [("tab", "TabDelimited"), ("txt", "SecondSurvey"), ("sec", "SEC")]
+            // Loose fallback by extension: `.tab`/`.sec` are unambiguous; a bare
+            // `.txt` is sniffed (legacy SEC vs. T5 SecondSurvey both use it).
+            [("tab", Some("TabDelimited")), ("txt", None), ("sec", Some("SEC"))]
                 .into_iter()
-                .map(|(ext, fmt)| (format!("{stem}.{ext}"), fmt.to_string()))
+                .map(|(ext, fmt)| (format!("{stem}.{ext}"), fmt.map(str::to_owned)))
                 .find(|(f, _)| resolve_ci(dir, f).is_some())
         })?;
 
     let text = read_text(resolve_ci(dir, &data_file)?).ok()?;
+    // No declared `Type` → sniff the content (reference `SectorFileParser.SniffType`):
+    // tab-delimited → TabDelimited, `{Ix} (Ex) [Cx]` present → SecondSurvey, else
+    // legacy SEC. So `.txt` files split correctly between T5 SecondSurvey (Phlask)
+    // and legacy SEC fixed-column (Faraway's Virgo) — the latter `parse_column`
+    // can't read.
+    let data_format = declared_format.unwrap_or_else(|| sniff_world_format(&text).to_owned());
     let outcome = match data_format.as_str() {
         "SEC" => parse_sec(&text),             // legacy regex format (.sec)
         "SecondSurvey" => parse_column(&text), // T5 column format (.txt)
@@ -1904,6 +1904,43 @@ pub(crate) fn resolve_and_parse_worlds(
     // A format quirk shouldn't fail the whole sector — fall back to no worlds.
     .unwrap_or_default();
     Some((data_file, outcome))
+}
+
+/// Detect a world-data file's format from its content (port of the reference
+/// `SectorFileParser.SniffType`): a line with ≥9 tabs → `TabDelimited`; a line
+/// carrying the T5 `{Ix} (Ex) [Cx]` extensions → `SecondSurvey`; otherwise the
+/// legacy fixed-column `SEC`. Comment lines (`# $ @`) are skipped.
+fn sniff_world_format(text: &str) -> &'static str {
+    for line in text.lines() {
+        if line.is_empty() || matches!(line.as_bytes().first(), Some(b'#' | b'$' | b'@')) {
+            continue;
+        }
+        if line.matches('\t').count() >= 9 {
+            return "TabDelimited";
+        }
+        if has_t5_extensions(line) {
+            return "SecondSurvey";
+        }
+    }
+    "SEC"
+}
+
+/// Whether a line carries the T5 `{Ix} (Ex) [Cx]` extension triple in order
+/// (reference sniff regex `\{.*\} +\(.*\) +\[.*\]`): a `{…}` group, then one or
+/// more spaces, then a `(…)` group, spaces, then a `[…]` group.
+fn has_t5_extensions(line: &str) -> bool {
+    fn after_group(s: &str, open: u8, close: u8) -> Option<&str> {
+        let start = s.find(open as char)?;
+        let rel_close = s[start + 1..].find(close as char)?;
+        Some(&s[start + 1 + rel_close + 1..])
+    }
+    fn skip_spaces(s: &str) -> Option<&str> {
+        let t = s.trim_start_matches(' ');
+        (t.len() < s.len()).then_some(t)
+    }
+    let rest = after_group(line, b'{', b'}').and_then(skip_spaces);
+    let rest = rest.and_then(|s| after_group(s, b'(', b')')).and_then(skip_spaces);
+    rest.and_then(|s| after_group(s, b'[', b']')).is_some()
 }
 
 /// Parse + assemble a sector and serialize it (the cache-miss path).

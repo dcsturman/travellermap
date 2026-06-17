@@ -393,11 +393,11 @@ async fn universe_all_returned_sectors_match() {
 // --- Search: documented Results.Items envelope ---------------------------
 
 #[tokio::test]
-#[ignore = "search: emit public {Results:{Count,Items:[{World|Sector|Subsector|Label}]}} (needs Tantivy)"]
 async fn search_public_envelope() {
     let (status, _, body) = get("/api/search?q=Regina").await;
     assert_eq!(status, StatusCode::OK);
     assert_json_matches(&body, "search_regina.json");
+    parity_json("/api/search?q=Regina").await;
 }
 
 // --- Data: single world by hex -------------------------------------------
