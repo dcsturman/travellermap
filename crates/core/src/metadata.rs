@@ -74,6 +74,236 @@ pub struct SectorMetadata {
     pub local_allegiances: Vec<MetaAllegiance>,
 }
 
+impl SectorMetadata {
+    /// Serialize to the reference `/api/metadata` XML shape (`[XmlRoot("Sector")]`
+    /// in `SectorMetaDataHandler.cs`) — the same data we emit as JSON, as XML.
+    /// Member order matches the reference result class; empty `Labels`/`Borders`/
+    /// `Regions`/`Routes` collections are omitted (the reference `ShouldSerialize*`).
+    pub fn to_xml(&self) -> String {
+        use crate::dto::{xml_attr, xml_el, xml_escape};
+        let mut o = String::from("<?xml version=\"1.0\"?>\n<Sector");
+        if self.selected {
+            xml_attr(&mut o, "Selected", "true");
+        }
+        xml_attr(&mut o, "Tags", &self.tags);
+        if let Some(a) = &self.abbreviation {
+            xml_attr(&mut o, "Abbreviation", a);
+        }
+        if let Some(l) = &self.label {
+            xml_attr(&mut o, "Label", l);
+        }
+        o.push('>');
+
+        for n in &self.names {
+            o.push_str("<Name");
+            if let Some(lang) = &n.lang {
+                xml_attr(&mut o, "Lang", lang);
+            }
+            if let Some(src) = &n.source {
+                xml_attr(&mut o, "Source", src);
+            }
+            o.push('>');
+            o.push_str(&xml_escape(&n.text));
+            o.push_str("</Name>");
+        }
+
+        // Credits is a CDATA node (raw HTML); only present when non-empty.
+        if let Some(c) = self.credits_text.as_deref().filter(|s| !s.is_empty()) {
+            o.push_str("<Credits><![CDATA[");
+            o.push_str(c);
+            o.push_str("]]></Credits>");
+        }
+
+        xml_el(&mut o, "X", &self.x.to_string());
+        xml_el(&mut o, "Y", &self.y.to_string());
+
+        for p in &self.products {
+            o.push_str("<Product");
+            if let Some(v) = &p.author {
+                xml_attr(&mut o, "Author", v);
+            }
+            if let Some(v) = &p.title {
+                xml_attr(&mut o, "Title", v);
+            }
+            if let Some(v) = &p.publisher {
+                xml_attr(&mut o, "Publisher", v);
+            }
+            if let Some(v) = &p.reference {
+                xml_attr(&mut o, "Ref", v);
+            }
+            o.push_str(" />");
+        }
+
+        o.push_str("<DataFile");
+        let df = &self.data_file;
+        for (name, val) in [
+            ("Title", &df.title),
+            ("Author", &df.author),
+            ("Source", &df.source),
+            ("Publisher", &df.publisher),
+            ("Copyright", &df.copyright),
+            ("Milieu", &df.milieu),
+            ("Ref", &df.reference),
+        ] {
+            if let Some(v) = val {
+                xml_attr(&mut o, name, v);
+            }
+        }
+        o.push_str(" />");
+
+        // Subsectors and Allegiances are always serialized (no ShouldSerialize).
+        o.push_str("<Subsectors>");
+        for s in &self.subsectors {
+            o.push_str("<Subsector");
+            xml_attr(&mut o, "Index", &s.index);
+            if s.name.is_empty() {
+                o.push_str(" />");
+            } else {
+                o.push('>');
+                o.push_str(&xml_escape(&s.name));
+                o.push_str("</Subsector>");
+            }
+        }
+        o.push_str("</Subsectors>");
+
+        o.push_str("<Allegiances>");
+        for a in &self.allegiances {
+            o.push_str("<Allegiance");
+            xml_attr(&mut o, "Code", &a.code);
+            if let Some(b) = &a.base {
+                xml_attr(&mut o, "Base", b);
+            }
+            o.push('>');
+            o.push_str(&xml_escape(&a.name));
+            o.push_str("</Allegiance>");
+        }
+        o.push_str("</Allegiances>");
+
+        if let Some(ss) = &self.stylesheet {
+            xml_el(&mut o, "Stylesheet", ss);
+        }
+
+        if !self.labels.is_empty() {
+            o.push_str("<Labels>");
+            for l in &self.labels {
+                xml_label(&mut o, l);
+            }
+            o.push_str("</Labels>");
+        }
+        if !self.borders.is_empty() {
+            o.push_str("<Borders>");
+            for b in &self.borders {
+                xml_border(&mut o, "Border", b);
+            }
+            o.push_str("</Borders>");
+        }
+        if !self.regions.is_empty() {
+            o.push_str("<Regions>");
+            for b in &self.regions {
+                xml_border(&mut o, "Region", b);
+            }
+            o.push_str("</Regions>");
+        }
+        if !self.routes.is_empty() {
+            o.push_str("<Routes>");
+            for r in &self.routes {
+                xml_route(&mut o, r);
+            }
+            o.push_str("</Routes>");
+        }
+
+        o.push_str("</Sector>");
+        o
+    }
+}
+
+fn xml_border(o: &mut String, tag: &str, b: &MetaBorder) {
+    use crate::dto::{xml_attr, xml_escape};
+    o.push('<');
+    o.push_str(tag);
+    if !b.show_label {
+        xml_attr(o, "ShowLabel", "false");
+    }
+    if b.wrap_label {
+        xml_attr(o, "WrapLabel", "true");
+    }
+    if let Some(c) = &b.color {
+        xml_attr(o, "Color", c);
+    }
+    if let Some(a) = &b.allegiance {
+        xml_attr(o, "Allegiance", a);
+    }
+    xml_attr(o, "LabelPosition", &label_position(b.label_position.clone(), &b.hexes));
+    if b.label_offset_x != 0.0 {
+        xml_attr(o, "LabelOffsetX", &b.label_offset_x.to_string());
+    }
+    if b.label_offset_y != 0.0 {
+        xml_attr(o, "LabelOffsetY", &b.label_offset_y.to_string());
+    }
+    if let Some(l) = &b.label {
+        xml_attr(o, "Label", l);
+    }
+    o.push('>');
+    o.push_str(&xml_escape(&b.hexes.join(" ")));
+    o.push_str("</");
+    o.push_str(tag);
+    o.push('>');
+}
+
+fn xml_route(o: &mut String, r: &MetaRoute) {
+    use crate::dto::xml_attr;
+    o.push_str("<Route");
+    xml_attr(o, "Start", &r.start);
+    xml_attr(o, "End", &r.end);
+    for (name, v) in [
+        ("StartOffsetX", r.start_offset_x),
+        ("StartOffsetY", r.start_offset_y),
+        ("EndOffsetX", r.end_offset_x),
+        ("EndOffsetY", r.end_offset_y),
+    ] {
+        if v != 0 {
+            xml_attr(o, name, &v.to_string());
+        }
+    }
+    if let Some(a) = &r.allegiance {
+        xml_attr(o, "Allegiance", a);
+    }
+    if let Some(c) = &r.color {
+        xml_attr(o, "Color", c);
+    }
+    if let Some(t) = &r.route_type {
+        xml_attr(o, "Type", t);
+    }
+    o.push_str(" />");
+}
+
+fn xml_label(o: &mut String, l: &MetaLabel) {
+    use crate::dto::{xml_attr, xml_escape};
+    o.push_str("<Label");
+    xml_attr(o, "Hex", &l.hex);
+    if let Some(a) = &l.allegiance {
+        xml_attr(o, "Allegiance", a);
+    }
+    if let Some(c) = &l.color {
+        xml_attr(o, "Color", c);
+    }
+    if let Some(s) = &l.size {
+        xml_attr(o, "Size", s);
+    }
+    if l.wrap {
+        xml_attr(o, "Wrap", "true");
+    }
+    if l.offset_x != 0.0 {
+        xml_attr(o, "OffsetX", &l.offset_x.to_string());
+    }
+    if l.offset_y != 0.0 {
+        xml_attr(o, "OffsetY", &l.offset_y.to_string());
+    }
+    o.push('>');
+    o.push_str(&xml_escape(&l.text));
+    o.push_str("</Label>");
+}
+
 #[derive(Debug, Default, Serialize)]
 pub struct MetaDataFile {
     #[serde(rename = "Title", skip_serializing_if = "Option::is_none")]

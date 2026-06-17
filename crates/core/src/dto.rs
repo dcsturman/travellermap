@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 /// double-quoted attribute value. Hand-rolled so the `to_xml` serializers below
 /// can build the reference XML shapes without an XML-serde dependency (keeps
 /// `tmap-core` lean and wasm-friendly).
-fn xml_escape(s: &str) -> String {
+pub(crate) fn xml_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
@@ -33,7 +33,7 @@ fn xml_escape(s: &str) -> String {
 }
 
 /// `<Tag>escaped-text</Tag>` (text-content element).
-fn xml_el(out: &mut String, tag: &str, text: &str) {
+pub(crate) fn xml_el(out: &mut String, tag: &str, text: &str) {
     out.push('<');
     out.push_str(tag);
     out.push('>');
@@ -52,7 +52,7 @@ fn xml_el_opt(out: &mut String, tag: &str, text: &Option<String>) {
 }
 
 /// ` name="escaped-value"` (attribute fragment, leading space included).
-fn xml_attr(out: &mut String, name: &str, value: &str) {
+pub(crate) fn xml_attr(out: &mut String, name: &str, value: &str) {
     out.push(' ');
     out.push_str(name);
     out.push_str("=\"");
@@ -896,8 +896,14 @@ impl RouteResult {
         self.waypoints
             .iter()
             .map(|w| {
-                let (sx, sy, hx, hy) =
-                    crate::astrometrics::coordinates_to_location(w.coord.x, w.coord.y);
+                // The pathfinding `coord` uses a naive `sector*32+col, sector*40+row`
+                // packing (NOT the Astrometrics half-offset convention), so recover
+                // the public sector/hex with the matching inverse — decoding it with
+                // `coordinates_to_location` (Astrometrics) gives a wrong SectorY/HexX.
+                // `hex` is the source of truth for the in-sector column/row.
+                let (hx, hy) = crate::astrometrics::parse_hex(&w.hex).unwrap_or((0, 0));
+                let sx = (w.coord.x - hx) / 32;
+                let sy = (w.coord.y - hy) / 40;
                 RouteStop {
                     sector: w.sector.clone(),
                     sector_x: sx,

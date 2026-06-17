@@ -1578,18 +1578,12 @@ async fn get_metadata(
         return (StatusCode::NOT_FOUND, "The specified sector was not found.").into_response();
     };
 
-    // JSONP is opt-in (the default stays byte-identical cached JSON). The
-    // `(meta, _)` JSON envelope is wrapped as `callback(...)`.
-    //
-    // TODO: XML content negotiation for metadata is DEFERRED. The reference
-    // `SectorMetaDataHandler` emits the large sector `.xml` metadata document
-    // (Name/Credits/X/Y/Product/DataFile/Subsectors/Allegiances/Borders/Routes/
-    // Labels/Stylesheet…); hand-rolling that exact shape from our `SectorMetadata`
-    // is a sizable, separable effort. JSONP is supported here; XML is not yet, so
-    // `Accept: text/xml` still falls through to JSON for `/api/metadata`.
-    if jp.jsonp.is_some() {
+    // JSONP / XML are opt-in (the default stays byte-identical cached JSON).
+    // XML mirrors the reference `[XmlRoot("Sector")]` shape via `SectorMetadata::to_xml`.
+    let accept_xml = compat::wants_xml(&headers);
+    if jp.jsonp.is_some() || accept_xml {
         let (meta, _worlds) = assemble_metadata(&state, &q.milieu, entry);
-        return compat::respond(&meta, &jp.jsonp);
+        return compat::respond_negotiated(&meta, &jp.jsonp, accept_xml, || meta.to_xml());
     }
 
     let key = format!("metadata/{}/{}", q.milieu, entry.name);

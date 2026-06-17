@@ -780,24 +780,6 @@ async fn jumpworlds_json() {
 const ROUTE_PATH: &str =
     "/api/route?start=Spinward%20Marches%201910&end=Spinward%20Marches%202410&jump=2";
 
-/// Normalize a public route response for live comparison: keep the data fields
-/// (Name, Hex, Subsector, UWP, …) and drop the `SectorX/Y` + `HexX/Y` numeric
-/// origin convention, which differs from the reference for reasons unrelated to
-/// route assembly (a pre-existing Astrometrics coordinate-origin gap).
-fn norm_route(s: &str) -> Value {
-    let mut v = jv(s);
-    if let Some(stops) = v.as_array_mut() {
-        for stop in stops.iter_mut() {
-            if let Some(obj) = stop.as_object_mut() {
-                for k in ["SectorX", "SectorY", "HexX", "HexY"] {
-                    obj.remove(k);
-                }
-            }
-        }
-    }
-    v
-}
-
 #[tokio::test]
 async fn route_public_shape() {
     let (status, _, body) = get(ROUTE_PATH).await;
@@ -820,8 +802,10 @@ async fn route_public_shape() {
         stops.iter().any(|s| s["Subsector"] == "Lanth"),
         "Treece (2311) is in the Lanth subsector: {stops:?}"
     );
-    // Live parity on the data fields (coordinate-origin fields normalized away).
-    parity_json_with(ROUTE_PATH, norm_route).await;
+    // Live parity on the FULL stop, including SectorX/SectorY/HexX/HexY — these
+    // are no longer normalized away (the coord-decode bug that made them differ
+    // from live is fixed in `RouteResult::to_public_stops`).
+    parity_json(ROUTE_PATH).await;
 }
 
 // --- Semantic /data/... URL aliases --------------------------------------
@@ -1193,4 +1177,42 @@ async fn route_xml() {
 #[tokio::test]
 async fn metadata_jsonp() {
     assert_jsonp("/api/metadata?sector=Spinward%20Marches").await;
+}
+
+#[tokio::test]
+async fn metadata_xml() {
+    let (status, ct, body) =
+        get_with("/api/metadata?sector=Spinward%20Marches", &[("accept", "text/xml")]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(ct.contains("xml"), "ct={ct}");
+    // Root + representative data points (the same data `metadata_json` parity-checks
+    // deeply; here we prove the XML *rendering* of it is complete & correct).
+    assert!(body.contains("<Sector "), "missing <Sector> root: {}", &body[..body.len().min(200)]);
+    assert!(body.contains("Tags=\"Official OTU\""), "missing Tags attr");
+    assert!(body.contains("Abbreviation=\"Spin\""), "missing Abbreviation attr");
+    assert!(body.contains("<Subsector Index=\"C\">Regina</Subsector>"), "missing Regina subsector");
+    assert!(body.contains("<Allegiance Code=\"ImDd\" Base=\"Im\">"), "missing ImDd allegiance");
+    assert!(body.contains("<![CDATA["), "missing Credits CDATA");
+    assert!(body.contains("<Border "), "missing <Border>");
+    assert!(body.contains("<Route "), "missing <Route>");
+
+    // Live parity: the reference serves XML here. Assert per-collection element
+    // counts match live exactly — a strong completeness check that's independent
+    // of the two documented equivalences `metadata_json` already normalizes
+    // (allegiance ordering; the `Route.FixHex` start/end hex notation). Live wraps
+    // the root with xmlns + pretty-prints, so we compare counts, not bytes.
+    if parity_enabled() {
+        let (ls, lb) =
+            fetch_live_with("/api/metadata?sector=Spinward%20Marches", &[("accept", "text/xml")]).await;
+        assert_eq!(ls, StatusCode::OK);
+        for tag in ["<Subsector ", "<Allegiance ", "<Border ", "<Route ", "<Product ", "<Name>"] {
+            assert_eq!(
+                body.matches(tag).count(),
+                lb.matches(tag).count(),
+                "element count for {tag:?} differs from live",
+            );
+        }
+        // And the actual subsector names match live (data, not just shape).
+        assert!(lb.contains("<Subsector Index=\"C\">Regina</Subsector>"), "live lacks Regina subsector");
+    }
 }
