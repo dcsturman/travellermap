@@ -32,7 +32,10 @@ use tmap_core::{
     },
     metadata::{parse_sector_metadata, MetaAllegiance},
     sector_writer::{self, WriteOptions},
-    world_util::{allegiance_base, allegiance_name, encode_legacy_bases, synthesize_abbreviation},
+    world_util::{
+        allegiance_base, allegiance_name, encode_legacy_bases, synthesize_abbreviation,
+        t5_to_legacy_allegiance,
+    },
 };
 use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
@@ -1036,7 +1039,8 @@ struct SecQuery {
     subsector: Option<String>,
     /// Restrict to one quadrant (`alpha`/`beta`/`gamma`/`delta`).
     quadrant: Option<String>,
-    /// Output format: `TabDelimited` | `SecondSurvey`. (Legacy `SEC` pending.)
+    /// Output format: `SEC` (legacy fixed-column) | `TabDelimited` | `SecondSurvey`.
+    /// Absent defaults to `SecondSurvey` columnar (matching live travellermap.com).
     #[serde(rename = "type")]
     type_: Option<String>,
     /// Booleans (`0`/`1`/`true`/`false`); reference defaults: metadata=1, header=1, sscoords=0.
@@ -1055,10 +1059,9 @@ fn bool_opt(v: &Option<String>, default: bool) -> bool {
 }
 
 /// `GET /api/sec` — a sector's worlds as SEC/SecondSurvey/TabDelimited text.
-/// Ports `server/api/SECHandler.cs` (data side). Currently serves
-/// `type=TabDelimited` and `type=SecondSurvey`; the legacy fixed-column `SEC`
-/// format (the no-`type` default) is not yet ported (needs the T5→legacy
-/// allegiance/base transforms) → 400 with a pointer to the supported types.
+/// Ports `server/api/SECHandler.cs` (data side). Serves `type=SEC` (legacy
+/// fixed-column), `type=TabDelimited`, and `type=SecondSurvey`; a missing `type`
+/// defaults to `SecondSurvey` columnar (matching live travellermap.com).
 async fn get_sec(Query(q): Query<SecQuery>, State(state): State<AppState>) -> Response {
     match build_sec(&state, &q) {
         Ok(text) => (
@@ -1071,11 +1074,17 @@ async fn get_sec(Query(q): Query<SecQuery>, State(state): State<AppState>) -> Re
 }
 
 fn build_sec(state: &AppState, q: &SecQuery) -> Result<String, (StatusCode, String)> {
-    let media = q.type_.as_deref().unwrap_or("SEC");
-    if media != "TabDelimited" && media != "SecondSurvey" {
+    // Production travellermap.com defaults a missing `type` to the SecondSurvey
+    // columnar format (NOT the legacy `SecSerializer` the older reference checkout
+    // selects); `type=SEC` selects the legacy fixed-column writer. We follow live.
+    let media = match q.type_.as_deref() {
+        None => "SecondSurvey",
+        Some(t) => t,
+    };
+    if media != "TabDelimited" && media != "SecondSurvey" && media != "SEC" {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!("type '{media}' not yet supported; use type=TabDelimited or type=SecondSurvey"),
+            format!("type '{media}' not supported; use type=SEC, type=TabDelimited or type=SecondSurvey"),
         ));
     }
 
@@ -1133,15 +1142,22 @@ fn build_sec(state: &AppState, q: &SecQuery) -> Result<String, (StatusCode, Stri
         return Ok(sector_writer::write_tab(&filtered, abbr.as_deref().unwrap_or(""), &opts));
     }
 
-    // SecondSurvey: optional metadata comment block (allegiances from ALL worlds),
-    // then the columnar world table (filtered).
+    // SecondSurvey / legacy SEC: optional metadata comment block (allegiances from
+    // ALL worlds), then the world table (filtered). The block's `# Alleg:` codes
+    // are T5 for SecondSurvey and legacy for SEC (reference `Sector.Serialize`).
+    let legacy = media == "SEC";
     let mut out = String::new();
     if bool_opt(&q.metadata, true) {
         out.push_str(&sec_metadata_block(
             state, &dir, &data_file, entry, abbr.as_deref(), &q.milieu, &subsectors, &all_worlds,
+            legacy,
         ));
     }
-    out.push_str(&sector_writer::write_second_survey(&filtered, &opts));
+    if legacy {
+        out.push_str(&sector_writer::write_legacy_sec(&filtered, &opts));
+    } else {
+        out.push_str(&sector_writer::write_second_survey(&filtered, &opts));
+    }
     Ok(out)
 }
 
@@ -1242,6 +1258,7 @@ fn sec_metadata_block(
     milieu: &str,
     subsectors: &[Subsector],
     all_worlds: &[World],
+    legacy: bool,
 ) -> String {
     let meta_xml = read_meta_xml(dir, data_file, entry);
     let region = state.region_xml(milieu);
@@ -1313,12 +1330,16 @@ fn sec_metadata_block(
     codes.sort_unstable();
     codes.dedup();
     for code in codes {
+        // Name is always resolved from the T5 code as present in the data; the
+        // emitted code is the legacy form for SEC (reference `Sector.Serialize`,
+        // `isT5 ? code : T5AllegianceCodeToLegacyCode(code)`).
         let name = alleg_names
             .get(code)
             .cloned()
             .or_else(|| allegiance_name(code));
         if let Some(name) = name {
-            line(&format!("# Alleg: {code}: \"{name}\""));
+            let shown = if legacy { t5_to_legacy_allegiance(code) } else { code.to_string() };
+            line(&format!("# Alleg: {shown}: \"{name}\""));
         }
     }
     line("");

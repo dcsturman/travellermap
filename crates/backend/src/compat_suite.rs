@@ -576,6 +576,29 @@ async fn sec_second_survey() {
     parity_text("/api/sec?sector=Spinward%20Marches&subsector=A&type=SecondSurvey").await;
 }
 
+#[tokio::test]
+async fn sec_default_is_second_survey() {
+    // A missing `type` defaults to the SecondSurvey columnar format on live
+    // travellermap.com → the same golden as `type=SecondSurvey`.
+    let (status, ct, body) = get("/api/sec?sector=Spinward%20Marches&subsector=A").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(ct.contains("text/plain"), "ct={ct}");
+    assert_eq!(strip_timestamp(&body), strip_timestamp(&golden("sec_sm_subsectorA.sec")));
+    parity_text("/api/sec?sector=Spinward%20Marches&subsector=A").await;
+}
+
+#[tokio::test]
+async fn sec_legacy() {
+    // `type=SEC` → legacy fixed-column format (`SecSerializer`): legacy base codes,
+    // 2-char legacy allegiance codes, and a `# Alleg:` block in legacy codes.
+    let (status, ct, body) = get("/api/sec?sector=Spinward%20Marches&subsector=A&type=SEC").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(ct.contains("text/plain"), "ct={ct}");
+    // The metadata block carries a generation timestamp; normalize it away.
+    assert_eq!(strip_timestamp(&body), strip_timestamp(&golden("sec_sm_subsectorA_legacy.sec")));
+    parity_text("/api/sec?sector=Spinward%20Marches&subsector=A&type=SEC").await;
+}
+
 /// Replace the `# <ISO-8601 timestamp>` metadata line with a fixed token so the
 /// (non-deterministic) generation time doesn't defeat byte comparison.
 fn strip_timestamp(s: &str) -> String {

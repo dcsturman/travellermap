@@ -581,6 +581,31 @@ pub fn allegiance_base(code: &str) -> Option<String> {
     base.get(code).cloned()
 }
 
+/// T5 allegiance code → legacy allegiance code (`Legacy` column of
+/// `allegiance_codes.tab`, e.g. `ZhIN` → `Zh`, `CsZh` → `Cz`), mirroring the
+/// reference `SecondSurvey.T5AllegianceCodeToLegacyCode`. Falls back to the input
+/// `code` when it isn't a known T5 code (matching the reference, which returns the
+/// code unchanged for an unknown allegiance). Used by the legacy SEC writer and
+/// its metadata `# Alleg:` lines.
+pub fn t5_to_legacy_allegiance(code: &str) -> String {
+    static LEGACY: OnceLock<HashMap<String, String>> = OnceLock::new();
+    let raw = include_str!("../../../res/t5ss/allegiance_codes.tab");
+    let map = LEGACY.get_or_init(|| {
+        let mut m = HashMap::new();
+        for line in raw.lines().skip(1) {
+            let cols: Vec<&str> = line.split('\t').collect();
+            if cols.len() >= 2 {
+                let (c, legacy) = (cols[0].trim(), cols[1].trim());
+                if !c.is_empty() && !legacy.is_empty() {
+                    m.insert(c.to_string(), legacy.to_string());
+                }
+            }
+        }
+        m
+    });
+    map.get(code).cloned().unwrap_or_else(|| code.to_string())
+}
+
 /// Encode T5 base codes back to the single legacy base letter, mirroring the
 /// reference `SecondSurvey.EncodeLegacyBases` glob table (first match wins).
 /// The allegiance is first reduced to its base code (e.g. `ImDd` → `Im`); the
@@ -1160,6 +1185,19 @@ mod tests {
         assert_eq!(encode_legacy_bases("SoCf", "K"), "F");
         // Unknown bases pass through unchanged.
         assert_eq!(encode_legacy_bases("ImDd", "ZZ"), "ZZ");
+    }
+
+    #[test]
+    fn legacy_allegiance_mapping() {
+        // T5 → legacy (Legacy column of allegiance_codes.tab).
+        assert_eq!(t5_to_legacy_allegiance("ZhIN"), "Zh");
+        assert_eq!(t5_to_legacy_allegiance("NaHu"), "Na");
+        assert_eq!(t5_to_legacy_allegiance("NaXX"), "Na");
+        assert_eq!(t5_to_legacy_allegiance("CsZh"), "Cz");
+        assert_eq!(t5_to_legacy_allegiance("CsIm"), "Cs");
+        assert_eq!(t5_to_legacy_allegiance("ImDd"), "Im");
+        // Unknown codes pass through unchanged (reference behavior).
+        assert_eq!(t5_to_legacy_allegiance("ZZZZ"), "ZZZZ");
     }
 
     fn world(uwp: &str) -> World {
