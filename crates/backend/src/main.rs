@@ -212,6 +212,25 @@ pub(crate) fn read_text(path: impl AsRef<FsPath>) -> std::io::Result<String> {
         .unwrap_or_else(|e| e.into_bytes().iter().map(|&b| b as char).collect()))
 }
 
+/// Resolve `name` within `dir`, tolerating case differences. The upstream region
+/// lists declare per-sector files like `Blaskon.xml`/`Blaskon.txt` while the
+/// on-disk files are lowercase (`blaskon.xml`); case-insensitive filesystems
+/// (Windows/macOS, where the reference runs) hide the mismatch, but Linux — Cloud
+/// Run and CI — does not, silently dropping those sectors' metadata and worlds.
+/// Returns the directly-joined path when it exists (the fast common case), else
+/// the first case-insensitive directory match.
+fn resolve_ci(dir: &FsPath, name: &str) -> Option<PathBuf> {
+    let direct = dir.join(name);
+    if direct.exists() {
+        return Some(direct);
+    }
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .find(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case(name))
+        .map(|e| e.path())
+}
+
 /// Scan a milieu directory, parsing each per-sector `.xml` head into an index
 /// entry. Non-sector XML (the milieu region list) is skipped automatically.
 fn load_universe(res_dir: &FsPath, milieu: &str) -> Universe {
@@ -251,7 +270,7 @@ fn load_universe(res_dir: &FsPath, milieu: &str) -> Universe {
             // (reference `Sector.Merge`): when it has names, they replace the
             // metafile's sparse list (canonical first).
             if let Some(mf) = &e.metadata_file {
-                if let Ok(mtext) = read_text(base_dir.join(mf)) {
+                if let Some(mtext) = resolve_ci(&base_dir, mf).and_then(|p| read_text(p).ok()) {
                     let names = tmap_core::parse::parse_sector_names(&mtext);
                     if !names.is_empty() {
                         e.name = names[0].text.clone();
@@ -1053,7 +1072,9 @@ fn read_meta_xml(dir: &FsPath, data_file: &str, entry: &tmap_core::dto::SectorIn
                 .map(|stem| format!("{stem}.xml"))
         })
         .unwrap_or_else(|| format!("{}.xml", entry.name));
-    read_text(dir.join(&meta_file)).unwrap_or_default()
+    resolve_ci(dir, &meta_file)
+        .and_then(|p| read_text(p).ok())
+        .unwrap_or_default()
 }
 
 /// Build the `# …` metadata comment block prefixed to SEC/SecondSurvey output
@@ -1743,9 +1764,11 @@ pub(crate) fn resolve_and_parse_worlds(
         Some("sec") => "SEC",
         _ => "TabDelimited",
     };
+    // Resolve filenames case-insensitively — the region list declares e.g.
+    // `Blaskon.txt` but the on-disk file is `blaskon.txt` (see `resolve_ci`).
     let (data_file, data_format) = entry
         .and_then(|s| s.data_file.clone())
-        .filter(|df| dir.join(df).exists())
+        .filter(|df| resolve_ci(dir, df).is_some())
         .map(|df| {
             let fmt = entry
                 .and_then(|s| s.data_format.clone())
@@ -1756,10 +1779,10 @@ pub(crate) fn resolve_and_parse_worlds(
             [("tab", "TabDelimited"), ("txt", "SecondSurvey"), ("sec", "SEC")]
                 .into_iter()
                 .map(|(ext, fmt)| (format!("{stem}.{ext}"), fmt.to_string()))
-                .find(|(f, _)| dir.join(f).exists())
+                .find(|(f, _)| resolve_ci(dir, f).is_some())
         })?;
 
-    let text = read_text(dir.join(&data_file)).ok()?;
+    let text = read_text(resolve_ci(dir, &data_file)?).ok()?;
     let outcome = match data_format.as_str() {
         "SEC" => parse_sec(&text),             // legacy regex format (.sec)
         "SecondSurvey" => parse_column(&text), // T5 column format (.txt)
@@ -1804,7 +1827,9 @@ pub(crate) fn build_sector_bytes(
                 .map(|stem| format!("{stem}.xml"))
         })
         .unwrap_or_else(|| format!("{name}.xml"));
-    let meta_xml = read_text(dir.join(&meta_file)).unwrap_or_default();
+    let meta_xml = resolve_ci(&dir, &meta_file)
+        .and_then(|p| read_text(p).ok())
+        .unwrap_or_default();
     // A sector's metadata may live in its own `<name>.xml` AND/OR inline in the
     // milieu region list's `<Sector>` block — read BOTH and merge (dedup), never
     // assuming one or the other. The Aslan Hierate interior, for example, has
@@ -1949,6 +1974,28 @@ mod tests {
     pub(crate) fn test_state() -> AppState {
         // `res/` is at the workspace root, two levels up from this crate.
         AppState::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../res"))
+    }
+
+    /// `resolve_ci` must find a file whose on-disk case differs from the declared
+    /// name — the Blaskon/Kidunal class of bug (capitalized in the region list,
+    /// lowercase on disk) that silently dropped data on case-sensitive Linux. On
+    /// macOS this passes via the fast `exists()` path; on Linux it exercises the
+    /// directory scan — the path that actually matters in production / CI.
+    #[test]
+    fn resolve_ci_matches_mismatched_case() {
+        let dir = std::env::temp_dir().join(format!("tmap_ci_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("blaskon.xml"), b"<x/>").unwrap();
+
+        // Declared "Blaskon.xml" (upstream casing) resolves to the lowercase file.
+        let p = resolve_ci(&dir, "Blaskon.xml").expect("case-insensitive match");
+        assert_eq!(std::fs::read(&p).unwrap(), b"<x/>");
+        // Exact case still resolves; a truly-absent file does not.
+        assert!(resolve_ci(&dir, "blaskon.xml").is_some());
+        assert!(resolve_ci(&dir, "nope.xml").is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Every **data-bearing** sector in M1105 must load and serialize to valid
