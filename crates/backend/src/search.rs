@@ -262,17 +262,24 @@ pub fn build_index(res_dir: &Path, milieu: &str, universe: &Universe) -> Vec<Sea
                 if !b.show_label {
                     continue;
                 }
-                // Reference `Border.GetLabel`: explicit label, else the
-                // allegiance — but the search index uses only an explicit label
-                // (no allegiance-name resolution is wired here), so skip borders
-                // without one.
-                let Some(text) = b.label.as_deref().filter(|s| !s.is_empty()) else {
-                    continue;
+                // Reference `Border.GetLabel`: an explicit label, else the
+                // border's allegiance resolved to its name (the sector's own
+                // `<Allegiance>` table first, then the stock T5SS codes — mirrors
+                // `Sector.GetAllegianceFromCode`). Borders with neither contribute
+                // no label point. Getting this right matters: a region's search
+                // position is the *average* of all its label points, so a missing
+                // allegiance-derived point skews the reported hex.
+                let text = match b.label.as_deref().filter(|s| !s.is_empty()) {
+                    Some(l) => l.to_string(),
+                    None => match b.allegiance.as_deref().and_then(|c| resolve_alleg_name(&meta, c)) {
+                        Some(n) => n,
+                        None => continue,
+                    },
                 };
                 let pos = label_position_of(b);
                 if let Some((col, row)) = parse_hex(&pos) {
                     let (cx, cy) = location_to_coordinates(sx, sy, col, row);
-                    labels.entry(sanify_label(text)).or_default().points.push((cx, cy));
+                    labels.entry(sanify_label(&text)).or_default().points.push((cx, cy));
                 }
             }
             for l in &meta.labels {
@@ -399,6 +406,20 @@ pub fn build_index(res_dir: &Path, milieu: &str, universe: &Universe) -> Vec<Sea
     }
 
     entries
+}
+
+/// Reference `Sector.GetAllegianceFromCode`: resolve a T5 allegiance code to a
+/// name via the sector's own `<Allegiance>` table first, then the stock T5SS
+/// codes. Used to label a border by its allegiance when it has no explicit text.
+fn resolve_alleg_name(meta: &tmap_core::metadata::SectorMetadata, code: &str) -> Option<String> {
+    // `parse_sector_metadata` puts the sector's `<Allegiance>` elements in
+    // `local_allegiances` (the reference's `Sector.Allegiances`); fall back to
+    // the stock T5SS codes, matching `Sector.GetAllegianceFromCode`.
+    meta.local_allegiances
+        .iter()
+        .find(|a| a.code == code)
+        .map(|a| a.name.clone())
+        .or_else(|| tmap_core::world_util::allegiance_name(code))
 }
 
 /// A border's label position: the explicit `LabelPosition`, else the

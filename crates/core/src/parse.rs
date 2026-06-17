@@ -215,7 +215,7 @@ pub fn parse_sec(input: &str) -> Result<ParseOutcome, ParseError> {
             "-" | "G" | "U" => String::new(), // G/U aren't drawn zones; '-' = none
             z => z.to_string(),
         };
-        worlds.push(World {
+        let mut world = World {
             hex,
             name,
             uwp: grp("uwp").to_string(),
@@ -231,7 +231,9 @@ pub fn parse_sec(input: &str) -> Result<ParseOutcome, ParseError> {
             nobility: None,
             worlds: None,
             resource_units: None,
-        });
+        };
+        fix_name_caps(&mut world);
+        worlds.push(world);
     }
     Ok(ParseOutcome { worlds, warnings })
 }
@@ -289,7 +291,7 @@ fn world_from_row(get: impl Fn(&[&str]) -> Option<String>) -> Result<World, Stri
     let dash = |s: String| if s == "-" { String::new() } else { s };
     let nonempty = |o: Option<String>| o.filter(|s| !s.is_empty());
 
-    Ok(World {
+    let mut world = World {
         hex,
         name: get(&["Name"]).unwrap_or_default(),
         uwp,
@@ -305,7 +307,43 @@ fn world_from_row(get: impl Fn(&[&str]) -> Option<String>) -> Result<World, Stri
         nobility: nonempty(get(&["N", "Nobility"]).map(dash)),
         worlds: get(&["W", "Worlds"]).and_then(|v| v.trim().parse().ok()),
         resource_units: get(&["RU"]).and_then(|v| v.replace(',', "").trim().parse().ok()),
-    })
+    };
+    fix_name_caps(&mut world);
+    Ok(world)
+}
+
+/// Reference `SectorParser` rule (`SectorParser.cs:156`/`:338`): an **all-uppercase**
+/// world name on a **high-population** world (`Hi` trade code) is title-cased via
+/// `Util.FixCapitalization`. So a legacy `.sec` row like `TERRA … Hi …` becomes
+/// `Terra` everywhere it's served, matching the live reference.
+fn fix_name_caps(w: &mut World) {
+    if !w.name.is_empty()
+        && w.name == w.name.to_uppercase()
+        && w.remarks.split_whitespace().any(|c| c == "Hi")
+    {
+        w.name = fix_capitalization(&w.name);
+    }
+}
+
+/// Port of `Util.FixCapitalization`: title-case each word (letters and `'` are
+/// word characters; any other char is a separator that re-arms the leading flag).
+fn fix_capitalization(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut leading = true;
+    for c in s.chars() {
+        if c.is_alphabetic() || c == '\'' {
+            if leading {
+                out.extend(c.to_uppercase());
+                leading = false;
+            } else {
+                out.extend(c.to_lowercase());
+            }
+        } else {
+            out.push(c);
+            leading = true;
+        }
+    }
+    out
 }
 
 /// Parse the head of a sector metadata `.xml` (`<Sector>` root) into an index
@@ -1014,6 +1052,30 @@ Spin\tA\t0102\tReno\tT BADROW MISSING COLS";
     #[test]
     fn no_header_is_an_error() {
         assert!(parse_tab("# only comments\n\n").is_err());
+    }
+
+    #[test]
+    fn fix_capitalization_title_cases_words() {
+        assert_eq!(fix_capitalization("TERRA"), "Terra");
+        assert_eq!(fix_capitalization("TERRA NOVA"), "Terra Nova");
+        assert_eq!(fix_capitalization("I'SRED*NI"), "I'sred*Ni"); // `*` resets leading
+        assert_eq!(fix_capitalization("terra"), "Terra");
+    }
+
+    #[test]
+    fn allcaps_high_pop_name_is_title_cased() {
+        // Reference `SectorParser.cs:156`: all-caps + `Hi` → FixCapitalization.
+        let tab = "Hex\tName\tUWP\tRemarks\n2627\tTERRA\tA867A69-B\tHi\n";
+        let out = parse_tab(tab).unwrap();
+        assert_eq!(out.worlds[0].name, "Terra");
+    }
+
+    #[test]
+    fn allcaps_name_without_hi_is_left_alone() {
+        // Not `Hi` → name preserved exactly (reference only rewrites Hi worlds).
+        let tab = "Hex\tName\tUWP\tRemarks\n0101\tVOID\tX000000-0\tBa\n";
+        let out = parse_tab(tab).unwrap();
+        assert_eq!(out.worlds[0].name, "VOID");
     }
 
     #[test]

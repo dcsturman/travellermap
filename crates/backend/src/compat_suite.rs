@@ -216,6 +216,58 @@ async fn parity_text(path: &str) {
     }
 }
 
+/// Order-insensitive normalizer for `/api/search`: sorts `Results.Items` by
+/// canonical form (serde_json `Value::to_string()` is sorted-key, so it's a
+/// stable canonical sort key) so the *set* of hits is compared, not ordering.
+fn norm_search_set(s: &str) -> Value {
+    let mut v = jv(s);
+    if let Some(items) =
+        v.get_mut("Results").and_then(|r| r.get_mut("Items")).and_then(|i| i.as_array_mut())
+    {
+        items.sort_by_key(|it| it.to_string());
+    }
+    v
+}
+
+/// Live parity for `/api/search` comparing the **set** of `Results.Items`
+/// (order-insensitive). The reference ranks hits by `Importance`, which we have
+/// not yet ported, so a strict-order diff would false-fail; set-equality verifies
+/// we return the same worlds/sectors/subsectors/labels as travellermap.com.
+///
+/// Guards the `NUM_RESULTS` (160) cap: if either side truncates, *ranking* decides
+/// which items survive, so a set comparison is meaningless — the test fails loudly
+/// asking for a narrower query rather than reporting a spurious deviation.
+async fn parity_search(query: &str) {
+    if !parity_enabled() {
+        return;
+    }
+    let path = format!("/api/search?q={query}");
+    let (ours_status, _, ours_body) = get(&path).await;
+    let (live_status, live_body) = fetch_live(&path).await;
+    assert_eq!(
+        ours_status.as_u16(),
+        live_status.as_u16(),
+        "search status vs live for {query:?}\n  ours={ours_body}\n  live={live_body}"
+    );
+    if !ours_status.is_success() {
+        return;
+    }
+    for (who, body) in [("ours", &ours_body), ("live", &live_body)] {
+        let n = jv(body)["Results"]["Items"].as_array().map_or(0, |a| a.len());
+        assert!(
+            n < crate::NUM_RESULTS,
+            "query {query:?} hit the {}-result cap on {who} ({n} items); ranking decides \
+             truncation, so set parity is meaningless — pick a narrower query",
+            crate::NUM_RESULTS
+        );
+    }
+    assert_eq!(
+        norm_search_set(&ours_body),
+        norm_search_set(&live_body),
+        "search set parity for {query:?}"
+    );
+}
+
 // ========================================================================
 // IMPLEMENTED — active tests, must stay green.
 // ========================================================================
@@ -579,6 +631,83 @@ async fn search_types_param_restricts_kinds() {
     let items = search_items("spinward&types=sectors").await;
     assert!(!items.is_empty(), "expected sector hits for spinward");
     assert!(items.iter().all(|(k, _)| k == "Sector"), "types=sectors → sectors only: {items:?}");
+}
+
+// --- Search: per-query live parity vs the reference ----------------------
+//
+// The behavioral tests above assert our query language against its *spec* using
+// only our own index. These instead diff the result SET against live
+// travellermap.com for many distinct queries — the real "do we agree with the
+// reference?" check. Set-equality (not ordering): we have not yet ported the
+// reference's `Importance` ranking, tracked as a follow-up. Every query is
+// chosen to return well under the 160-result cap (the helper enforces this).
+
+#[tokio::test]
+async fn parity_search_plain_name() {
+    parity_search("Terra").await;
+}
+
+#[tokio::test]
+async fn parity_search_multi_word_and() {
+    // `so ri` → two ANDed word-boundary clauses → Solomani Rim.
+    parity_search("so%20ri").await;
+}
+
+#[tokio::test]
+async fn parity_search_exact_scope() {
+    parity_search("exact:sol").await;
+}
+
+#[tokio::test]
+async fn parity_search_soundex_scope() {
+    // `like:terra in:solomani` → SOUNDEX(name) match, bounded to the Solomani
+    // Rim sector (bare `like:terra` matches hundreds — over the 160 cap).
+    parity_search("like:terra%20in:solomani").await;
+}
+
+#[tokio::test]
+async fn parity_search_uwp_scope() {
+    parity_search("uwp:A788899-C").await;
+}
+
+#[tokio::test]
+async fn parity_search_uwp_shortcut() {
+    // Bare UWP is rewritten to `uwp:` — same result set as the scoped form.
+    parity_search("A788899-C").await;
+}
+
+#[tokio::test]
+async fn parity_search_in_scope() {
+    // Worlds starting with T inside Spinward Marches — bounded set.
+    parity_search("t*%20in:spin").await;
+}
+
+#[tokio::test]
+async fn parity_search_zone_scope() {
+    // Amber/red zoned worlds in Spinward Marches.
+    parity_search("zone:A%20in:spin").await;
+}
+
+#[tokio::test]
+async fn parity_search_sector_hex_shortcut() {
+    // `Spinward Marches 1910` → the world at that hex (Regina).
+    parity_search("Spinward%20Marches%201910").await;
+}
+
+#[tokio::test]
+async fn parity_search_types_sectors() {
+    parity_search("spinward&types=sectors").await;
+}
+
+#[tokio::test]
+async fn parity_search_types_subsectors() {
+    parity_search("Regina&types=subsectors").await;
+}
+
+#[tokio::test]
+async fn parity_search_anchored_wildcard() {
+    // `re*in` (→ `re%in`, no trailing %): anchored full-string LIKE — a small set.
+    parity_search("re*in").await;
 }
 
 // --- Data: single world by hex -------------------------------------------
