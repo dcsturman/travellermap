@@ -259,8 +259,7 @@ mod tests {
 
     #[test]
     fn second_survey_pads_columns_and_floors_name_width() {
-        let mut opts = WriteOptions::default();
-        opts.include_header = true;
+        let opts = WriteOptions { include_header: true, ..Default::default() };
         let out = write_second_survey(&[world("0101", "Reno")], &opts);
         let mut lines = out.lines();
         assert!(lines.next().unwrap().starts_with("Hex  Name"));

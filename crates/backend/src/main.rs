@@ -442,6 +442,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
         // Public-API compatibility layer (documented URLs + PascalCase JSON).
         .route("/api/coordinates", get(compat::get_coordinates))
         .route("/api/sec", get(get_sec))
+        .route("/api/msec", get(get_msec))
         .route("/api/metadata", get(get_metadata))
         .route("/api/credits", get(get_credits))
         .route("/api/jumpworlds", get(get_jumpworlds))
@@ -454,6 +455,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route("/data/{sector}", get(data_sec))
         .route("/data/{sector}/sec", get(data_sec))
         .route("/data/{sector}/tab", get(data_tab))
+        .route("/data/{sector}/msec", get(data_msec))
         .route("/data/{sector}/coordinates", get(compat::data_coordinates))
         .route("/data/{sector}/credits", get(data_credits))
         .route("/data/{sector}/metadata", get(data_metadata))
@@ -1551,6 +1553,61 @@ async fn data_metadata(
     get_metadata(
         Query(MetadataQuery { milieu: default_milieu(), sector: Some(sector), sx: None, sy: None }),
         headers,
+        State(state),
+    )
+    .await
+}
+
+// --- MSEC ----------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct MsecQuery {
+    #[serde(default = "default_milieu")]
+    milieu: String,
+    /// Sector by display name or T5SS abbreviation.
+    sector: Option<String>,
+    sx: Option<i32>,
+    sy: Option<i32>,
+}
+
+/// `GET /api/msec` — a sector's metadata as legacy MSEC ("metadata SEC") text.
+/// Ports `server/api/MSECHandler.cs` + `MSECWriter.cs`. The format (sector header,
+/// `a`–`p` subsectors, allegiance-grouped `route`/`label`/`border` lines) is
+/// produced by `tmap_core::msec_writer`.
+async fn get_msec(Query(q): Query<MsecQuery>, State(state): State<AppState>) -> Response {
+    match build_msec(&state, &q) {
+        Ok(text) => ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], text).into_response(),
+        Err((code, msg)) => (code, msg).into_response(),
+    }
+}
+
+fn build_msec(state: &AppState, q: &MsecQuery) -> Result<String, (StatusCode, String)> {
+    // Resolve the sector by sx,sy or name/abbreviation (mirrors get_sec).
+    let universe = state.universe(&q.milieu)?;
+    let entry = if let (Some(sx), Some(sy)) = (q.sx, q.sy) {
+        universe.sectors.iter().find(|s| s.location.x == sx && s.location.y == sy)
+    } else if let Some(name) = &q.sector {
+        universe.sectors.iter().find(|s| {
+            s.name.eq_ignore_ascii_case(name)
+                || s.abbreviation.as_deref().is_some_and(|a| a.eq_ignore_ascii_case(name))
+        })
+    } else {
+        return Err((StatusCode::BAD_REQUEST, "No sector specified.".into()));
+    }
+    .ok_or((StatusCode::NOT_FOUND, "The specified sector was not found.".into()))?;
+
+    let (meta, _worlds) = assemble_metadata(state, &q.milieu, entry);
+    let name = meta.names.first().map(|n| n.text.as_str()).unwrap_or(&entry.name);
+    // Domain/quadrant header fields only ever come from MSEC *input* in the
+    // reference, never from a sector's `.xml`, so they are always empty here.
+    let header = tmap_core::msec_writer::MsecHeader::default();
+    Ok(tmap_core::msec_writer::write_msec(name, &header, &meta, &iso8601_now_utc()))
+}
+
+/// `/data/{sector}/msec` → MSEC metadata text (semantic alias of `/api/msec`).
+async fn data_msec(Path(sector): Path<String>, State(state): State<AppState>) -> Response {
+    get_msec(
+        Query(MsecQuery { milieu: default_milieu(), sector: Some(sector), sx: None, sy: None }),
         State(state),
     )
     .await

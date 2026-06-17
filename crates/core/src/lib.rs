@@ -16,6 +16,7 @@
 pub mod astrometrics;
 pub mod dto;
 pub mod metadata;
+pub mod msec_writer;
 pub mod parse;
 pub mod route;
 pub mod sector_writer;
