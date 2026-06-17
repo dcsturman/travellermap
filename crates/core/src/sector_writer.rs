@@ -9,11 +9,13 @@
 //! line endings are CRLF, matching the reference (`StreamWriter.WriteLine` on the
 //! Windows host) so output is byte-identical.
 //!
-//! The legacy fixed-column SEC format (`SecSerializer`) is intentionally not
-//! ported yet — it needs the T5→legacy allegiance/base transforms.
+//! The legacy fixed-column SEC format (`SecSerializer`) is ported in
+//! [`write_legacy_sec`]; it relies on the T5→legacy allegiance/base transforms in
+//! [`crate::world_util`].
 
 use crate::astrometrics::{parse_hex, subsector_hex, subsector_index, subsector_letter};
 use crate::dto::World;
+use crate::world_util::{encode_legacy_bases, t5_to_legacy_allegiance};
 
 /// The reference enumerates a `WorldCollection` column-major (x outer, y inner)
 /// and then stable-`OrderBy`s by subsector, so the serialized order is
@@ -140,6 +142,92 @@ pub fn write_second_survey(worlds: &[World], opts: &WriteOptions) -> String {
     table.serialize(opts.include_header)
 }
 
+// --- Legacy fixed-column SEC ---------------------------------------------
+
+/// Take the first `n` characters of `s` (the reference `string.Truncate`).
+fn truncate(s: &str, n: usize) -> String {
+    s.chars().take(n).collect()
+}
+
+/// Pad `s` to `width` with trailing spaces (`{n,-width}` in the C# format string).
+fn pad_left(s: &str, width: usize) -> String {
+    let len = s.chars().count();
+    if len >= width {
+        s.to_string()
+    } else {
+        format!("{s}{}", " ".repeat(width - len))
+    }
+}
+
+/// Pad `s` to `width` with leading spaces (`{n,width}` in the C# format string).
+fn pad_right(s: &str, width: usize) -> String {
+    let len = s.chars().count();
+    if len >= width {
+        s.to_string()
+    } else {
+        format!("{}{s}", " ".repeat(width - len))
+    }
+}
+
+/// Legacy fixed-column SEC text (`SecSerializer`). Worlds ordered by subsector
+/// (stable), matching the reference. The optional legend block (column-position
+/// legend and ruler) is emitted when `opts.include_header` is set. T5 base codes
+/// are reduced to the single legacy base letter via `EncodeLegacyBases`, and T5
+/// allegiance codes to the 2-char legacy code via `T5AllegianceCodeToLegacyCode`.
+/// Trailing column padding is preserved exactly as the reference emits it, since
+/// C# `WriteLine` does not trim.
+pub fn write_legacy_sec(worlds: &[World], opts: &WriteOptions) -> String {
+    let mut out = String::new();
+
+    if opts.include_header {
+        for line in [
+            " 1-14: Name",
+            "15-18: HexNbr",
+            "20-28: UWP",
+            "   31: Bases",
+            "33-47: Codes & Comments",
+            "   49: Zone",
+            "52-54: PBG",
+            "56-57: Allegiance",
+            "59-74: Stellar Data",
+            "",
+            "....+....1....+....2....+....3....+....4....+....5....+....6....+....7....+....8",
+            "",
+        ] {
+            out.push_str(line);
+            out.push_str(NL);
+        }
+    }
+
+    let mut ordered: Vec<&World> = worlds.iter().collect();
+    ordered.sort_by_key(|w| order_key(w));
+
+    for w in ordered {
+        // Reference C# format:
+        // "{0,-14}{1,4} {2,9}  {3,1} {4,-15} {5,1}  {6,3} {7,2} {8,-15}"
+        let base = encode_legacy_bases(&w.allegiance, &w.bases);
+        let alleg = truncate(&t5_to_legacy_allegiance(&w.allegiance), 2);
+        out.push_str(&pad_left(&truncate(&w.name, 14), 14)); // {0,-14}
+        out.push_str(&pad_right(&hex_of(w, opts), 4)); // {1,4}
+        out.push(' ');
+        out.push_str(&pad_right(&w.uwp, 9)); // {2,9}
+        out.push_str("  ");
+        out.push_str(&pad_right(&base, 1)); // {3,1}
+        out.push(' ');
+        out.push_str(&pad_left(&truncate(&w.remarks, 15), 15)); // {4,-15}
+        out.push(' ');
+        out.push_str(&pad_right(&w.zone, 1)); // {5,1}
+        out.push_str("  ");
+        out.push_str(&pad_right(&w.pbg, 3)); // {6,3}
+        out.push(' ');
+        out.push_str(&pad_right(&alleg, 2)); // {7,2}
+        out.push(' ');
+        out.push_str(&pad_left(&truncate(&w.stellar, 15), 15)); // {8,-15}
+        out.push_str(NL);
+    }
+    out
+}
+
 /// Port of the reference `ColumnSerializer`: fixed-width, space-delimited columns
 /// with a dashed separator row under the header. Cells are trimmed; each column
 /// is padded (trailing spaces) to its widest cell, floored at any set minimum —
@@ -255,6 +343,47 @@ mod tests {
         let out = write_tab(&worlds, "X", &WriteOptions { include_header: false, sscoords: false });
         let names: Vec<&str> = out.lines().map(|l| l.split('\t').nth(3).unwrap()).collect();
         assert_eq!(names, ["first-col-row1", "first-col-row2", "second-col", "subsector-B"]);
+    }
+
+    #[test]
+    fn legacy_sec_fixed_columns_and_transforms() {
+        // Build a world mirroring SM/Cronor 0101 Zeycude (no bases, no zone).
+        let mut w = world("0101", "Zeycude");
+        w.uwp = "C430698-9".into();
+        w.remarks = "De Na Ni Po".into();
+        w.pbg = "613".into();
+        w.allegiance = "ZhIN".into();
+        w.stellar = "K9 V".into();
+        let out = write_legacy_sec(&[w], &WriteOptions::default());
+        // No header (include_header=false) → first line is the world row.
+        let line = out.split("\r\n").next().unwrap();
+        // Exact fixed-column layout, including trailing stellar padding.
+        // Legacy allegiance: ZhIN → Zh; empty base/zone render as single spaces.
+        assert_eq!(line, "Zeycude       0101 C430698-9    De Na Ni Po        613 Zh K9 V           ");
+    }
+
+    #[test]
+    fn legacy_sec_encodes_bases_and_long_fields() {
+        // Zhodani KM → legacy base "F" (the generic `* KM → F` glob wins over the
+        // later `Zh KM → Z`, first-match semantics).
+        let mut w = world("0303", "Gesentown");
+        w.uwp = "B31169B-C".into();
+        w.bases = "KM".into();
+        w.remarks = "Ic Na Ni Da Ht".into();
+        w.zone = "A".into();
+        w.pbg = "801".into();
+        w.allegiance = "ZhIN".into();
+        w.stellar = "M2 V M9 V".into();
+        let out = write_legacy_sec(&[w], &WriteOptions::default());
+        let line = out.split("\r\n").next().unwrap();
+        assert_eq!(line, "Gesentown     0303 B31169B-C  F Ic Na Ni Da Ht  A  801 Zh M2 V M9 V      ");
+    }
+
+    #[test]
+    fn legacy_sec_header_emits_legend() {
+        let out = write_legacy_sec(&[], &WriteOptions { include_header: true, ..Default::default() });
+        assert!(out.starts_with(" 1-14: Name\r\n"));
+        assert!(out.contains("....+....1....+....2"));
     }
 
     #[test]
