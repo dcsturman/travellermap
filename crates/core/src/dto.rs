@@ -624,6 +624,9 @@ pub struct RouteWaypoint {
     pub coord: Coord,
     /// Sector display name the world belongs to.
     pub sector: String,
+    /// Subsector display name the world's hex falls in (empty if unnamed).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub subsector: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub uwp: String,
     /// Population/Belts/Gas-giants digits; the third digit is the gas-giant count.
@@ -664,7 +667,7 @@ impl RouteResult {
                     sector: w.sector.clone(),
                     sector_x: sx,
                     sector_y: sy,
-                    subsector: None,
+                    subsector: w.subsector.clone(),
                     name: w.name.clone(),
                     hex: w.hex.clone(),
                     hex_x: hx,
@@ -689,10 +692,11 @@ pub struct RouteStop {
     pub sector_x: i32,
     #[serde(rename = "SectorY")]
     pub sector_y: i32,
-    /// Subsector display name. Not resolved per-waypoint here (the route index
-    /// holds no subsector names), so omitted when unknown.
-    #[serde(rename = "Subsector", default, skip_serializing_if = "Option::is_none")]
-    pub subsector: Option<String>,
+    /// Subsector display name the world's hex falls in (empty string if the
+    /// subsector is unnamed) — mirrors the reference `RouteStop.SubsectorName`,
+    /// which always emits the key.
+    #[serde(rename = "Subsector")]
+    pub subsector: String,
     #[serde(rename = "Name")]
     pub name: String,
     #[serde(rename = "Hex")]

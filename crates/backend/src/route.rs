@@ -10,8 +10,9 @@
 use std::collections::HashMap;
 use std::path::Path as FsPath;
 
-use tmap_core::astrometrics::{parse_hex, Coord};
+use tmap_core::astrometrics::{parse_hex, subsector_letter, Coord};
 use tmap_core::dto::{RouteResult, RouteWaypoint, Universe};
+use tmap_core::parse::sector_subsectors;
 use tmap_core::route::{find_route, path_parsecs, RouteOptions, RouteWorld};
 
 use crate::resolve_and_parse_worlds;
@@ -23,6 +24,7 @@ struct IndexedWorld {
     name: String,
     hex: String,
     sector: String,
+    subsector: String, // subsector display name for the world's hex (may be empty)
     uwp: String,
     pbg: String,
     zone: String,
@@ -56,6 +58,7 @@ impl WorldIndex {
                     hex: w.hex.clone(),
                     coord: w.node.coord,
                     sector: w.sector.clone(),
+                    subsector: w.subsector.clone(),
                     uwp: w.uwp.clone(),
                     pbg: w.pbg.clone(),
                     zone: w.zone.clone(),
@@ -130,9 +133,18 @@ pub fn build_world_index(res_dir: &FsPath, milieu: &str, universe: &Universe) ->
 
     for entry in &universe.sectors {
         let loc = entry.location;
-        let Some((_file, outcome)) = resolve_and_parse_worlds(&dir, &entry.name, Some(entry)) else {
+        let Some((data_file, outcome)) = resolve_and_parse_worlds(&dir, &entry.name, Some(entry))
+        else {
             continue;
         };
+        // Subsector letter (A–P) → display name for this sector, so each world's
+        // hex resolves to its `Subsector` name (reference `World.SubsectorName`).
+        let meta_xml = crate::read_meta_xml(&dir, &data_file, entry);
+        let subsector_names: HashMap<String, String> = sector_subsectors(&meta_xml)
+            .into_iter()
+            .filter(|s| !s.name.is_empty())
+            .map(|s| (s.index, s.name))
+            .collect();
         for w in outcome.worlds {
             let Some((col, row)) = parse_hex(&w.hex) else {
                 continue;
@@ -146,11 +158,16 @@ pub fn build_world_index(res_dir: &FsPath, milieu: &str, universe: &Universe) ->
                 refuel: has_refuel(&w.uwp, &w.pbg),
             };
             let allegiance = alleg_names.get(&w.allegiance).cloned().unwrap_or(w.allegiance);
+            let subsector = subsector_names
+                .get(&subsector_letter(&w.hex).to_string())
+                .cloned()
+                .unwrap_or_default();
             worlds.push(IndexedWorld {
                 node,
                 name: w.name,
                 hex: w.hex,
                 sector: entry.name.clone(),
+                subsector,
                 uwp: w.uwp,
                 pbg: w.pbg,
                 zone: w.zone,

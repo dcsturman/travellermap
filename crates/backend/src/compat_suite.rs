@@ -712,18 +712,51 @@ async fn jumpworlds_json() {
 // Our /api/route works but emits a private {waypoints,jumps,parsecs} object;
 // the public API returns a bare array of stops. This asserts the public shape.
 
+const ROUTE_PATH: &str =
+    "/api/route?start=Spinward%20Marches%201910&end=Spinward%20Marches%202410&jump=2";
+
+/// Normalize a public route response for live comparison: keep the data fields
+/// (Name, Hex, Subsector, UWP, …) and drop the `SectorX/Y` + `HexX/Y` numeric
+/// origin convention, which differs from the reference for reasons unrelated to
+/// route assembly (a pre-existing Astrometrics coordinate-origin gap).
+fn norm_route(s: &str) -> Value {
+    let mut v = jv(s);
+    if let Some(stops) = v.as_array_mut() {
+        for stop in stops.iter_mut() {
+            if let Some(obj) = stop.as_object_mut() {
+                for k in ["SectorX", "SectorY", "HexX", "HexY"] {
+                    obj.remove(k);
+                }
+            }
+        }
+    }
+    v
+}
+
 #[tokio::test]
 async fn route_public_shape() {
-    let (status, _, body) = get("/api/route?start=Spinward%20Marches%201910&end=Spinward%20Marches%202410&jump=2").await;
+    let (status, _, body) = get(ROUTE_PATH).await;
     assert_eq!(status, StatusCode::OK);
     let v = jv(&body);
     let stops = v.as_array().expect("public route is a bare array of stops");
     assert_eq!(stops.first().unwrap()["Name"], "Regina");
     assert_eq!(stops.last().unwrap()["Name"], "Inthe");
-    // Public per-stop keys.
-    for k in ["Sector", "SectorX", "SectorY", "Name", "Hex", "HexX", "HexY", "UWP", "PBG", "Zone", "AllegianceName"] {
+    // Public per-stop keys — including `Subsector` (the subsector NAME).
+    for k in
+        ["Sector", "SectorX", "SectorY", "Subsector", "Name", "Hex", "HexX", "HexY", "UWP", "PBG", "Zone", "AllegianceName"]
+    {
         assert!(stops[0].get(k).is_some(), "stop missing {k}");
     }
+    // Subsector is the world's subsector display name (reference RouteStop.Subsector):
+    // Regina/Yori/Inthe sit in the Regina subsector; Treece (2311) in Lanth.
+    assert_eq!(stops[0]["Subsector"], "Regina", "Regina is in the Regina subsector");
+    assert_eq!(stops.last().unwrap()["Subsector"], "Regina", "Inthe is in the Regina subsector");
+    assert!(
+        stops.iter().any(|s| s["Subsector"] == "Lanth"),
+        "Treece (2311) is in the Lanth subsector: {stops:?}"
+    );
+    // Live parity on the data fields (coordinate-origin fields normalized away).
+    parity_json_with(ROUTE_PATH, norm_route).await;
 }
 
 // --- Semantic /data/... URL aliases --------------------------------------

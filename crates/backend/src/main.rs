@@ -1210,7 +1210,11 @@ async fn data_jumpworlds(
 }
 
 /// The sector's metadata `.xml` text (MetadataFile, else data-file stem + `.xml`).
-fn read_meta_xml(dir: &FsPath, data_file: &str, entry: &tmap_core::dto::SectorIndexEntry) -> String {
+pub(crate) fn read_meta_xml(
+    dir: &FsPath,
+    data_file: &str,
+    entry: &tmap_core::dto::SectorIndexEntry,
+) -> String {
     let meta_file = entry
         .metadata_file
         .clone()
