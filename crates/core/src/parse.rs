@@ -413,7 +413,11 @@ pub fn parse_milieu_index(xml: &str) -> Vec<SectorIndexEntry> {
             };
             let (x, y) = (child_int("X")?, child_int("Y")?);
             let names = sector_names(sector);
-            let name = names.first()?.text.clone();
+            // A positioned sector with an empty inline `<Name>` (e.g. Faraway's
+            // Calidan) is kept — its name comes from the merged `MetadataFile`
+            // later. Dropping it here (the old `names.first()?`) lost the sector
+            // entirely. X/Y are still required.
+            let name = names.first().map(|n| n.text.clone()).unwrap_or_default();
             // DataFile is optional: positioned-but-dataless sectors (no `.tab`)
             // are still part of the universe (the reference includes them; only
             // `requireData=true` drops them).

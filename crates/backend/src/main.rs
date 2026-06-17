@@ -231,6 +231,76 @@ fn resolve_ci(dir: &FsPath, name: &str) -> Option<PathBuf> {
         .map(|e| e.path())
 }
 
+/// Claim a synthesized abbreviation in `name_map`, disambiguating collisions like
+/// the reference `SectorMap.MilieuMap`: if `base` (e.g. `"Fars"`) is free — or is
+/// already mapped to this same sector (it equals one of its own names) — use it;
+/// otherwise fall back to `"Far2"`, `"Far3"`, … (`base[..4-len(digit)] + digit`).
+/// Map keys are lowercased (the reference's `InvariantCultureIgnoreCase`); the
+/// returned value keeps the proper case.
+fn claim_abbreviation(name_map: &mut HashMap<String, usize>, base: &str, i: usize) -> String {
+    use std::collections::hash_map::Entry;
+    match name_map.entry(base.to_lowercase()) {
+        Entry::Vacant(v) => {
+            v.insert(i);
+            base.to_string()
+        }
+        Entry::Occupied(o) if *o.get() == i => base.to_string(),
+        Entry::Occupied(_) => {
+            for d in 2..=99u32 {
+                let suffix = d.to_string();
+                let plen = (4usize.saturating_sub(suffix.len())).min(base.len());
+                let cand = format!("{}{}", &base[..plen], suffix);
+                if let Entry::Vacant(v) = name_map.entry(cand.to_lowercase()) {
+                    v.insert(i);
+                    return cand;
+                }
+            }
+            base.to_string() // 98 collisions on one prefix — unreachable in practice
+        }
+    }
+}
+
+/// Resolve each sector's final abbreviation across the milieu — a port of the
+/// reference `SectorMap.MilieuMap` build. Sectors are processed in **load
+/// (metafile-merge) order**, registering every sector's names (+ space-removed
+/// aliases) and abbreviation in one shared case-insensitive map; an OTU sector
+/// with no declared abbreviation gets a synthesized one, **deduplicated** against
+/// everything already registered (so `Far Shore`/`Far Shore 2` become
+/// `Far2`/`Far3` rather than colliding on `Fars`). Mutates `sectors` in place;
+/// must run BEFORE any reorder, since the digit assignment depends on order.
+fn resolve_abbreviations(sectors: &mut [tmap_core::dto::SectorIndexEntry]) {
+    let mut name_map: HashMap<String, usize> = HashMap::new();
+    for (i, sector) in sectors.iter_mut().enumerate() {
+        let names: Vec<String> = if sector.names.is_empty() {
+            vec![sector.name.clone()]
+        } else {
+            sector.names.iter().map(|n| n.text.clone()).collect()
+        };
+        // Register names + their space-removed aliases (reference TryAdd order:
+        // names first, then this sector's abbreviation).
+        for n in &names {
+            name_map.entry(n.to_lowercase()).or_insert(i);
+            name_map.entry(n.replace(' ', "").to_lowercase()).or_insert(i);
+        }
+        if let Some(ab) = sector.abbreviation.clone().filter(|a| !a.is_empty()) {
+            name_map.entry(ab.to_lowercase()).or_insert(i); // declared — keep as-is
+            continue;
+        }
+        // Synthesize only for OTU sectors (reference `SynthesizeAbbreviation`).
+        let is_otu = sector
+            .tags
+            .split_whitespace()
+            .chain(sector.metafile_tag.as_deref().unwrap_or("").split_whitespace())
+            .any(|t| t == "OTU");
+        if !is_otu {
+            continue;
+        }
+        if let Some(base) = names.first().and_then(|n| synthesize_abbreviation(n)) {
+            sector.abbreviation = Some(claim_abbreviation(&mut name_map, &base, i));
+        }
+    }
+}
+
 /// Scan a milieu directory, parsing each per-sector `.xml` head into an index
 /// entry. Non-sector XML (the milieu region list) is skipped automatically.
 fn load_universe(res_dir: &FsPath, milieu: &str) -> Universe {
@@ -283,8 +353,13 @@ fn load_universe(res_dir: &FsPath, milieu: &str) -> Universe {
     }
 
     // 2. Fall back to loose per-sector `.xml` in this milieu's own directory for
-    //    any sector its metafile didn't list (keyed by position so it can't
-    //    duplicate an aggregated entry).
+    //    any sector its metafile didn't list. Skip ones already loaded by
+    //    **name** too, not just position: a loose file can carry a stale/conflicting
+    //    coordinate (e.g. `Kruse.xml` at (0,-9) while the authoritative `M1105.xml`
+    //    places Kruse at (0,9)), which a position-only guard would admit as a
+    //    duplicate. The reference only reads metafiles, so the metafile wins.
+    let loaded_names: std::collections::HashSet<String> =
+        by_pos.values().map(|e| e.name.to_lowercase()).collect();
     let dir = sectors_dir.join(milieu);
     let milieu_file = format!("{milieu}.xml");
     if let Ok(entries) = std::fs::read_dir(&dir) {
@@ -297,13 +372,25 @@ fn load_universe(res_dir: &FsPath, milieu: &str) -> Universe {
             }
             if let Ok(text) = read_text(&path) {
                 if let Ok(e) = sector_index_entry(&text) {
-                    insert(e);
+                    // Inline insert (not the `insert` closure, whose mutable
+                    // borrow of `by_pos` must have ended so `loaded_names` could
+                    // read it): skip if the name OR position is already loaded.
+                    let key = (e.location.x, e.location.y);
+                    if !loaded_names.contains(&e.name.to_lowercase()) {
+                        if let std::collections::hash_map::Entry::Vacant(v) = by_pos.entry(key) {
+                            order.push(key);
+                            v.insert(e);
+                        }
+                    }
                 }
             }
         }
     }
 
     let mut sectors: Vec<_> = order.into_iter().filter_map(|k| by_pos.remove(&k)).collect();
+    // Resolve + dedup abbreviations in merge order (the reference SectorMap order)
+    // BEFORE sorting for output — the digit suffixes depend on processing order.
+    resolve_abbreviations(&mut sectors);
     sectors.sort_by(|a, b| a.name.cmp(&b.name));
     Universe {
         milieu: milieu.to_string(),

@@ -292,24 +292,19 @@ async fn universe_envelope_and_known_sectors_match() {
         let t = theirs_map.get(&xy).unwrap_or_else(|| panic!("ref omits sector at {xy:?}"));
         assert_eq!(o, t, "sector at {xy:?} differs from reference");
     }
-    // Live parity: every sector we BOTH return must match on all substantive
-    // fields. `Abbreviation` is excluded — live's hand-curated abbreviations
-    // (e.g. Inc2/Inc3) run slightly ahead of the public res/ snapshot — and we
-    // compare the (X,Y) intersection so a rare sector live has but we don't can't
-    // mask a real field deviation in the ones we share.
+    // Live parity: the FULL sector set must match live exactly — same (X,Y) keys,
+    // and every shared sector identical on every field (Abbreviation included: the
+    // collision-dedup, empty-name, and loose-file-duplicate bugs are fixed, so we
+    // now match live's abbreviations and sector set byte-for-byte).
     if parity_enabled() {
         let live = fetch_live("/api/universe?milieu=M1105").await.1;
         let live_v = jv(&live);
         let theirs_live = sectors_by_xy(&live_v);
-        let strip_abbr = |s: &Value| {
-            let mut c = s.clone();
-            c.as_object_mut().unwrap().remove("Abbreviation");
-            c
-        };
+        let our_keys: std::collections::HashSet<_> = ours_map.keys().copied().collect();
+        let their_keys: std::collections::HashSet<_> = theirs_live.keys().copied().collect();
+        assert_eq!(our_keys, their_keys, "universe sector set differs from live");
         for (xy, o) in &ours_map {
-            if let Some(t) = theirs_live.get(xy) {
-                assert_eq!(strip_abbr(o), strip_abbr(t), "universe sector {xy:?} differs from live");
-            }
+            assert_eq!(o, &theirs_live[xy], "universe sector {xy:?} differs from live");
         }
     }
 }
