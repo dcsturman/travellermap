@@ -292,6 +292,21 @@ async fn search_public_envelope() {
     assert_json_matches(&body, "search_regina.json");
 }
 
+// --- Data: single world by hex -------------------------------------------
+
+/// `/data/{sector}/{hex}` — the single-world lookup third-party tools (worldgen's
+/// solar-system generator) use. Must match the reference SEC-JSON envelope
+/// `{"Worlds":[{Name,UWP,Zone,Allegiance,…}]}` exactly (golden captured live from
+/// travellermap.com). This endpoint had **no** test before, which is how the
+/// "worldgen can't look up worlds" 404 shipped.
+#[tokio::test]
+async fn data_world_by_hex() {
+    let (status, ct, body) = get("/data/Spinward%20Marches/1910").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(ct.contains("application/json"), "ct={ct}");
+    assert_json_matches(&body, "data_world_regina.json");
+}
+
 // --- SEC / tab text output -----------------------------------------------
 
 #[tokio::test]

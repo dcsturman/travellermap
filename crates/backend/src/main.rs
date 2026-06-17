@@ -370,6 +370,10 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route("/data/{sector}/coordinates", get(compat::data_coordinates))
         .route("/data/{sector}/credits", get(data_credits))
         .route("/data/{sector}/metadata", get(data_metadata))
+        // Single world by hex (worldgen's lookup). `{tail}` shares the param name
+        // with the 4-segment routes below so matchit sees no conflict; the literal
+        // 3-segment routes above (sec/tab/…) still win by static priority.
+        .route("/data/{sector}/{tail}", get(data_world))
         .route("/data/{sector}/{tail}/coordinates", get(compat::data_coordinates_hex))
         .route("/data/{sector}/{tail}/credits", get(data_credits_hex))
         .route("/data/{sector}/{tail}/jump/{jump}", get(data_jumpworlds))
@@ -1547,6 +1551,28 @@ struct JumpSectorCtx {
 /// `GET /api/jumpworlds?sector=&hex=&jump=N` — every world within `jump` parsecs
 /// of a hex, as `{Worlds:[…]}` (port of `JumpWorldsHandler` + `HexSelector`).
 async fn get_jumpworlds(Query(q): Query<JumpWorldsQuery>, State(state): State<AppState>) -> Response {
+    match build_jumpworlds(&state, &q) {
+        Ok(result) => Json(result).into_response(),
+        Err((code, msg)) => (code, msg).into_response(),
+    }
+}
+
+/// `GET /data/{sector}/{hex}` — the single world at a hex as the reference SEC
+/// JSON envelope `{"Worlds":[…]}` (jumpworlds at jump 0, default milieu). This is
+/// the endpoint third-party tools (e.g. worldgen) use to look up a world by
+/// sector name + 4-digit hex; an empty hex yields `{"Worlds":[]}`.
+async fn data_world(
+    Path((sector, hex)): Path<(String, String)>,
+    State(state): State<AppState>,
+) -> Response {
+    let q = JumpWorldsQuery {
+        milieu: default_milieu(),
+        sector: Some(sector),
+        sx: None,
+        sy: None,
+        hex: Some(hex),
+        jump: 0,
+    };
     match build_jumpworlds(&state, &q) {
         Ok(result) => Json(result).into_response(),
         Err((code, msg)) => (code, msg).into_response(),
