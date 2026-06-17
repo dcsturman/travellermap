@@ -39,7 +39,7 @@ use crate::{read_text, AppState};
 /// A `jsonp` query parameter, shared by every compat endpoint.
 #[derive(Debug, Deserialize, Default)]
 pub struct Jsonp {
-    jsonp: Option<String>,
+    pub jsonp: Option<String>,
 }
 
 /// JSON identifier guard for the JSONP callback (mirrors the reference
@@ -57,7 +57,7 @@ fn is_simple_js_identifier(s: &str) -> bool {
 /// `jsonp` parameter is present (served as `text/javascript`). Serializes the
 /// value directly (no `serde_json::Value` intermediate) so struct field order is
 /// preserved, matching the reference byte-for-byte.
-fn respond<T: Serialize>(value: &T, jsonp: &Option<String>) -> Response {
+pub(crate) fn respond<T: Serialize>(value: &T, jsonp: &Option<String>) -> Response {
     let json = match serde_json::to_string(value) {
         Ok(j) => j,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -93,7 +93,7 @@ pub fn wants_xml(headers: &HeaderMap) -> bool {
 /// Serve `value` honoring content negotiation: `jsonp` callback (JS) wins, then
 /// `Accept: …xml` (the `xml` closure builds the body), else JSON. The XML body
 /// is produced lazily so callers only pay for it when XML is requested.
-fn respond_negotiated<T: Serialize>(
+pub(crate) fn respond_negotiated<T: Serialize>(
     value: &T,
     jsonp: &Option<String>,
     accept_xml: bool,

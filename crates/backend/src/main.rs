@@ -794,6 +794,7 @@ struct UniverseQuery {
 /// read it (the private snake_case `Universe` is now in-memory only).
 async fn get_universe(
     Query(q): Query<UniverseQuery>,
+    Query(jp): Query<compat::Jsonp>,
     headers: HeaderMap,
     State(state): State<AppState>,
 ) -> Response {
@@ -814,61 +815,87 @@ async fn get_universe(
         .filter(|t| !t.is_empty())
         .collect();
 
+    // JSONP/XML are opt-in (the default stays byte-identical JSON for our Leptos
+    // client and for the response cache / ETag path): build the typed result and
+    // route it through content negotiation. Otherwise serve the cached JSON bytes.
+    if jp.jsonp.is_some() || compat::wants_xml(&headers) {
+        let result = match build_universe_result(&state, &milieu, require_data, &want_tags) {
+            Ok(r) => r,
+            Err(e) => return e.into_response(),
+        };
+        return compat::respond_negotiated(&result, &jp.jsonp, compat::wants_xml(&headers), || {
+            result.to_xml()
+        });
+    }
+
     let key = format!("universe/{milieu}/rd{}/tag{}", require_data, want_tags.join(","));
     serve_cached(&state.response_cache, &key, &headers, || {
-        let u = state.universe(&milieu)?;
-        // A dir-fallback sector has no metafile tag; use the requested milieu's.
-        let default_tag = milieu_tag(&state.res_dir, &milieu);
-        let sectors = u
-            .sectors
-            .iter()
-            .filter(|s| !require_data || s.data_file.is_some())
-            .filter_map(|s| {
-                let mtag = s.metafile_tag.as_deref().or(default_tag.as_deref()).unwrap_or("");
-                // Sector's own review tags ("Official") + metafile tag ("OTU"),
-                // deduped preserving order (reference `Tags` is an OrderedHashSet,
-                // so e.g. a Faraway sector tagged "Faraway" + metafile "Faraway"
-                // collapses to one).
-                let mut seen = std::collections::HashSet::new();
-                let tags = [s.tags.as_str(), mtag]
-                    .into_iter()
-                    .flat_map(str::split_whitespace)
-                    .filter(|t| seen.insert(*t))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                if !want_tags.is_empty()
-                    && !tags.split_whitespace().any(|t| want_tags.iter().any(|w| w == t))
-                {
-                    return None;
-                }
-                // Always emit at least the canonical name (older per-sector xml
-                // without a localized list still has `s.name`).
-                let names = if s.names.is_empty() {
-                    vec![SectorName { text: s.name.clone(), lang: None, source: None }]
-                } else {
-                    s.names.clone()
-                };
-                // OTU sectors with no declared abbreviation get a synthesized
-                // one (e.g. "Zhdant" → "Zhda"), matching the reference.
-                let abbreviation = s.abbreviation.clone().or_else(|| {
-                    tags.split_whitespace()
-                        .any(|t| t == "OTU")
-                        .then(|| names.first().and_then(|n| synthesize_abbreviation(&n.text)))
-                        .flatten()
-                });
-                Some(UniverseSector {
-                    x: s.location.x,
-                    y: s.location.y,
-                    milieu: milieu.clone(),
-                    abbreviation,
-                    tags,
-                    names,
-                })
-            })
-            .collect();
-        serde_json::to_vec(&UniverseResult { sectors })
+        let result = build_universe_result(&state, &milieu, require_data, &want_tags)?;
+        serde_json::to_vec(&result)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
     })
+}
+
+/// Build the public `/api/universe` result for a milieu (filtered by
+/// `require_data` + `want_tags`). Shared by the cached JSON path and the
+/// JSONP/XML content-negotiated path so all three emit identical content.
+fn build_universe_result(
+    state: &AppState,
+    milieu: &str,
+    require_data: bool,
+    want_tags: &[String],
+) -> Result<UniverseResult, (StatusCode, String)> {
+    let u = state.universe(milieu)?;
+    // A dir-fallback sector has no metafile tag; use the requested milieu's.
+    let default_tag = milieu_tag(&state.res_dir, milieu);
+    let sectors = u
+        .sectors
+        .iter()
+        .filter(|s| !require_data || s.data_file.is_some())
+        .filter_map(|s| {
+            let mtag = s.metafile_tag.as_deref().or(default_tag.as_deref()).unwrap_or("");
+            // Sector's own review tags ("Official") + metafile tag ("OTU"),
+            // deduped preserving order (reference `Tags` is an OrderedHashSet,
+            // so e.g. a Faraway sector tagged "Faraway" + metafile "Faraway"
+            // collapses to one).
+            let mut seen = std::collections::HashSet::new();
+            let tags = [s.tags.as_str(), mtag]
+                .into_iter()
+                .flat_map(str::split_whitespace)
+                .filter(|t| seen.insert(*t))
+                .collect::<Vec<_>>()
+                .join(" ");
+            if !want_tags.is_empty()
+                && !tags.split_whitespace().any(|t| want_tags.iter().any(|w| w == t))
+            {
+                return None;
+            }
+            // Always emit at least the canonical name (older per-sector xml
+            // without a localized list still has `s.name`).
+            let names = if s.names.is_empty() {
+                vec![SectorName { text: s.name.clone(), lang: None, source: None }]
+            } else {
+                s.names.clone()
+            };
+            // OTU sectors with no declared abbreviation get a synthesized
+            // one (e.g. "Zhdant" → "Zhda"), matching the reference.
+            let abbreviation = s.abbreviation.clone().or_else(|| {
+                tags.split_whitespace()
+                    .any(|t| t == "OTU")
+                    .then(|| names.first().and_then(|n| synthesize_abbreviation(&n.text)))
+                    .flatten()
+            });
+            Some(UniverseSector {
+                x: s.location.x,
+                y: s.location.y,
+                milieu: milieu.to_string(),
+                abbreviation,
+                tags,
+                names,
+            })
+        })
+        .collect();
+    Ok(UniverseResult { sectors })
 }
 
 /// The tag the milieu metafile carries in `res/Sectors/milieu.tab` (e.g.
@@ -947,18 +974,27 @@ fn parse_types(raw: Option<&str>) -> tmap_core::searchlang::SearchTypes {
 /// labeled regions.
 async fn get_search(
     Query(q): Query<SearchQuery>,
+    Query(jp): Query<compat::Jsonp>,
+    headers: HeaderMap,
     State(state): State<AppState>,
-) -> Result<Json<SearchResults>, (StatusCode, String)> {
-    let idx = state.search_index(&q.milieu)?;
+) -> Response {
+    let idx = match state.search_index(&q.milieu) {
+        Ok(idx) => idx,
+        Err(e) => return e.into_response(),
+    };
     let query = preprocess_query(&q.q);
     let pq = tmap_core::searchlang::parse_query(&query, parse_types(q.types.as_deref()));
     let items = search::run_query(&idx, &pq, NUM_RESULTS);
-    Ok(Json(SearchResults {
+    let result = SearchResults {
         results: SearchResultsBody {
             count: items.len(),
             items,
         },
-    }))
+    };
+    // JSON stays the default (our client + tools depend on it); jsonp/xml opt-in.
+    compat::respond_negotiated(&result, &jp.jsonp, compat::wants_xml(&headers), || {
+        result.to_xml()
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -999,6 +1035,8 @@ fn default_jump() -> i32 {
 /// filter flags, jump-count-minimizing cost). Returns a [`RouteResult`].
 async fn get_route(
     Query(q): Query<RouteQuery>,
+    Query(jp): Query<compat::Jsonp>,
+    headers: HeaderMap,
     State(state): State<AppState>,
 ) -> Result<Response, (StatusCode, String)> {
     let jump = q.jump.clamp(1, 12);
@@ -1020,10 +1058,19 @@ async fn get_route(
         .ok_or_else(|| (StatusCode::NOT_FOUND, "no route found".to_string()))?;
     // Default: the documented public bare array of stops. `&detail=true` returns
     // our rich object (waypoints with absolute coords) for the Leptos client.
+    // JSON stays the default for both; jsonp/xml are opt-in. The reference only
+    // defines an XML shape for the public stops list (`ArrayOfRouteStop`), so XML
+    // applies to that form only; `detail` honors jsonp but always serves JSON.
     if q.detail {
-        Ok(Json(result).into_response())
+        Ok(compat::respond(&result, &jp.jsonp))
     } else {
-        Ok(Json(result.to_public_stops()).into_response())
+        let stops = result.to_public_stops();
+        Ok(compat::respond_negotiated(
+            &stops,
+            &jp.jsonp,
+            compat::wants_xml(&headers),
+            || tmap_core::dto::route_stops_to_xml(&stops),
+        ))
     }
 }
 
@@ -1401,6 +1448,7 @@ struct MetadataQuery {
 /// per `(milieu, sector)` via `serve_cached`.
 async fn get_metadata(
     Query(q): Query<MetadataQuery>,
+    Query(jp): Query<compat::Jsonp>,
     headers: HeaderMap,
     State(state): State<AppState>,
 ) -> Response {
@@ -1421,6 +1469,20 @@ async fn get_metadata(
     let Some(entry) = entry else {
         return (StatusCode::NOT_FOUND, "The specified sector was not found.").into_response();
     };
+
+    // JSONP is opt-in (the default stays byte-identical cached JSON). The
+    // `(meta, _)` JSON envelope is wrapped as `callback(...)`.
+    //
+    // TODO: XML content negotiation for metadata is DEFERRED. The reference
+    // `SectorMetaDataHandler` emits the large sector `.xml` metadata document
+    // (Name/Credits/X/Y/Product/DataFile/Subsectors/Allegiances/Borders/Routes/
+    // Labels/Stylesheet…); hand-rolling that exact shape from our `SectorMetadata`
+    // is a sizable, separable effort. JSONP is supported here; XML is not yet, so
+    // `Accept: text/xml` still falls through to JSON for `/api/metadata`.
+    if jp.jsonp.is_some() {
+        let (meta, _worlds) = assemble_metadata(&state, &q.milieu, entry);
+        return compat::respond(&meta, &jp.jsonp);
+    }
 
     let key = format!("metadata/{}/{}", q.milieu, entry.name);
     serve_cached(&state.response_cache, &key, &headers, || {
@@ -1538,11 +1600,21 @@ struct CreditsQuery {
 /// `CreditsHandler.cs`, data side). Resolves the sector (by name or sx,sy) and
 /// a hex (defaults to the sector's central hex), returning sector/subsector/
 /// world/product credits as the documented JSON shape.
-async fn get_credits(Query(q): Query<CreditsQuery>, State(state): State<AppState>) -> Response {
-    credits_response(&state, q)
+async fn get_credits(
+    Query(q): Query<CreditsQuery>,
+    Query(jp): Query<compat::Jsonp>,
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> Response {
+    credits_response(&state, q, &jp.jsonp, compat::wants_xml(&headers))
 }
 
-fn credits_response(state: &AppState, q: CreditsQuery) -> Response {
+fn credits_response(
+    state: &AppState,
+    q: CreditsQuery,
+    jsonp: &Option<String>,
+    accept_xml: bool,
+) -> Response {
     let universe = match state.universe(&q.milieu) {
         Ok(u) => u,
         Err(e) => return e.into_response(),
@@ -1564,7 +1636,8 @@ fn credits_response(state: &AppState, q: CreditsQuery) -> Response {
     // Default to the sector's central hex (1620), matching Astrometrics.SectorCentralHex.
     let hex = q.hex.clone().unwrap_or_else(|| "1620".to_string());
     let result = build_credits(state, &q.milieu, entry, &hex);
-    axum::Json(result).into_response()
+    // JSON default (byte-identical to before); jsonp/xml opt-in only.
+    compat::respond_negotiated(&result, jsonp, accept_xml, || result.to_xml())
 }
 
 // --- Semantic /data/{sector}/... URL aliases (Global.asax.cs `/data` table) ---
@@ -1610,6 +1683,8 @@ async fn data_credits(Path(sector): Path<String>, State(state): State<AppState>)
     credits_response(
         &state,
         CreditsQuery { milieu: default_milieu(), sector: Some(sector), sx: None, sy: None, hex: None },
+        &None,
+        false,
     )
 }
 
@@ -1621,6 +1696,8 @@ async fn data_credits_hex(
     credits_response(
         &state,
         CreditsQuery { milieu: default_milieu(), sector: Some(sector), sx: None, sy: None, hex: Some(hex) },
+        &None,
+        false,
     )
 }
 
@@ -1633,6 +1710,7 @@ async fn data_metadata(
 ) -> Response {
     get_metadata(
         Query(MetadataQuery { milieu: default_milieu(), sector: Some(sector), sx: None, sy: None }),
+        Query(compat::Jsonp::default()),
         headers,
         State(state),
     )
@@ -1775,9 +1853,19 @@ struct JumpSectorCtx {
 
 /// `GET /api/jumpworlds?sector=&hex=&jump=N` — every world within `jump` parsecs
 /// of a hex, as `{Worlds:[…]}` (port of `JumpWorldsHandler` + `HexSelector`).
-async fn get_jumpworlds(Query(q): Query<JumpWorldsQuery>, State(state): State<AppState>) -> Response {
+async fn get_jumpworlds(
+    Query(q): Query<JumpWorldsQuery>,
+    Query(jp): Query<compat::Jsonp>,
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> Response {
     match build_jumpworlds(&state, &q) {
-        Ok(result) => Json(result).into_response(),
+        // JSON default (byte-identical to before); jsonp/xml opt-in only.
+        Ok(result) => {
+            compat::respond_negotiated(&result, &jp.jsonp, compat::wants_xml(&headers), || {
+                result.to_xml()
+            })
+        }
         Err((code, msg)) => (code, msg).into_response(),
     }
 }
