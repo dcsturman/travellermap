@@ -57,6 +57,48 @@ async fn get_with(path: &str, headers: &[(&str, &str)]) -> (StatusCode, String, 
     (status, ct, String::from_utf8_lossy(&bytes).to_string())
 }
 
+/// One POST against a fresh router with a text/plain body. Returns
+/// `(status, content_type, body)`.
+async fn post(path: &str, body: &str) -> (StatusCode, String, String) {
+    let rb = Request::builder()
+        .method("POST")
+        .uri(path)
+        .header(CONTENT_TYPE, "text/plain");
+    let resp = build_router(test_state())
+        .oneshot(rb.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+    let status = resp.status();
+    let ct = resp
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (status, ct, String::from_utf8_lossy(&bytes).to_string())
+}
+
+/// POST `body` to the live reference and return `(status, body)`. Used for POST
+/// parity (the reference reformats uploaded data the same way we do).
+async fn post_live(path: &str, body: &str) -> (StatusCode, String) {
+    let url = format!("{REFERENCE_BASE}{path}");
+    let client = reqwest::Client::builder()
+        .user_agent("tmap-parity-check (+https://github.com/dcsturman/travellermap)")
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .expect("reqwest client");
+    let resp = client
+        .post(&url)
+        .header("content-type", "text/plain")
+        .body(body.to_string())
+        .send()
+        .await
+        .unwrap_or_else(|e| panic!("live POST {url}: {e}"));
+    let status = StatusCode::from_u16(resp.status().as_u16()).unwrap();
+    (status, resp.text().await.unwrap_or_default())
+}
+
 /// Read a golden fixture (`tests/refs/<name>`).
 fn golden(name: &str) -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -797,6 +839,169 @@ async fn data_alias_sec_tab() {
     let (status, ..) = get("/data/Spinward%20Marches/tab").await;
     assert_eq!(status, StatusCode::OK);
     parity_text("/data/Spinward%20Marches/tab").await;
+}
+
+// Subsector/quadrant region aliases. The reference routes `/data/{sector}/{seg}`
+// by the segment's shape: `alpha|beta|gamma|delta` → quadrant; a single letter
+// `A`–`P` → subsector by index; anything else → subsector by name. All carry
+// `metadata=0` (no comment block); the bare form is SecondSurvey, `/sec` is
+// legacy SEC, `/tab` is TabDelimited. Quadrant matching is case-insensitive.
+
+#[tokio::test]
+async fn data_alias_quadrant() {
+    let (status, _, body) = get("/data/Spinward%20Marches/Alpha").await;
+    assert_eq!(status, StatusCode::OK);
+    // SecondSurvey columnar, no `#` metadata block (metadata=0).
+    assert!(body.starts_with("Hex"), "expected SecondSurvey header: {}", &body[..body.len().min(80)]);
+    parity_text("/data/Spinward%20Marches/Alpha").await;
+}
+
+#[tokio::test]
+async fn data_alias_quadrant_lowercase() {
+    let (status, ..) = get("/data/Spinward%20Marches/alpha").await;
+    assert_eq!(status, StatusCode::OK);
+    parity_text("/data/Spinward%20Marches/alpha").await;
+}
+
+#[tokio::test]
+async fn data_alias_quadrant_sec() {
+    let (status, ..) = get("/data/Spinward%20Marches/Alpha/sec").await;
+    assert_eq!(status, StatusCode::OK);
+    parity_text("/data/Spinward%20Marches/Alpha/sec").await;
+}
+
+#[tokio::test]
+async fn data_alias_quadrant_tab() {
+    let (status, ..) = get("/data/Spinward%20Marches/Alpha/tab").await;
+    assert_eq!(status, StatusCode::OK);
+    parity_text("/data/Spinward%20Marches/Alpha/tab").await;
+}
+
+#[tokio::test]
+async fn data_alias_subsector_letter() {
+    let (status, _, body) = get("/data/Spinward%20Marches/A").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.starts_with("Hex"), "expected SecondSurvey header: {}", &body[..body.len().min(80)]);
+    parity_text("/data/Spinward%20Marches/A").await;
+}
+
+#[tokio::test]
+async fn data_alias_subsector_letter_tab() {
+    let (status, ..) = get("/data/Spinward%20Marches/A/tab").await;
+    assert_eq!(status, StatusCode::OK);
+    parity_text("/data/Spinward%20Marches/A/tab").await;
+}
+
+#[tokio::test]
+async fn data_alias_subsector_letter_sec() {
+    let (status, ..) = get("/data/Spinward%20Marches/A/sec").await;
+    assert_eq!(status, StatusCode::OK);
+    parity_text("/data/Spinward%20Marches/A/sec").await;
+}
+
+#[tokio::test]
+async fn data_alias_subsector_name() {
+    let (status, ..) = get("/data/Spinward%20Marches/Regina").await;
+    assert_eq!(status, StatusCode::OK);
+    parity_text("/data/Spinward%20Marches/Regina").await;
+}
+
+// --- POST /api/sec + /api/metadata (reformat/convert uploaded data) -------
+//
+// The POST path parses an uploaded sector-data document (format sniffed from the
+// body) and re-serializes it in the requested `type=`. Tests use a small, known
+// SecondSurvey snippet and assert (a) a deterministic in-process round-trip and
+// (b) live parity with the reference (which performs the same conversion).
+
+/// A two-world SecondSurvey-columnar snippet (Zeycude, Reno from Spinward
+/// Marches subsector A) used as POST input across the reformat tests.
+const POST_SNIPPET: &str = "\
+Hex  Name                 UWP       Remarks                       {Ix}   (Ex)    [Cx]   N    B  Z PBG W  A    Stellar
+---- -------------------- --------- ----------------------------- ------ ------- ------ ---- -- - --- -- ---- -----------
+0101 Zeycude              C430698-9 De Na Ni Po                   { -1 } (C53-1) [6559] -    -  - 613 8  ZhIN K9 V
+0102 Reno                 C4207B9-A De He Na Po Pi Pz             { 1 }  (C6A+2) [886B] -    -  A 603 12 ZhIN G8 V M1 V
+";
+
+#[tokio::test]
+async fn post_sec_tab_roundtrip() {
+    let (status, ct, body) = post("/api/sec?type=TabDelimited", POST_SNIPPET).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(ct.contains("text/plain"), "ct={ct}");
+    // TabDelimited: header row + one row per world, no `#` metadata block.
+    let lines: Vec<&str> = body.lines().collect();
+    assert!(lines[0].starts_with("Sector\tSS\tHex\tName\tUWP"), "header: {}", lines[0]);
+    assert_eq!(lines.len(), 3, "header + 2 worlds: {body}");
+    assert!(lines[1].contains("\t0101\tZeycude\t"), "row1: {}", lines[1]);
+    assert!(lines[2].contains("\t0102\tReno\t"), "row2: {}", lines[2]);
+    // Live parity: the reference reformats the same upload identically.
+    if parity_enabled() {
+        let (ls, lb) = post_live("/api/sec?type=TabDelimited", POST_SNIPPET).await;
+        assert_eq!(ls, StatusCode::OK, "live: {lb}");
+        assert_eq!(strip_timestamp(&body), strip_timestamp(&lb), "live POST tab parity");
+    }
+}
+
+#[tokio::test]
+async fn post_sec_default_is_secondsurvey() {
+    // Missing `type` reformats to SecondSurvey columnar (matching live).
+    let (status, _, body) = post("/api/sec", POST_SNIPPET).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.starts_with("Hex"), "expected SecondSurvey header: {body}");
+    assert!(body.contains("Zeycude") && body.contains("Reno"), "missing worlds: {body}");
+    if parity_enabled() {
+        let (ls, lb) = post_live("/api/sec", POST_SNIPPET).await;
+        assert_eq!(ls, StatusCode::OK, "live: {lb}");
+        assert_eq!(strip_timestamp(&body), strip_timestamp(&lb), "live POST default parity");
+    }
+}
+
+#[tokio::test]
+async fn post_sec_legacy_roundtrip() {
+    let (status, _, body) = post("/api/sec?type=SEC", POST_SNIPPET).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("Zeycude") && body.contains("Reno"), "missing worlds: {body}");
+    if parity_enabled() {
+        let (ls, lb) = post_live("/api/sec?type=SEC", POST_SNIPPET).await;
+        assert_eq!(ls, StatusCode::OK, "live: {lb}");
+        assert_eq!(strip_timestamp(&body), strip_timestamp(&lb), "live POST SEC parity");
+    }
+}
+
+#[tokio::test]
+async fn post_sec_quadrant_filter() {
+    // All snippet worlds are in quadrant Alpha; Beta filters them all out.
+    let (status, _, alpha) = post("/api/sec?type=TabDelimited&quadrant=alpha", POST_SNIPPET).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(alpha.contains("Zeycude"), "alpha should keep worlds: {alpha}");
+    let (status, _, beta) = post("/api/sec?type=TabDelimited&quadrant=beta", POST_SNIPPET).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!beta.contains("Zeycude"), "beta should drop worlds: {beta}");
+}
+
+#[tokio::test]
+async fn post_metadata_xml_to_json() {
+    // Round-trip a small sector metadata XML document → our metadata JSON shape.
+    let xml = "\
+<?xml version=\"1.0\"?>
+<Sector Abbreviation=\"Test\">
+  <Name>Test Sector</Name>
+  <Subsectors>
+    <Subsector Index=\"A\">Alpha SS</Subsector>
+  </Subsectors>
+</Sector>";
+    let (status, ct, body) = post("/api/metadata", xml).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(ct.contains("json"), "ct={ct}");
+    let v = jv(&body);
+    assert_eq!(v["Abbreviation"], "Test", "abbreviation round-trip: {body}");
+    assert_eq!(v["Names"][0]["Text"], "Test Sector", "name round-trip: {body}");
+    assert_eq!(v["Subsectors"][0]["Name"], "Alpha SS", "subsector round-trip: {body}");
+}
+
+#[tokio::test]
+async fn post_metadata_rejects_non_xml() {
+    let (status, _, _) = post("/api/metadata", "not xml at all").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
 // --- Content negotiation: Accept: text/xml -------------------------------

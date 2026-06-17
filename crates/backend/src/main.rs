@@ -444,9 +444,9 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route("/api/sector/{milieu}/{name}", get(get_sector))
         // Public-API compatibility layer (documented URLs + PascalCase JSON).
         .route("/api/coordinates", get(compat::get_coordinates))
-        .route("/api/sec", get(get_sec))
+        .route("/api/sec", get(get_sec).post(post_sec))
         .route("/api/msec", get(get_msec))
-        .route("/api/metadata", get(get_metadata))
+        .route("/api/metadata", get(get_metadata).post(post_metadata))
         .route("/api/credits", get(get_credits))
         .route("/api/jumpworlds", get(get_jumpworlds))
         .route("/api/milieux", get(compat::get_milieux))
@@ -462,10 +462,14 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route("/data/{sector}/coordinates", get(compat::data_coordinates))
         .route("/data/{sector}/credits", get(data_credits))
         .route("/data/{sector}/metadata", get(data_metadata))
-        // Single world by hex (worldgen's lookup). `{tail}` shares the param name
-        // with the 4-segment routes below so matchit sees no conflict; the literal
-        // 3-segment routes above (sec/tab/…) still win by static priority.
-        .route("/data/{sector}/{tail}", get(data_world))
+        // Single segment after the sector: a 4-digit hex (single world), a
+        // quadrant (`alpha|beta|gamma|delta`), a subsector letter (`A`–`P`), or a
+        // subsector name. The reference routes these by regex priority; we capture
+        // `{tail}` once and dispatch on its shape (`data_world_or_region`). The
+        // literal 3-segment routes above (sec/tab/…) still win by static priority.
+        .route("/data/{sector}/{tail}", get(data_world_or_region))
+        .route("/data/{sector}/{tail}/sec", get(data_region_sec))
+        .route("/data/{sector}/{tail}/tab", get(data_region_tab))
         .route("/data/{sector}/{tail}/coordinates", get(compat::data_coordinates_hex))
         .route("/data/{sector}/{tail}/credits", get(data_credits_hex))
         .route("/data/{sector}/{tail}/jump/{jump}", get(data_jumpworlds))
@@ -1105,6 +1109,82 @@ fn bool_opt(v: &Option<String>, default: bool) -> bool {
     }
 }
 
+/// Parse uploaded world data (POST body) into a world list, sniffing the format
+/// from the content the same way `resolve_and_parse_worlds` does for files
+/// (`SectorFileParser.SniffType`/`WorldCollection.Deserialize`): tab-delimited →
+/// `TabDelimited`, `{Ix} (Ex) [Cx]` present → `SecondSurvey`, else legacy `SEC`.
+fn parse_world_text(text: &str) -> Result<Vec<World>, (StatusCode, String)> {
+    let outcome = match sniff_world_format(text) {
+        "TabDelimited" => parse_tab(text),
+        "SecondSurvey" => parse_column(text),
+        _ => parse_sec(text),
+    }
+    .map_err(|e| (StatusCode::BAD_REQUEST, format!("Bad data file: {e}")))?;
+    Ok(outcome.worlds)
+}
+
+/// `POST /api/sec` — reformat/convert uploaded world data. Ports `SECHandler.cs`'s
+/// POST path: parse the posted body (format sniffed from content), then
+/// re-serialize it in the requested `type=` (`SEC` | `TabDelimited` |
+/// `SecondSurvey`). A missing `type` defaults to `SecondSurvey` columnar (matching
+/// live travellermap.com). Metadata is never emitted (`includeMetadata = false`).
+/// Subsector-by-letter and quadrant filtering still apply; subsector-by-name is
+/// not supported (no names in posted data). The `lint` mode (ErrorLogger
+/// diagnostics) is DEFERRED — `lint=1` is accepted but performs the same
+/// parse+reformat without surfacing warnings.
+async fn post_sec(Query(q): Query<SecQuery>, body: String) -> Response {
+    match build_sec_from_text(&q, &body) {
+        Ok(text) => (
+            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            text,
+        )
+            .into_response(),
+        Err((code, msg)) => (code, msg).into_response(),
+    }
+}
+
+fn build_sec_from_text(q: &SecQuery, body: &str) -> Result<String, (StatusCode, String)> {
+    // Live travellermap.com defaults a missing `type` to SecondSurvey columnar
+    // (same as GET `/api/sec`), so POST round-trips an upload to SecondSurvey.
+    let media = q.type_.as_deref().unwrap_or("SecondSurvey");
+    if media != "TabDelimited" && media != "SecondSurvey" && media != "SEC" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("type '{media}' not supported; use type=SEC, type=TabDelimited or type=SecondSurvey"),
+        ));
+    }
+
+    let all_worlds = parse_world_text(body)?;
+
+    // Subsector (letter only — posted data carries no subsector names) / quadrant
+    // filtering, mirroring SECHandler's `options.filter`.
+    let filtered: Vec<World> = if let Some(sub) = &q.subsector {
+        let idx = subsector_index_for(sub, &[])
+            .ok_or((StatusCode::NOT_FOUND, format!("subsector '{sub}' not found")))?;
+        all_worlds.iter().filter(|w| astrometrics::subsector_index(&w.hex) == idx).cloned().collect()
+    } else if let Some(quad) = &q.quadrant {
+        let qidx = quadrant_index_for(quad)
+            .ok_or((StatusCode::BAD_REQUEST, format!("quadrant '{quad}' is invalid")))?;
+        all_worlds.iter().filter(|w| astrometrics::quadrant_index(&w.hex) == qidx).cloned().collect()
+    } else {
+        all_worlds
+    };
+
+    let opts = WriteOptions {
+        sscoords: bool_opt(&q.sscoords, false),
+        include_header: bool_opt(&q.header, true),
+    };
+
+    // No metadata block on POST (includeMetadata = false). Posted data carries no
+    // sector abbreviation, so the TabDelimited `Sector` column is empty (matching
+    // the reference, whose posted Sector has an empty Abbreviation).
+    Ok(match media {
+        "TabDelimited" => sector_writer::write_tab(&filtered, "", &opts),
+        "SecondSurvey" => sector_writer::write_second_survey(&filtered, &opts),
+        _ => sector_writer::write_legacy_sec(&filtered, &opts),
+    })
+}
+
 /// `GET /api/sec` — a sector's worlds as SEC/SecondSurvey/TabDelimited text.
 /// Ports `server/api/SECHandler.cs` (data side). Serves `type=SEC` (legacy
 /// fixed-column), `type=TabDelimited`, and `type=SecondSurvey`; a missing `type`
@@ -1442,6 +1522,34 @@ struct MetadataQuery {
     sy: Option<i32>,
 }
 
+/// `POST /api/metadata` — reformat/round-trip uploaded sector metadata. Ports
+/// `SectorMetaDataHandler.cs`'s POST path: parse the posted metadata document and
+/// re-emit it (DataFile/MetadataFile cleared). The reference parses XML *or* MSEC
+/// metadata and emits the sector XML document; here we parse the posted XML and
+/// re-emit our documented metadata **JSON** shape — consistent with GET
+/// `/api/metadata`, whose XML output is itself deferred project-wide (see the
+/// TODO on `get_metadata`). DEFERRED: XML output and MSEC-format input (XML in →
+/// JSON out is the implemented converter).
+async fn post_metadata(body: String) -> Response {
+    let trimmed = body.trim_start();
+    if !trimmed.starts_with('<') {
+        return (
+            StatusCode::BAD_REQUEST,
+            "POST /api/metadata expects an XML metadata document (MSEC input is not yet supported).",
+        )
+            .into_response();
+    }
+    let meta = parse_sector_metadata(&body);
+    match serde_json::to_vec(&meta) {
+        Ok(bytes) => (
+            [(header::CONTENT_TYPE, "application/json")],
+            bytes,
+        )
+            .into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
 /// `GET /api/metadata` — a sector's metadata (names, subsectors, allegiances,
 /// borders/regions, routes, labels, stylesheet, products, credits) in the
 /// documented JSON shape. Ports `SectorMetaDataHandler.cs` (data side). Cached
@@ -1656,6 +1764,26 @@ fn data_sec_query(sector: String, type_: &str) -> SecQuery {
         header: None,
         sscoords: None,
     }
+}
+
+/// A `SecQuery` for a subsector/quadrant region alias. Mirrors the reference
+/// `/data/{sector}/{region}` routes: `metadata=0` (no comment block) and the
+/// region restricted via `subsector=`/`quadrant=`.
+fn region_sec_query(sector: String, region: &str, type_: &str) -> SecQuery {
+    let mut q = data_sec_query(sector, type_);
+    q.metadata = Some("0".to_string());
+    if quadrant_index_for(region).is_some() {
+        q.quadrant = Some(region.to_string());
+    } else {
+        q.subsector = Some(region.to_string());
+    }
+    q
+}
+
+/// True if `tail` is a 4-digit hex (the reference `(?<hex>[0-9]{4})` form), i.e.
+/// a single-world lookup rather than a subsector/quadrant region.
+fn is_hex_tail(tail: &str) -> bool {
+    tail.len() == 4 && tail.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// `/data/{sector}` and `/data/{sector}/sec` → SecondSurvey text (with metadata).
@@ -1874,22 +2002,45 @@ async fn get_jumpworlds(
 /// JSON envelope `{"Worlds":[…]}` (jumpworlds at jump 0, default milieu). This is
 /// the endpoint third-party tools (e.g. worldgen) use to look up a world by
 /// sector name + 4-digit hex; an empty hex yields `{"Worlds":[]}`.
-async fn data_world(
-    Path((sector, hex)): Path<(String, String)>,
+/// `/data/{sector}/{tail}` → a single world (`tail` = 4-digit hex), or a
+/// subsector/quadrant region as SecondSurvey text (port of the reference's
+/// quadrant / subsector-by-letter / subsector-by-name `/data` routes, which all
+/// share this URL shape and are disambiguated by the segment's content).
+async fn data_world_or_region(
+    Path((sector, tail)): Path<(String, String)>,
     State(state): State<AppState>,
 ) -> Response {
-    let q = JumpWorldsQuery {
-        milieu: default_milieu(),
-        sector: Some(sector),
-        sx: None,
-        sy: None,
-        hex: Some(hex),
-        jump: 0,
-    };
-    match build_jumpworlds(&state, &q) {
-        Ok(result) => Json(result).into_response(),
-        Err((code, msg)) => (code, msg).into_response(),
+    if is_hex_tail(&tail) {
+        let q = JumpWorldsQuery {
+            milieu: default_milieu(),
+            sector: Some(sector),
+            sx: None,
+            sy: None,
+            hex: Some(tail),
+            jump: 0,
+        };
+        return match build_jumpworlds(&state, &q) {
+            Ok(result) => Json(result).into_response(),
+            Err((code, msg)) => (code, msg).into_response(),
+        };
     }
+    sec_text_response(build_sec(&state, &region_sec_query(sector, &tail, "SecondSurvey")))
+}
+
+/// `/data/{sector}/{region}/sec` → a subsector/quadrant region as legacy SEC text.
+async fn data_region_sec(
+    Path((sector, region)): Path<(String, String)>,
+    State(state): State<AppState>,
+) -> Response {
+    sec_text_response(build_sec(&state, &region_sec_query(sector, &region, "SEC")))
+}
+
+/// `/data/{sector}/{region}/tab` → a subsector/quadrant region as TabDelimited text.
+async fn data_region_tab(
+    Path((sector, region)): Path<(String, String)>,
+    State(state): State<AppState>,
+) -> Response {
+    sec_text_response(build_sec(&state, &region_sec_query(sector, &region, "TabDelimited")))
 }
 
 fn build_jumpworlds(

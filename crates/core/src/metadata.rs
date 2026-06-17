@@ -282,6 +282,20 @@ pub fn parse_sector_metadata(xml: &str) -> SectorMetadata {
     let mut border_seq = 0usize;
     for n in doc.descendants() {
         match n.tag_name().name() {
+            // Direct `<Name>` children of `<Sector>`. The GET `/api/metadata` path
+            // overwrites these from the (authoritative) sector index entry; they
+            // matter for the POST round-trip, where the posted document is the only
+            // source. Restricted to children of the root so it can't pick up an
+            // unrelated nested `Name` element.
+            "Name" if n.parent().is_some_and(|p| p.has_tag_name("Sector")) => {
+                if let Some(text) = n.text().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()) {
+                    meta.names.push(SectorName {
+                        text,
+                        lang: attr(n, "Lang"),
+                        source: attr(n, "Source"),
+                    });
+                }
+            }
             "Subsector" => {
                 if let (Some(index), Some(name)) = (attr(n, "Index"), n.text().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty())) {
                     let index_number = index.chars().next().map(|c| (c.to_ascii_uppercase() as i32) - ('A' as i32)).unwrap_or(0);
