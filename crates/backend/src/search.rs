@@ -1,25 +1,34 @@
-//! In-memory search over worlds, sectors, subsectors, and labeled regions.
+//! Embedded full-text search over worlds, sectors, subsectors, and labeled
+//! regions — an in-RAM **Tantivy** index built from `res/` per milieu, replacing
+//! the reference's SQL Server search index (and our own earlier linear scan).
+//! No external service, per the "no datastore" decision; the `/api/search`
+//! contract is unchanged.
 //!
-//! A flat index of [`SearchEntry`]s built from `res/`, queried with the full
-//! travellermap.com query language (ported in `tmap_core::searchlang`: the
-//! `LIKE`/`SOUNDEX` matcher + the per-term clause table from
-//! `server/search/SearchEngine.cs`). No external service — an in-process index,
-//! per the "no datastore" decision. (Tantivy would be a later upgrade; the
-//! `/api/search` contract stays the same.)
-//!
-//! The reference pushes clauses to SQL Server; here every entry carries the same
-//! columns the `worlds`/`sectors`/`subsectors`/`labels` tables held, and the
-//! clauses run in Rust over them.
+//! The query language is ported in `tmap_core::searchlang` (the `LIKE`/`SOUNDEX`
+//! matcher + the per-term clause table from `server/search/SearchEngine.cs`).
+//! Because those semantics are SQL-`LIKE`/`SOUNDEX` rather than tokenized
+//! full-text, each [`Clause`] maps onto a `RegexQuery` (LIKE → regex via
+//! [`like_to_regex`]) or an exact `TermQuery` over **raw** (untokenized,
+//! lowercased) fields — *not* BM25-scored tokens — so results are byte-identical
+//! to the scan. Tantivy produces the matching doc set; `{Ix}`-importance ranking
+//! stays in Rust ([`run_query`]). The reference's SQL `worlds`/`sectors`/
+//! `subsectors`/`labels` columns become this index's fields.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+use tantivy::collector::DocSetCollector;
+use tantivy::query::{BooleanQuery, Occur, Query, RegexQuery, TermQuery};
+use tantivy::schema::{Field, IndexRecordOption, Schema, Value, INDEXED, STORED, STRING};
+use tantivy::{Index, IndexReader, TantivyDocument, Term};
 
 use tmap_core::{
     astrometrics::{coordinates_to_location, location_to_coordinates, parse_hex},
     dto::{SearchItem, SearchLabel, SearchSector, SearchSubsector, SearchWorld, Universe},
     metadata::parse_sector_metadata,
     parse::{parse_milieu_index, sector_subsectors},
-    searchlang::{ParsedQuery, SearchRecord, SearchTypes},
+    searchlang::{like_to_regex, soundex, Clause, ParsedQuery},
 };
 
 use crate::{milieu_metafiles, read_text, resolve_and_parse_worlds, resolve_ci, DEFAULT_MILIEU};
@@ -45,7 +54,6 @@ struct WorldFields {
     remarks: String,
     ex: String,
     cx: String,
-    ix: Option<i32>,
     sector_name: String,
 }
 
@@ -59,35 +67,6 @@ pub struct SearchEntry {
     importance: Option<i32>,
     fields: WorldFields,
     item: SearchItem,
-}
-
-impl SearchEntry {
-    fn record(&self) -> SearchRecord<'_> {
-        SearchRecord {
-            name: &self.name_lower,
-            uwp: &self.fields.uwp,
-            pbg: &self.fields.pbg,
-            zone: &self.fields.zone,
-            alleg: &self.fields.alleg,
-            stellar: &self.fields.stellar,
-            remarks: &self.fields.remarks,
-            ex: &self.fields.ex,
-            cx: &self.fields.cx,
-            ix: self.fields.ix,
-            sector_name: &self.fields.sector_name,
-        }
-    }
-
-    /// Does this entry's kind fall within the requested type set?
-    fn kind_allowed(&self, types: &SearchTypes) -> bool {
-        match self.kind {
-            KIND_SECTOR => types.sectors,
-            KIND_SUBSECTOR => types.subsectors,
-            KIND_WORLD => types.worlds,
-            KIND_LABEL => types.labels,
-            _ => false,
-        }
-    }
 }
 
 /// The displayed name of an item — the field searches match against.
@@ -194,7 +173,7 @@ fn sanify_label(s: &str) -> String {
 /// regions (border labels + `<Label>` elements). Each entry is already in the
 /// public [`SearchItem`] shape so the handler just wraps the hits in the
 /// `{"Results":{…}}` envelope.
-pub fn build_index(res_dir: &Path, milieu: &str, universe: &Universe) -> Vec<SearchEntry> {
+fn gather_entries(res_dir: &Path, milieu: &str, universe: &Universe) -> Vec<SearchEntry> {
     let mut entries = Vec::new();
     let milieu_dir = res_dir.join("Sectors").join(milieu);
     let dirs = sector_dirs(res_dir, milieu);
@@ -332,7 +311,6 @@ pub fn build_index(res_dir: &Path, milieu: &str, universe: &Universe) -> Vec<Sea
                 remarks: world.remarks.to_lowercase(),
                 ex: strip_brackets(world.economic.as_deref()),
                 cx: strip_brackets(world.cultural.as_deref()),
-                ix: importance,
                 sector_name: sector.name.to_lowercase(),
             };
             push(
@@ -437,65 +415,276 @@ fn label_position_of(b: &tmap_core::metadata::MetaBorder) -> String {
     format!("{:02}{:02}", (min_x + max_x + 1) / 2, (min_y + max_y + 1) / 2)
 }
 
+// ---------------------------------------------------------------------------
+// Tantivy index
+//
+// Replaces the SQL Server search index of the reference (and our own earlier
+// in-memory linear scan) with an embedded, in-RAM Tantivy index built at
+// startup from `res/`. Our query language is SQL-`LIKE`/`SOUNDEX`, not tokenized
+// full-text, so every clause maps onto a `RegexQuery` (LIKE → regex via
+// `like_to_regex`) or an exact `TermQuery` over **raw** (untokenized, lowercased)
+// fields — *not* BM25-scored tokens. Ranking stays in Rust, identical to before:
+// Tantivy just produces the matching doc set, then we rank by `{Ix}` importance.
+// ---------------------------------------------------------------------------
+
+/// The schema fields, kept so queries can build `Term`s / `RegexQuery`s.
+struct SchemaFields {
+    name: Field,
+    name_soundex: Field,
+    uwp: Field,
+    pbg: Field,
+    zone: Field,
+    alleg: Field,
+    ex: Field,
+    cx: Field,
+    sector_name: Field,
+    stellar: Field,
+    remarks: Field,
+    ix: Field,
+    hex_x: Field,
+    hex_y: Field,
+    kind: Field,
+    blob: Field,
+}
+
+/// An embedded full-text index for one milieu: the Tantivy reader + the field
+/// handles needed to build queries against it.
+pub struct SearchIndex {
+    reader: IndexReader,
+    f: SchemaFields,
+}
+
+/// The per-hit ranking + payload, stored as one JSON `blob` field per document so
+/// retrieval reconstructs the public `SearchItem` and the reference ranking keys
+/// (`kind`, `{Ix}` importance, original insertion order for stable tie-breaks)
+/// without a parallel side table.
+#[derive(Serialize, Deserialize)]
+struct Blob {
+    kind: u8,
+    importance: Option<i32>,
+    ord: u32,
+    item: SearchItem,
+}
+
+/// Build the in-RAM Tantivy index for `milieu` from `res/`. Gathers the same
+/// entries the linear scan used (worlds + their fields, sectors, subsectors,
+/// aggregated labels), then writes one document per entry.
+pub fn build_index(res_dir: &Path, milieu: &str, universe: &Universe) -> SearchIndex {
+    let entries = gather_entries(res_dir, milieu, universe);
+
+    let mut sb = Schema::builder();
+    // Raw (untokenized) lowercased text fields — `STRING` uses the `raw`
+    // tokenizer, so each value is a single term and `RegexQuery` matches the
+    // whole term, exactly mirroring full-string `like_match`.
+    let f = SchemaFields {
+        name: sb.add_text_field("name", STRING),
+        name_soundex: sb.add_text_field("name_soundex", STRING),
+        uwp: sb.add_text_field("uwp", STRING),
+        pbg: sb.add_text_field("pbg", STRING),
+        zone: sb.add_text_field("zone", STRING),
+        alleg: sb.add_text_field("alleg", STRING),
+        ex: sb.add_text_field("ex", STRING),
+        cx: sb.add_text_field("cx", STRING),
+        sector_name: sb.add_text_field("sector_name", STRING),
+        // Multi-valued: one term per whitespace token, so a `RegexQuery` matches
+        // a whole stellar/remark token (the `token_like` semantics).
+        stellar: sb.add_text_field("stellar", STRING),
+        remarks: sb.add_text_field("remarks", STRING),
+        ix: sb.add_i64_field("ix", INDEXED),
+        hex_x: sb.add_i64_field("hex_x", INDEXED),
+        hex_y: sb.add_i64_field("hex_y", INDEXED),
+        kind: sb.add_u64_field("kind", INDEXED),
+        blob: sb.add_text_field("blob", STORED),
+    };
+    let schema = sb.build();
+
+    let index = Index::create_in_ram(schema);
+    let mut writer = index.writer(15_000_000).expect("tantivy index writer");
+    for (ord, e) in entries.iter().enumerate() {
+        let mut d = TantivyDocument::default();
+        d.add_text(f.name, &e.name_lower);
+        d.add_text(f.name_soundex, soundex(&e.name_lower));
+        d.add_u64(f.kind, e.kind as u64);
+        if let Some(ix) = e.importance {
+            d.add_i64(f.ix, ix as i64);
+        }
+        let wf = &e.fields;
+        for (field, val) in [
+            (f.uwp, &wf.uwp),
+            (f.pbg, &wf.pbg),
+            (f.zone, &wf.zone),
+            (f.alleg, &wf.alleg),
+            (f.ex, &wf.ex),
+            (f.cx, &wf.cx),
+            (f.sector_name, &wf.sector_name),
+        ] {
+            if !val.is_empty() {
+                d.add_text(field, val);
+            }
+        }
+        for tok in wf.stellar.split_whitespace() {
+            d.add_text(f.stellar, tok);
+        }
+        for tok in wf.remarks.split_whitespace() {
+            d.add_text(f.remarks, tok);
+        }
+        if let SearchItem::World(w) = &e.item {
+            d.add_i64(f.hex_x, w.hex_x as i64);
+            d.add_i64(f.hex_y, w.hex_y as i64);
+        }
+        let blob = Blob {
+            kind: e.kind,
+            importance: e.importance,
+            ord: ord as u32,
+            item: e.item.clone(),
+        };
+        d.add_text(f.blob, serde_json::to_string(&blob).expect("serialize search blob"));
+        writer.add_document(d).expect("add search document");
+    }
+    writer.commit().expect("commit search index");
+    let reader = index.reader().expect("search index reader");
+    SearchIndex { reader, f }
+}
+
 /// Run a parsed query over the index and return up to `limit` hits.
 ///
-/// Mirrors the reference `PerformSearch` + handler ordering: each result kind is
-/// filtered, then **ranked by importance descending** (matching the live
-/// reference, whose handler sorts the whole result set by `Importance` before
-/// `Take(NUM_RESULTS)`) and capped to `limit` per kind; the kinds are
-/// concatenated in (Sector, Subsector, World, Label) order; finally the merged
-/// set is stably re-sorted by importance descending and capped to `limit` again.
-/// The per-kind importance ranking (rather than the reference subquery's name
-/// ordering) is what keeps high-importance worlds like Regina in the top results
-/// for broad queries such as `r*a`.
-pub fn run_query(entries: &[SearchEntry], pq: &ParsedQuery, limit: usize) -> Vec<SearchItem> {
+/// Tantivy produces the matching document set (clauses → `RegexQuery`/`TermQuery`
+/// joined with `AND`); the ranking then mirrors the reference `PerformSearch` +
+/// handler ordering exactly: rank each kind by `{Ix}` importance descending and
+/// cap to `limit` per kind, concatenate in (Sector, Subsector, World, Label)
+/// order, then stably re-sort the merged set by importance descending and cap to
+/// `limit`. The per-kind importance ranking is what keeps high-importance worlds
+/// like Regina in the top results for broad queries such as `r*a`.
+pub fn run_query(idx: &SearchIndex, pq: &ParsedQuery, limit: usize) -> Vec<SearchItem> {
     // The reference returns nothing when the parse produced no clauses (and it's
     // not the sector+hex shortcut).
     if pq.clauses.is_empty() && pq.sector_hex.is_none() {
         return Vec::new();
     }
 
-    let matches = |e: &SearchEntry| -> bool {
-        if !e.kind_allowed(&pq.types) {
-            return false;
-        }
-        if let Some(sh) = &pq.sector_hex {
-            // Only worlds participate; sector_name starts-with prefix AND hex.
-            if e.kind != KIND_WORLD {
-                return false;
-            }
-            if let SearchItem::World(w) = &e.item {
-                return w.hex_x == sh.hex_x
-                    && w.hex_y == sh.hex_y
-                    && e.fields.sector_name.starts_with(&sh.sector_prefix);
-            }
-            return false;
-        }
-        let rec = e.record();
-        pq.clauses.iter().all(|c| c.matches(&rec))
+    let query = build_query(&idx.f, pq);
+    let searcher = idx.reader.searcher();
+    let Ok(docs) = searcher.search(&query, &DocSetCollector) else {
+        return Vec::new();
     };
 
-    // Group matches by kind, rank each kind by importance descending (stable, so
-    // index order — i.e. name order within a sector's data — breaks ties), then
-    // cap each kind to `limit` (reference `TOP {limit}` per table). Ranking
-    // before the cap keeps high-importance hits from being truncated away.
-    let mut by_kind: [Vec<&SearchEntry>; 4] = Default::default();
-    for e in entries.iter().filter(|e| matches(e)) {
-        let bucket = e.kind as usize;
+    // Reconstruct (kind, importance, ord, item) from each hit's stored blob.
+    let hits = docs.into_iter().filter_map(|addr| {
+        let doc: TantivyDocument = searcher.doc(addr).ok()?;
+        let raw = doc.get_first(idx.f.blob)?.as_str()?;
+        serde_json::from_str::<Blob>(raw).ok()
+    });
+
+    // Per-kind importance-desc + cap (ties keep insertion order via `ord`), then
+    // concat in kind order, then stable global importance-desc, then cap. `None`
+    // importance sorts last (Option: `None < Some`).
+    let mut by_kind: [Vec<Blob>; 4] = Default::default();
+    for h in hits {
+        let bucket = h.kind as usize;
         if bucket < 4 {
-            by_kind[bucket].push(e);
+            by_kind[bucket].push(h);
         }
     }
     for bucket in by_kind.iter_mut() {
-        bucket.sort_by_key(|e| std::cmp::Reverse(e.importance));
+        bucket.sort_by_key(|h| (std::cmp::Reverse(h.importance), h.ord));
         bucket.truncate(limit);
     }
+    let mut merged: Vec<Blob> = by_kind.into_iter().flatten().collect();
+    // Stable sort: ties keep concat order = (kind asc, ord asc).
+    merged.sort_by_key(|h| std::cmp::Reverse(h.importance));
+    merged.into_iter().take(limit).map(|h| h.item).collect()
+}
 
-    let mut hits: Vec<&SearchEntry> = by_kind.into_iter().flatten().collect();
-    // Stable sort by importance descending; `None` sorts last (`Reverse(None)`
-    // is greater than `Reverse(Some)` since `None < Some`). Kind/index order is
-    // preserved among ties because the sort is stable and `hits` is already in
-    // (kind, index) order.
-    hits.sort_by_key(|e| std::cmp::Reverse(e.importance));
-    hits.into_iter().take(limit).map(|e| e.item.clone()).collect()
+/// Build the Tantivy query for a parsed query: a kind filter (from `types`)
+/// AND-joined with either the sector+hex shortcut or every clause.
+fn build_query(f: &SchemaFields, pq: &ParsedQuery) -> Box<dyn Query> {
+    let mut musts: Vec<(Occur, Box<dyn Query>)> = vec![(Occur::Must, kind_filter(f, pq))];
+
+    if let Some(sh) = &pq.sector_hex {
+        // Worlds only, exact local hex, sector_name starts-with the prefix.
+        musts.push((Occur::Must, term_u64(f.kind, KIND_WORLD as u64)));
+        musts.push((Occur::Must, term_i64(f.hex_x, sh.hex_x as i64)));
+        musts.push((Occur::Must, term_i64(f.hex_y, sh.hex_y as i64)));
+        musts.push((Occur::Must, regex_query(f.sector_name, &format!("{}.*", like_to_regex(&sh.sector_prefix)))));
+    } else {
+        for c in &pq.clauses {
+            musts.push((Occur::Must, clause_query(f, c)));
+        }
+    }
+    Box::new(BooleanQuery::new(musts))
+}
+
+/// A `SHOULD` set over the allowed kinds (the `types=` filter); no allowed kind
+/// → a query that matches nothing.
+fn kind_filter(f: &SchemaFields, pq: &ParsedQuery) -> Box<dyn Query> {
+    let t = &pq.types;
+    let shoulds: Vec<(Occur, Box<dyn Query>)> = [
+        (t.sectors, KIND_SECTOR),
+        (t.subsectors, KIND_SUBSECTOR),
+        (t.worlds, KIND_WORLD),
+        (t.labels, KIND_LABEL),
+    ]
+    .into_iter()
+    .filter(|(allowed, _)| *allowed)
+    .map(|(_, k)| (Occur::Should, term_u64(f.kind, k as u64)))
+    .collect();
+    if shoulds.is_empty() {
+        return never_match();
+    }
+    Box::new(BooleanQuery::new(shoulds))
+}
+
+/// Translate one parsed [`Clause`] into a Tantivy query, mirroring
+/// [`Clause::matches`] term-for-term (LIKE → `RegexQuery`, SOUNDEX/Ix → exact).
+fn clause_query(f: &SchemaFields, c: &Clause) -> Box<dyn Query> {
+    match c {
+        // name LIKE term+'%'  OR  name LIKE '% '+term+'%'  (term is a literal).
+        Clause::NameWordBoundary(t) => {
+            let e = like_to_regex(t);
+            Box::new(BooleanQuery::new(vec![
+                (Occur::Should, regex_query(f.name, &format!("{e}.*"))),
+                (Occur::Should, regex_query(f.name, &format!(".* {e}.*"))),
+            ]))
+        }
+        Clause::NameLike(t) => regex_query(f.name, &like_to_regex(t)),
+        Clause::NameSoundex(t) => term_text(f.name_soundex, &soundex(t)),
+        Clause::Uwp(t) => regex_query(f.uwp, &like_to_regex(t)),
+        Clause::Pbg(t) => regex_query(f.pbg, &like_to_regex(t)),
+        Clause::Zone(t) => regex_query(f.zone, &like_to_regex(t)),
+        Clause::Alleg(t) => regex_query(f.alleg, &like_to_regex(t)),
+        Clause::Ex(t) => regex_query(f.ex, &like_to_regex(t)),
+        Clause::Cx(t) => regex_query(f.cx, &like_to_regex(t)),
+        Clause::Ix(n) => term_i64(f.ix, *n as i64),
+        // token match: term (as LIKE) must match a whole stellar/remark token —
+        // each token is its own term, so a `RegexQuery` over the field suffices.
+        Clause::Stellar(t) => regex_query(f.stellar, &like_to_regex(t)),
+        Clause::Remark(t) => regex_query(f.remarks, &like_to_regex(t)),
+        // sector_name LIKE '%'+term+'%'.
+        Clause::InSector(t) => regex_query(f.sector_name, &format!(".*{}.*", like_to_regex(t))),
+    }
+}
+
+/// A `RegexQuery` over `field` (full-term match); a bad regex → matches nothing.
+fn regex_query(field: Field, pattern: &str) -> Box<dyn Query> {
+    match RegexQuery::from_pattern(pattern, field) {
+        Ok(q) => Box::new(q),
+        Err(_) => never_match(),
+    }
+}
+
+fn term_text(field: Field, text: &str) -> Box<dyn Query> {
+    Box::new(TermQuery::new(Term::from_field_text(field, text), IndexRecordOption::Basic))
+}
+
+fn term_i64(field: Field, v: i64) -> Box<dyn Query> {
+    Box::new(TermQuery::new(Term::from_field_i64(field, v), IndexRecordOption::Basic))
+}
+
+fn term_u64(field: Field, v: u64) -> Box<dyn Query> {
+    Box::new(TermQuery::new(Term::from_field_u64(field, v), IndexRecordOption::Basic))
+}
+
+/// A query that matches no documents (empty intersection).
+fn never_match() -> Box<dyn Query> {
+    Box::new(BooleanQuery::new(Vec::new()))
 }

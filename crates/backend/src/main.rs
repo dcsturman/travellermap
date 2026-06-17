@@ -45,7 +45,7 @@ mod compat;
 mod compat_suite;
 mod route;
 mod search;
-use search::SearchEntry;
+use search::SearchIndex;
 
 /// Macro-overlay vector files, grouped by kind (mirrors the reference
 /// `RenderContext` border/rift/route file lists).
@@ -65,7 +65,7 @@ struct AppState {
     /// Macro overlays, parsed once on first request (charted-space, milieu-independent).
     overlays: Arc<OnceLock<Overlays>>,
     /// Lazily-built, cached per-milieu name search index.
-    search_cache: Arc<Mutex<HashMap<String, Arc<Vec<SearchEntry>>>>>,
+    search_cache: Arc<Mutex<HashMap<String, Arc<SearchIndex>>>>,
     /// Cache of serialized JSON responses (key → (etag, bytes)) so repeat
     /// requests skip parsing + serialization. The data is static at runtime.
     response_cache: Arc<Mutex<HashMap<String, (String, Bytes)>>>,
@@ -177,7 +177,7 @@ impl AppState {
     }
 
     /// The name search index for a milieu, built and cached on first use.
-    fn search_index(&self, milieu: &str) -> Result<Arc<Vec<SearchEntry>>, (StatusCode, String)> {
+    fn search_index(&self, milieu: &str) -> Result<Arc<SearchIndex>, (StatusCode, String)> {
         if let Some(idx) = self.search_cache.lock().unwrap().get(milieu) {
             return Ok(idx.clone());
         }

@@ -459,6 +459,93 @@ fn match_class(p: &[char], start: usize, ch: char) -> Option<(bool, usize)> {
     None
 }
 
+/// Translate a SQL-`LIKE` pattern (already lowercased) into a regex string for
+/// Tantivy's `RegexQuery`, which matches the regex against the **whole** term —
+/// so no anchors are needed, mirroring [`like_match`]'s full-string semantics.
+/// `%`→`.*`, `_`→`.`, `[...]`→a regex char class (same `^`-negation, `a-z`
+/// range, and leading-`]`-is-literal rules as [`match_class`]); every other char
+/// is regex-escaped. A malformed (unclosed) `[...]` is treated as a literal `[`,
+/// exactly as `like_match` does.
+pub fn like_to_regex(pattern: &str) -> String {
+    let p: Vec<char> = pattern.chars().collect();
+    let mut out = String::with_capacity(p.len() * 2);
+    let mut i = 0;
+    while i < p.len() {
+        match p[i] {
+            '%' => {
+                out.push_str(".*");
+                i += 1;
+            }
+            '_' => {
+                out.push('.');
+                i += 1;
+            }
+            '[' => match translate_class(&p, i) {
+                Some((cls, next)) => {
+                    out.push_str(&cls);
+                    i = next;
+                }
+                None => {
+                    push_regex_escaped(&mut out, '[');
+                    i += 1;
+                }
+            },
+            c => {
+                push_regex_escaped(&mut out, c);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// Translate a `[...]` class starting at `p[start]` (`== '['`) into a regex char
+/// class, mirroring [`match_class`]'s parse. Returns `(class, index_after)`, or
+/// `None` if unclosed (so the caller treats `[` as a literal).
+fn translate_class(p: &[char], start: usize) -> Option<(String, usize)> {
+    let mut i = start + 1;
+    let mut cls = String::from("[");
+    if i < p.len() && p[i] == '^' {
+        cls.push('^');
+        i += 1;
+    }
+    let mut first = true;
+    while i < p.len() {
+        if p[i] == ']' && !first {
+            cls.push(']');
+            return Some((cls, i + 1));
+        }
+        first = false;
+        // Range `a-z`: a char, `-`, and a following non-`]` char.
+        if i + 2 < p.len() && p[i + 1] == '-' && p[i + 2] != ']' {
+            push_class_escaped(&mut cls, p[i]);
+            cls.push('-');
+            push_class_escaped(&mut cls, p[i + 2]);
+            i += 3;
+        } else {
+            push_class_escaped(&mut cls, p[i]);
+            i += 1;
+        }
+    }
+    None
+}
+
+/// Escape a literal char for use outside a regex char class.
+fn push_regex_escaped(out: &mut String, c: char) {
+    if matches!(c, '.' | '^' | '$' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\') {
+        out.push('\\');
+    }
+    out.push(c);
+}
+
+/// Escape a literal char for use *inside* a regex char class (`[...]`).
+fn push_class_escaped(out: &mut String, c: char) {
+    if matches!(c, '\\' | ']' | '^' | '-' | '[') {
+        out.push('\\');
+    }
+    out.push(c);
+}
+
 /// American Soundex, SQL-Server semantics (4 chars: letter + 3 digits, padded
 /// with `0`). Port of T-SQL `SOUNDEX`: keep the first letter, encode subsequent
 /// consonants, drop vowels/`h`/`w` as separators (but `h`/`w` between two
@@ -529,6 +616,37 @@ mod tests {
         assert!(like_match("sol", "sol"));
         assert!(!like_match("sol", "solomani"));
         assert!(!like_match("sol", "so"));
+    }
+
+    /// `like_to_regex` must be behaviorally identical to `like_match`: the regex,
+    /// anchored as a full match (Tantivy's `RegexQuery` matches the whole term),
+    /// accepts exactly the same texts. We assert that over a matrix of patterns ×
+    /// texts using the `regex` crate as a stand-in for Tantivy's engine (they
+    /// agree on the subset we emit: `.* . [] ^ ranges`).
+    #[test]
+    fn like_to_regex_matches_like_match() {
+        let patterns = [
+            "sol", "r%a", "re%in", "re%in%", "%", "a_c", "a__c", "terra%",
+            "%rim", "%a%", "sol[oa]", " z[^aeiou]ne", "a[0-9]", "c.d", "a+b",
+            "(x)", "a*b", "[abc]x", "]lit", "a-b",
+        ];
+        let texts = [
+            "sol", "solomani", "regina", "reskin", "rein", "abc", "a_c", "terra",
+            "solomani rim", "zone", "z9ne", "a5", "c.d", "cxd", "a+b", "a-b",
+            "(x)", "axb", "bx", "]lit", "",
+        ];
+        for pat in patterns {
+            let re = regex::Regex::new(&format!("^(?:{})$", like_to_regex(pat)))
+                .unwrap_or_else(|e| panic!("regex for LIKE {pat:?} failed to compile: {e}"));
+            for text in texts {
+                assert_eq!(
+                    re.is_match(text),
+                    like_match(pat, text),
+                    "LIKE {pat:?} vs {text:?}: regex={:?}",
+                    like_to_regex(pat)
+                );
+            }
+        }
     }
 
     #[test]
