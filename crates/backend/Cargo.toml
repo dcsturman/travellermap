@@ -19,6 +19,10 @@ tower-http = { version = "0.6.11", features = ["cors", "fs"] }
 # (`compat_suite`): `tower`'s `oneshot` + `http-body-util`'s body collection.
 tower = { version = "0.5.3", features = ["util"] }
 http-body-util = "0.1.3"
-# Live-parity mode (`TMAP_PARITY=1`): fetch the same request from the reference
-# travellermap.com and diff. rustls so no system OpenSSL is needed.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# Live-parity mode: fetch the same request from the reference travellermap.com and
+# diff. Must use native-tls, NOT rustls: the reference host is an old Windows/IIS/
+# Schannel stack that RSTs rustls's TLS handshake (it rejects TLS 1.3 outright and
+# rustls's 1.2 ClientHello too); curl/SecureTransport and OpenSSL negotiate TLS 1.2
+# and succeed. `native-tls-vendored` → SecureTransport on macOS, bundled OpenSSL on
+# Linux, so it builds everywhere without a system OpenSSL.
+reqwest = { version = "0.12", default-features = false, features = ["native-tls-vendored"] }
