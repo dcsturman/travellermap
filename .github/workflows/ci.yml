@@ -48,8 +48,13 @@ jobs:
       # native crates; the frontend (wasm-only) is checked in the wasm job.
       - name: Clippy (deny warnings)
         run: cargo clippy -p tmap-core -p tmap-backend -- -D warnings
+      # TMAP_SKIP_PARITY excludes the compat suite's live travellermap.com
+      # comparisons — they run on a local `cargo test` but are network-dependent
+      # (slow/rate-limited/offline-hostile), so CI runs only the offline goldens.
       - name: Test
         run: cargo test --locked
+        env:
+          TMAP_SKIP_PARITY: "1"
 
   wasm:
     name: check frontend (wasm32)

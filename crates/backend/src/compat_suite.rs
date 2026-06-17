@@ -92,6 +92,88 @@ fn assert_json_set_matches(body: &str, golden_name: &str, key: &str) {
     );
 }
 
+// --- live parity (on by default; CI opts out via TMAP_SKIP_PARITY=1) ------
+//
+// The golden fixtures above are snapshots; they can silently fall out of sync
+// with the live reference. Live parity closes that gap: the SAME request is sent
+// to travellermap.com and to our in-process router, and the two are compared.
+// A failure means either (1) we call the reference incorrectly (status mismatch)
+// or (2) our output deviates from it (unless a documented equivalence is
+// normalized away below).
+//
+// **Runs on a local `cargo test`** so deviations surface during development.
+// **CI sets `TMAP_SKIP_PARITY=1`** to exclude it — it's network-dependent (slow,
+// rate-limited, can't run offline), which doesn't belong in the fast CI gate.
+
+const REFERENCE_BASE: &str = "https://travellermap.com";
+
+fn parity_enabled() -> bool {
+    !std::env::var("TMAP_SKIP_PARITY").is_ok_and(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+}
+
+/// GET `path` from the live reference. travellermap.com resets the connection
+/// for requests with no User-Agent, so one is always set.
+async fn fetch_live(path: &str) -> (StatusCode, String) {
+    let url = format!("{REFERENCE_BASE}{path}");
+    let client = reqwest::Client::builder()
+        .user_agent("tmap-parity-check (+https://github.com/dcsturman/travellermap)")
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .expect("reqwest client");
+    let resp = client.get(&url).send().await.unwrap_or_else(|e| panic!("live GET {url}: {e}"));
+    let status = StatusCode::from_u16(resp.status().as_u16()).unwrap();
+    let body = resp.text().await.unwrap_or_default();
+    (status, body)
+}
+
+/// Compare our JSON output for `path` to the live reference, applying `norm` to
+/// both bodies (so endpoint-specific equivalences — route notation, color casing
+/// — don't read as deviations). No-op unless `TMAP_PARITY` is set.
+async fn parity_json_with(path: &str, norm: impl Fn(&str) -> Value) {
+    if !parity_enabled() {
+        return;
+    }
+    let (ours_status, _, ours_body) = get(path).await;
+    let (live_status, live_body) = fetch_live(path).await;
+    assert_eq!(
+        ours_status.as_u16(),
+        live_status.as_u16(),
+        "status vs live for {path}\n  ours={ours_body}\n  live={live_body}"
+    );
+    if ours_status.is_success() {
+        assert_eq!(norm(&ours_body), norm(&live_body), "live JSON parity for {path}");
+    }
+}
+
+/// Live parity with plain `serde_json` equality (key order + slash-escaping are
+/// already normalized by parsing). The common case.
+async fn parity_json(path: &str) {
+    parity_json_with(path, jv).await;
+}
+
+/// Parse + sort a JSON array by string field `key` — for order-insensitive set
+/// comparison of the T5SS tables (the reference sorts with .NET collation).
+fn jv_sorted(s: &str, key: &str) -> Value {
+    let mut v = jv(s);
+    if let Some(a) = v.as_array_mut() {
+        a.sort_by(|x, y| x[key].as_str().unwrap_or("").cmp(y[key].as_str().unwrap_or("")));
+    }
+    v
+}
+
+/// Live parity for text endpoints (SEC/MSEC), ignoring the generation timestamp.
+async fn parity_text(path: &str) {
+    if !parity_enabled() {
+        return;
+    }
+    let (ours_status, _, ours_body) = get(path).await;
+    let (live_status, live_body) = fetch_live(path).await;
+    assert_eq!(ours_status.as_u16(), live_status.as_u16(), "status vs live for {path}");
+    if ours_status.is_success() {
+        assert_eq!(strip_timestamp(&ours_body), strip_timestamp(&live_body), "live text parity for {path}");
+    }
+}
+
 // ========================================================================
 // IMPLEMENTED — active tests, must stay green.
 // ========================================================================
@@ -104,6 +186,7 @@ async fn coordinates_sector_hex() {
     assert_eq!(status, StatusCode::OK);
     assert!(ct.contains("application/json"), "ct={ct}");
     assert_json_matches(&body, "coordinates_sector_hex.json");
+    parity_json("/api/coordinates?sector=Spinward%20Marches&hex=1910").await;
 }
 
 #[tokio::test]
@@ -111,6 +194,7 @@ async fn coordinates_world_space_xy() {
     let (status, _, body) = get("/api/coordinates?x=-110&y=-70").await;
     assert_eq!(status, StatusCode::OK);
     assert_json_matches(&body, "coordinates_xy.json");
+    parity_json("/api/coordinates?x=-110&y=-70").await;
 }
 
 #[tokio::test]
@@ -118,6 +202,7 @@ async fn coordinates_subsector() {
     let (status, _, body) = get("/api/coordinates?sector=Spinward%20Marches&subsector=C").await;
     assert_eq!(status, StatusCode::OK);
     assert_json_matches(&body, "coordinates_subsector.json");
+    parity_json("/api/coordinates?sector=Spinward%20Marches&subsector=C").await;
 }
 
 #[tokio::test]
@@ -126,6 +211,7 @@ async fn coordinates_grid_sx_sy() {
     let (status, _, body) = get("/api/coordinates?sx=-4&sy=-1&hx=19&hy=10").await;
     assert_eq!(status, StatusCode::OK);
     assert_json_matches(&body, "coordinates_sector_hex.json");
+    parity_json("/api/coordinates?sx=-4&sy=-1&hx=19&hy=10").await;
 }
 
 #[tokio::test]
@@ -134,6 +220,7 @@ async fn coordinates_abbreviation_resolves() {
     let (status, _, body) = get("/api/coordinates?sector=Spin&hex=1910").await;
     assert_eq!(status, StatusCode::OK);
     assert_json_matches(&body, "coordinates_sector_hex.json");
+    parity_json("/api/coordinates?sector=Spin&hex=1910").await;
 }
 
 #[tokio::test]
@@ -142,6 +229,9 @@ async fn coordinates_errors() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, ..) = get("/api/coordinates?sector=Nonesuch").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+    // Live parity: the reference returns the same error statuses.
+    parity_json("/api/coordinates").await;
+    parity_json("/api/coordinates?sector=Nonesuch").await;
 }
 
 // --- Milieux -------------------------------------------------------------
@@ -152,6 +242,7 @@ async fn milieux() {
     assert_eq!(status, StatusCode::OK);
     assert!(ct.contains("application/json"), "ct={ct}");
     assert_json_matches(&body, "milieux.json");
+    parity_json("/api/milieux").await;
 }
 
 // --- T5SS code tables ----------------------------------------------------
@@ -161,6 +252,7 @@ async fn t5ss_allegiances() {
     let (status, _, body) = get("/t5ss/allegiances").await;
     assert_eq!(status, StatusCode::OK);
     assert_json_set_matches(&body, "allegiances.json", "Code");
+    parity_json_with("/t5ss/allegiances", |s| jv_sorted(s, "Code")).await;
 }
 
 #[tokio::test]
@@ -168,6 +260,7 @@ async fn t5ss_sophonts() {
     let (status, _, body) = get("/t5ss/sophonts").await;
     assert_eq!(status, StatusCode::OK);
     assert_json_set_matches(&body, "sophonts.json", "Code");
+    parity_json_with("/t5ss/sophonts", |s| jv_sorted(s, "Code")).await;
 }
 
 // --- Universe (shape unified; completeness still pending) ----------------
@@ -198,6 +291,26 @@ async fn universe_envelope_and_known_sectors_match() {
         let o = ours_map.get(&xy).unwrap_or_else(|| panic!("we omit sector at {xy:?}"));
         let t = theirs_map.get(&xy).unwrap_or_else(|| panic!("ref omits sector at {xy:?}"));
         assert_eq!(o, t, "sector at {xy:?} differs from reference");
+    }
+    // Live parity: every sector we BOTH return must match on all substantive
+    // fields. `Abbreviation` is excluded — live's hand-curated abbreviations
+    // (e.g. Inc2/Inc3) run slightly ahead of the public res/ snapshot — and we
+    // compare the (X,Y) intersection so a rare sector live has but we don't can't
+    // mask a real field deviation in the ones we share.
+    if parity_enabled() {
+        let live = fetch_live("/api/universe?milieu=M1105").await.1;
+        let live_v = jv(&live);
+        let theirs_live = sectors_by_xy(&live_v);
+        let strip_abbr = |s: &Value| {
+            let mut c = s.clone();
+            c.as_object_mut().unwrap().remove("Abbreviation");
+            c
+        };
+        for (xy, o) in &ours_map {
+            if let Some(t) = theirs_live.get(xy) {
+                assert_eq!(strip_abbr(o), strip_abbr(t), "universe sector {xy:?} differs from live");
+            }
+        }
     }
 }
 
@@ -305,6 +418,7 @@ async fn data_world_by_hex() {
     assert_eq!(status, StatusCode::OK);
     assert!(ct.contains("application/json"), "ct={ct}");
     assert_json_matches(&body, "data_world_regina.json");
+    parity_json("/data/Spinward%20Marches/1910").await;
 }
 
 // --- SEC / tab text output -----------------------------------------------
@@ -316,6 +430,7 @@ async fn sec_tab_delimited() {
     assert!(ct.contains("text/plain"), "ct={ct}");
     // TabDelimited carries no metadata block (hence no timestamp) — byte-exact.
     assert_eq!(body, golden("sec_sm_subsectorA.tab"));
+    parity_text("/api/sec?sector=Spinward%20Marches&subsector=A&type=TabDelimited").await;
 }
 
 #[tokio::test]
@@ -324,6 +439,7 @@ async fn sec_second_survey() {
     assert_eq!(status, StatusCode::OK);
     // The metadata block carries a generation timestamp; normalize it away.
     assert_eq!(strip_timestamp(&body), strip_timestamp(&golden("sec_sm_subsectorA.sec")));
+    parity_text("/api/sec?sector=Spinward%20Marches&subsector=A&type=SecondSurvey").await;
 }
 
 /// Replace the `# <ISO-8601 timestamp>` metadata line with a fixed token so the
@@ -349,6 +465,7 @@ async fn metadata_json() {
     assert_eq!(status, StatusCode::OK);
     assert!(ct.contains("application/json"), "ct={ct}");
     assert_eq!(norm_metadata(&body), norm_metadata(&golden("metadata_sm.json")));
+    parity_json_with("/api/metadata?sector=Spinward%20Marches", norm_metadata).await;
 }
 
 /// Normalize a metadata doc for comparison: (1) sort `Allegiances` by code —
@@ -403,6 +520,7 @@ async fn credits_json() {
     let (status, _, body) = get("/api/credits?sector=Spinward%20Marches&hex=1910").await;
     assert_eq!(status, StatusCode::OK);
     assert_json_matches(&body, "credits_sm_1910.json");
+    parity_json("/api/credits?sector=Spinward%20Marches&hex=1910").await;
 }
 
 // --- JumpWorlds ----------------------------------------------------------
@@ -412,6 +530,7 @@ async fn jumpworlds_json() {
     let (status, _, body) = get("/api/jumpworlds?sector=Spinward%20Marches&hex=1910&jump=2").await;
     assert_eq!(status, StatusCode::OK);
     assert_json_matches(&body, "jumpworlds_sm_1910_j2.json");
+    parity_json("/api/jumpworlds?sector=Spinward%20Marches&hex=1910&jump=2").await;
 }
 
 // --- Route: documented bare-array public shape ---------------------------
@@ -439,12 +558,14 @@ async fn data_alias_coordinates() {
     let (status, _, body) = get("/data/Spinward%20Marches/1910/coordinates").await;
     assert_eq!(status, StatusCode::OK);
     assert_json_matches(&body, "coordinates_sector_hex.json");
+    parity_json("/data/Spinward%20Marches/1910/coordinates").await;
 }
 
 #[tokio::test]
 async fn data_alias_sec_tab() {
     let (status, ..) = get("/data/Spinward%20Marches/tab").await;
     assert_eq!(status, StatusCode::OK);
+    parity_text("/data/Spinward%20Marches/tab").await;
 }
 
 // --- Content negotiation: Accept: text/xml -------------------------------

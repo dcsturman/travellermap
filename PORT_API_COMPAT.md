@@ -54,6 +54,12 @@ The image endpoints (Tile/Poster/JumpMap) are intentionally N/A — those render
 
 An end-to-end suite drives the **real axum router in-process** (`tower::oneshot`) and checks every documented data endpoint against **golden fixtures captured from the live travellermap.com API** (`crates/backend/tests/refs/*`). JSON is compared as `serde_json::Value` (order- and `\/`-escaping-insensitive); the T5SS code tables are compared as a **set keyed by `Code`** (their array order is incidental — the reference uses .NET culture-sensitive collation). This is the parity oracle for the whole effort.
 
+### Live parity (2026-06-16) — golden + live double-check
+
+Goldens are snapshots and silently rot. So each data-endpoint test **also** sends the *same* request to live travellermap.com and our in-process router and compares them — failing if (1) we call the reference wrong (status mismatch) or (2) the bodies differ (beyond documented equivalences: `\/`-escaping, key order, T5SS sort, the metadata route-notation normalization). **On by default** so a local `cargo test` checks live; **CI sets `TMAP_SKIP_PARITY=1`** to skip it (network-dependent → slow/rate-limited/offline-hostile, doesn't belong in the fast gate). Helpers: `fetch_live` / `parity_json` / `parity_json_with` / `parity_text` in `compat_suite.rs`.
+
+**Findings (verified 2026-06-16, ours vs live):** byte-identical for `/api/coordinates` (all forms), `/api/milieux`, `/t5ss/{allegiances,sophonts}`, `/api/credits`, `/api/sec` (TabDelimited + SecondSurvey), `/data/{sector}/{hex}`, `/api/jumpworlds`. **Universe:** 1020/1021 sectors match on every field; **47 sectors differ in `Abbreviation` only** (+1 sector position) — live's hand-curated abbreviations (`Inc2`/`Inc3`…) run slightly *ahead* of the public `res/` snapshot, so the universe parity strips `Abbreviation` and compares the `(X,Y)` intersection. (This is the *only* live drift found — everything else is exact. NB: "matches upstream GitHub" ≠ "matches live", which runs marginally ahead.)
+
 **TDD convention:** endpoints not yet implemented (or not yet in the public shape) have their test `#[ignore = "…"]`d **with the target assertion already written**, so implementing one = deleting its `ignore`. Scoreboard:
 
 ```
