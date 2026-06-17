@@ -501,11 +501,52 @@ fn route_abs(o: &serde_json::Map<String, Value>, hk: &str, oxk: &str, oyk: &str,
 // --- MSEC ----------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "msec: emit MSEC metadata text via MSECWriter"]
 async fn msec_text() {
     let (status, _, body) = get("/api/msec?sector=Spinward%20Marches").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, golden("msec_sm.msec"));
+    assert_eq!(norm_msec(&body), norm_msec(&golden("msec_sm.msec")));
+    parity_msec("/api/msec?sector=Spinward%20Marches").await;
+}
+
+/// Normalize an MSEC document for comparison. Strips the generation timestamp,
+/// then sorts the `route`/`label`/`border` lines **within each allegiance group
+/// block**. The reference orders equal-key lines (same allegiance + same kind)
+/// via .NET's *unstable* `List.Sort`, an internal sort artifact we deliberately
+/// don't reproduce; everything else — the header, group set, group order, group
+/// names, and each line's exact text — stays byte-exact.
+fn norm_msec(s: &str) -> String {
+    let s = strip_timestamp(s);
+    let mut out: Vec<String> = Vec::new();
+    let mut group: Vec<String> = Vec::new();
+    let flush = |out: &mut Vec<String>, group: &mut Vec<String>| {
+        group.sort();
+        out.append(group);
+    };
+    for line in s.lines() {
+        // A group header (`# Name`) — or any comment/blank line — is a boundary:
+        // flush the accumulated body lines (sorted) before emitting it verbatim.
+        if line.starts_with('#') || line.is_empty() {
+            flush(&mut out, &mut group);
+            out.push(line.to_string());
+        } else {
+            group.push(line.to_string());
+        }
+    }
+    flush(&mut out, &mut group);
+    out.join("\n")
+}
+
+/// Live parity for MSEC, order-insensitive within groups (see `norm_msec`).
+async fn parity_msec(path: &str) {
+    if !parity_enabled() {
+        return;
+    }
+    let (ours_status, _, ours_body) = get(path).await;
+    let (live_status, live_body) = fetch_live(path).await;
+    assert_eq!(ours_status.as_u16(), live_status.as_u16(), "status vs live for {path}");
+    if ours_status.is_success() {
+        assert_eq!(norm_msec(&ours_body), norm_msec(&live_body), "live MSEC parity for {path}");
+    }
 }
 
 // --- Credits -------------------------------------------------------------
