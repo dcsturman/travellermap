@@ -497,6 +497,16 @@ fn strip_html(s: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// An external link styled for the dark panels (opens in a new tab).
+fn ext_link(href: &'static str, label: &'static str) -> impl IntoView {
+    view! {
+        <a href=href target="_blank" rel="noopener noreferrer"
+           style="color:#e9b44a; text-decoration:none; border-bottom:1px solid rgba(233,180,74,0.4);">
+            {label}
+        </a>
+    }
+}
+
 /// A small underlined section header in a panel.
 fn section_header(label: &'static str) -> impl IntoView {
     view! {
@@ -1816,6 +1826,60 @@ fn App() -> impl IntoView {
     #[cfg(feature = "callisto")]
     let on_sys_up = move |_ev: web_sys::MouseEvent| sys_drag.set(None);
 
+    // Shared touch zoom/pan for both popup viewers (the PNG world-surface map and the
+    // SVG system map): seed the gesture on touchstart/end, then one finger pans and two
+    // fingers pinch-zoom + pan (anchored on the pinch midpoint). Operates on the same
+    // sys_zoom/sys_pan as the wheel/drag path. Clearing sys_tip / cancelling sys_lp is a
+    // no-op for the PNG viewer (it has no tooltip/long-press) and the right thing for the
+    // SVG viewer.
+    #[cfg(feature = "callisto")]
+    let sys_touch_seed = move |ev: &web_sys::TouchEvent| {
+        match *touch_points(ev).as_slice() {
+            [a, b, ..] => sys_touch.set(Some(TouchGesture::Two { dist: pt_dist(a, b), mid: pt_mid(a, b) })),
+            [a] => sys_touch.set(Some(TouchGesture::One { last: a })),
+            _ => sys_touch.set(None),
+        }
+    };
+    #[cfg(feature = "callisto")]
+    let sys_touch_move = move |ev: web_sys::TouchEvent| {
+        ev.prevent_default();
+        let pts = touch_points(&ev);
+        match (sys_touch.get_untracked(), pts.as_slice()) {
+            (Some(TouchGesture::One { last }), [a]) => {
+                let (dx, dy) = (a.0 - last.0, a.1 - last.1);
+                if dx.abs() > 6.0 || dy.abs() > 6.0 {
+                    if let Some(id) = sys_lp.get_untracked() { clear_timeout(id); sys_lp.set(None); }
+                    sys_tip.set(None);
+                }
+                let (px, py) = sys_pan.get_untracked();
+                sys_pan.set((px + dx, py + dy));
+                sys_touch.set(Some(TouchGesture::One { last: *a }));
+            }
+            (Some(TouchGesture::Two { dist, mid }), [a, b]) => {
+                if let Some(id) = sys_lp.get_untracked() { clear_timeout(id); sys_lp.set(None); }
+                sys_tip.set(None);
+                let center = ev.current_target()
+                    .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+                    .map(|el| { let r = el.get_bounding_client_rect(); (r.x() + r.width() / 2.0, r.y() + r.height() / 2.0) })
+                    .unwrap_or((0.0, 0.0));
+                let nd = pt_dist(*a, *b);
+                let nm = pt_mid(*a, *b);
+                let z = sys_zoom.get_untracked();
+                let factor = if dist > 1.0 { nd / dist } else { 1.0 };
+                let nz = (z * factor).clamp(1.0, 8.0);
+                let (mx, my) = (nm.0 - center.0, nm.1 - center.1);
+                let (omx, omy) = (mid.0 - center.0, mid.1 - center.1);
+                let (px, py) = sys_pan.get_untracked();
+                let npx = mx - nz * (mx - (px + mx - omx)) / z;
+                let npy = my - nz * (my - (py + my - omy)) / z;
+                if nz <= 1.0 + 1e-6 { sys_pan.set((0.0, 0.0)); } else { sys_pan.set((npx, npy)); }
+                sys_zoom.set(nz);
+                sys_touch.set(Some(TouchGesture::Two { dist: nd, mid: nm }));
+            }
+            _ => {}
+        }
+    };
+
     // A full-screen "zoom into the world" overlay: the high-res system render in
     // a zoom (wheel) / pan (drag) viewport, with Reset / Print / Download / Close.
     #[cfg(feature = "callisto")]
@@ -1824,23 +1888,28 @@ fn App() -> impl IntoView {
     #[cfg(feature = "callisto")]
     let system_modal = view! {
         <Show when=move || system_view.get().is_some()>
-            <div style="position:fixed; inset:0; z-index:30; display:flex; flex-direction:column; \
+            // Size to the *dynamic* viewport (dvh/vw), not `inset:0` — on iOS the latter
+            // is the layout viewport (taller than what's visible behind the toolbar), which
+            // pushes vertically-centered content partly off-screen.
+            <div style="position:fixed; top:0; left:0; width:100vw; height:100dvh; \
+                        z-index:30; display:flex; flex-direction:column; \
                         background:rgba(0,0,0,0.9);">
                 {move || match system_view.get() {
                     // Render in flight — spinner + reassuring copy + live elapsed counter.
                     Some(ImgView::Loading { title }) => view! {
                         <style>"@keyframes tmap-spin{to{transform:rotate(360deg)}}"</style>
-                        <div style="flex:1; display:flex; flex-direction:column; align-items:center; \
-                                    justify-content:center; gap:20px; text-align:center; padding:24px;">
-                            <div style="width:66px; height:66px; border:6px solid rgba(255,255,255,0.14); \
+                        <div style="flex:1; min-height:0; overflow-y:auto; box-sizing:border-box; \
+                                    display:flex; flex-direction:column; align-items:center; \
+                                    justify-content:center; gap:16px; text-align:center; padding:20px;">
+                            <div style="flex:none; width:58px; height:58px; border:6px solid rgba(255,255,255,0.14); \
                                         border-top-color:#e32736; border-radius:50%; \
                                         animation:tmap-spin 0.9s linear infinite;"></div>
-                            <div style="font:700 17px system-ui; color:#fff; max-width:32ch;">{title}</div>
-                            <div style="font:13px system-ui; color:#9aa3b8; max-width:38ch; line-height:1.5;">
+                            <div style="font:700 16px system-ui; color:#fff; max-width:90vw;">{title}</div>
+                            <div style="font:13px system-ui; color:#9aa3b8; max-width:min(38ch,88vw); line-height:1.5;">
                                 "Generating the map — the first render of a world can take up to ~15 seconds. \
                                  It's cached after that, so it'll be instant next time."
                             </div>
-                            <div style="font:700 30px ui-monospace,monospace; color:#e9eef9; letter-spacing:0.04em;">
+                            <div style="font:700 28px ui-monospace,monospace; color:#e9eef9; letter-spacing:0.04em;">
                                 {move || format!("{}s", sys_elapsed.get())}
                             </div>
                             <button style=btn on:click=move |_| close_system()>"Cancel"</button>
@@ -1919,48 +1988,7 @@ fn App() -> impl IntoView {
                                 sys_lp.set(Some(id));
                             }
                         };
-                        // Touch move: one finger pans, two fingers pinch-zoom + pan
-                        // (anchored on the pinch midpoint); any real movement cancels a
-                        // pending long-press and hides the tooltip.
-                        let on_svg_tmove = move |ev: web_sys::TouchEvent| {
-                            ev.prevent_default();
-                            let pts = touch_points(&ev);
-                            match (sys_touch.get_untracked(), pts.as_slice()) {
-                                (Some(TouchGesture::One { last }), [a]) => {
-                                    let (dx, dy) = (a.0 - last.0, a.1 - last.1);
-                                    if dx.abs() > 6.0 || dy.abs() > 6.0 {
-                                        if let Some(id) = sys_lp.get_untracked() { clear_timeout(id); sys_lp.set(None); }
-                                        sys_tip.set(None);
-                                    }
-                                    let (px, py) = sys_pan.get_untracked();
-                                    sys_pan.set((px + dx, py + dy));
-                                    sys_touch.set(Some(TouchGesture::One { last: *a }));
-                                }
-                                (Some(TouchGesture::Two { dist, mid }), [a, b]) => {
-                                    if let Some(id) = sys_lp.get_untracked() { clear_timeout(id); sys_lp.set(None); }
-                                    sys_tip.set(None);
-                                    let center = ev.current_target()
-                                        .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-                                        .map(|el| { let r = el.get_bounding_client_rect(); (r.x() + r.width() / 2.0, r.y() + r.height() / 2.0) })
-                                        .unwrap_or((0.0, 0.0));
-                                    let nd = pt_dist(*a, *b);
-                                    let nm = pt_mid(*a, *b);
-                                    let z = sys_zoom.get_untracked();
-                                    let factor = if dist > 1.0 { nd / dist } else { 1.0 };
-                                    let nz = (z * factor).clamp(1.0, 8.0);
-                                    let (mx, my) = (nm.0 - center.0, nm.1 - center.1);
-                                    let (omx, omy) = (mid.0 - center.0, mid.1 - center.1);
-                                    let (px, py) = sys_pan.get_untracked();
-                                    // pan by the midpoint's travel, then re-anchor the zoom on it
-                                    let npx = mx - nz * (mx - (px + mx - omx)) / z;
-                                    let npy = my - nz * (my - (py + my - omy)) / z;
-                                    if nz <= 1.0 + 1e-6 { sys_pan.set((0.0, 0.0)); } else { sys_pan.set((npx, npy)); }
-                                    sys_zoom.set(nz);
-                                    sys_touch.set(Some(TouchGesture::Two { dist: nd, mid: nm }));
-                                }
-                                _ => {}
-                            }
-                        };
+                        // Touch move (pan / pinch-zoom) is the shared `sys_touch_move`.
                         let on_svg_tend = move |ev: web_sys::TouchEvent| {
                             if let Some(id) = sys_lp.get_untracked() { clear_timeout(id); sys_lp.set(None); }
                             match *touch_points(&ev).as_slice() {
@@ -1990,7 +2018,7 @@ fn App() -> impl IntoView {
                                  on:mouseleave=move |_| { sys_drag.set(None); sys_tip.set(None); }
                                  on:dblclick=on_svg_dbl
                                  on:touchstart=on_svg_tstart
-                                 on:touchmove=on_svg_tmove
+                                 on:touchmove=sys_touch_move
                                  on:touchend=on_svg_tend
                                  on:touchcancel=on_svg_tend
                                  style="flex:1; overflow:hidden; position:relative; touch-action:none;"
@@ -2026,6 +2054,10 @@ fn App() -> impl IntoView {
                             </div>
                             <div on:wheel=on_sys_wheel on:mousedown=on_sys_down on:mousemove=on_sys_move
                                  on:mouseup=on_sys_up on:mouseleave=on_sys_up
+                                 on:touchstart=move |ev| sys_touch_seed(&ev)
+                                 on:touchmove=sys_touch_move
+                                 on:touchend=move |ev| sys_touch_seed(&ev)
+                                 on:touchcancel=move |ev| sys_touch_seed(&ev)
                                  style="flex:1; overflow:hidden; display:flex; align-items:center; justify-content:center; \
                                         touch-action:none;"
                                  style:cursor=move || if sys_drag.get().is_some() { "grabbing" } else { "grab" }>
@@ -2115,7 +2147,17 @@ fn App() -> impl IntoView {
                     on:touchmove=on_touch_move
                     on:touchend=on_touch_end
                     on:touchcancel=on_touch_end></canvas>
-            <div style="position:fixed; top:10px; left:12px; width:320px; \
+            // On narrow (mobile) viewports the search box (left) and the control cluster
+            // (right) collide, so stack them: controls in a row on top, the search box
+            // full-width beneath. `!important` overrides the inline base (desktop) styles.
+            <style>
+                "@media (max-width:640px){\
+                   .tmap-search{top:56px!important;left:8px!important;right:8px!important;width:auto!important;}\
+                   .tmap-controls{top:10px!important;right:8px!important;}\
+                 }"
+            </style>
+            <div class="tmap-search"
+                 style="position:fixed; top:10px; left:12px; width:320px; \
                         font:14px system-ui,sans-serif; color:#cfd6e6;">
                 <div style="display:flex; gap:6px; align-items:stretch;">
                     <div style="flex:1; min-width:0; position:relative;">
@@ -2417,7 +2459,8 @@ fn App() -> impl IntoView {
             </div>
 
             // --- top-right control cluster: home / clock / key / hamburger ---
-            <div style="position:fixed; top:10px; right:12px; display:flex; gap:6px;">
+            <div class="tmap-controls"
+                 style="position:fixed; top:10px; right:12px; display:flex; gap:6px;">
                 <button on:click=on_home title="Home — charted-space overview"
                         style=BTN_STYLE>"⌂"</button>
                 <button title="Milieu — time period" style=BTN_STYLE
@@ -2450,6 +2493,8 @@ fn App() -> impl IntoView {
                         <path d="M8.6 13.5 L15.4 17.5 M15.4 6.5 L8.6 10.5"></path>
                     </svg>
                 </button>
+                <button title="Help, about & credits" style=BTN_STYLE
+                        on:click=move |_| panel.update(|p| *p = if *p == 5 { 0 } else { 5 })>"?"</button>
             </div>
 
             // --- milieu / time selector panel ---
@@ -2591,8 +2636,71 @@ fn App() -> impl IntoView {
                     {toggle_row("Frame Timing (HUD)", opt_perf)}
                     <div style="margin-top:14px; padding-top:10px; border-top:1px solid #20283a; \
                                 font-size:12px; color:#7e879c; line-height:1.5;">
-                        "Not yet ported: style themes, milieu time-travel, \
-                         and share links."
+                        "Not yet ported: style themes."
+                    </div>
+                </div>
+            </Show>
+
+            // --- help / about / credits panel (the "?" tab) ---
+            <Show when=move || panel.get() == 5>
+                <div style=PANEL_STYLE>
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <span style="font-weight:700; letter-spacing:0.05em;">"ABOUT"</span>
+                        <span on:click=move |_| panel.set(0)
+                              style="cursor:pointer; color:#8a93a8; font-size:18px;">"✕"</span>
+                    </div>
+                    <hr style="border:none; border-top:1px solid #2a3145; margin:8px 0 4px;" />
+                    <div style="font-size:13px; line-height:1.55; color:#cfd6e6;">
+                        "An interactive map of the "<i>"Traveller"</i>" universe — pan, zoom, \
+                         and explore charted space across thousands of star systems."
+                    </div>
+
+                    {section_header("CONTROLS")}
+                    <ul style="margin:2px 0 0; padding-left:18px; font-size:12.5px; \
+                               line-height:1.6; color:#c2cad9;">
+                        <li>"Drag to pan; scroll or pinch to zoom."</li>
+                        <li>"Click a world for its UWP, trade codes, and details."</li>
+                        <li>"Search by name in the box at top-left."</li>
+                        <li>"Plan a jump route with the route button; pick an era with the clock; share the view with the share button."</li>
+                        {
+                            #[cfg(feature = "callisto")]
+                            { view! { <li>"Double-click (or long-press) a world to generate its solar system."</li> }.into_any() }
+                            #[cfg(not(feature = "callisto"))]
+                            { ().into_any() }
+                        }
+                    </ul>
+
+                    {section_header("CREDITS & ATTRIBUTION")}
+                    <div style="font-size:12.5px; line-height:1.6; color:#c2cad9;">
+                        "This is an independent, client-side reimplementation \
+                         (Rust + Leptos / WebAssembly) of "
+                        {ext_link("https://travellermap.com", "The Traveller Map")}"."
+                        <div style="margin-top:8px;">
+                            "Original source code © 2006–2023 Joshua Bell, licensed under the "
+                            {ext_link("https://www.apache.org/licenses/LICENSE-2.0", "Apache License, Version 2.0")}
+                            ". This project is a derivative work — an independent rewrite — and \
+                             is not affiliated with or endorsed by the original author. The \
+                             original site and source remain available:"
+                        </div>
+                        <ul style="margin:6px 0 0; padding-left:18px; line-height:1.7;">
+                            <li>{ext_link("https://travellermap.com", "travellermap.com")}</li>
+                            <li>{ext_link("https://github.com/inexorabletash/travellermap", "github.com/inexorabletash/travellermap")}</li>
+                        </ul>
+                        <div style="margin-top:8px;">
+                            "Sector data, metadata, and map geometry are © their original \
+                             authors — the Traveller Second Survey (T5SS) and many contributors. \
+                             See the full "
+                            {ext_link("https://travellermap.com/doc/credits", "Credits & Data Sources")}"."
+                        </div>
+                    </div>
+
+                    {section_header("TRAVELLER")}
+                    <div style="font-size:11.5px; line-height:1.55; color:#9aa3b8;">
+                        <i>"Traveller"</i>" is © 1977–2024 Mongoose Publishing and is a \
+                         registered trademark of Mongoose Publishing. This is a non-commercial \
+                         fan project presented under Mongoose's "
+                        {ext_link("https://cdn.shopify.com/s/files/1/0609/6139/0839/files/Traveller_Fair_Use_Policy_2024.pdf?v=1725357857", "Fair Use Policy")}
+                        ". Map content is for personal, non-commercial use only."
                     </div>
                 </div>
             </Show>

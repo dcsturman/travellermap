@@ -300,9 +300,19 @@ The hamburger / search-bar menu items still stubbed in the Settings panel ("Not 
 
   The display labels are a **curated hardcoded list** (ported from the reference `index.html` `#settings` milieu radios — *not* in the data; `res/Sectors/milieu.tab` only lists which milieu XMLs exist + an OTU/non-OTU tag). The data also has **M600** etc.; mirror the curated OTU subset above (no M600). Selecting one switches the active milieu: `MILIEU` is currently a **const** in `main.rs` — make it a signal, re-fetch universe + overlays + visible sectors, and **clear `SECTOR_GEOM`/border caches** (geometry is per-milieu). Index/stream/search already key off milieu server-side, so the backend needs no change.
 - [~] **Share tab — MVP DONE 2026-06-16 (link + embed).** Share button (link icon) in the top-right cluster opens a panel (`panel == 4`) with a **"Share this link"** field + Copy and an **"Embed this HTML"** field (`<iframe width=400 height=300 src="…">`) + Copy, both fed by a live `share_url` memo. **Scheme decision (user, 2026-06-16): our own params now, travellermap.com-compat later** — `?cx&cy&scale&milieu` (center in our parsec space, px/parsec scale, milieu omitted when default), encapsulated in `build_share_url`/`parse_share_params` as a single swap-point for the reference `p=x!y!logScale` format. The app **reads the params on load** (seeds the initial view + milieu, overriding the default Spinward-Marches fit) and **reflects the live view in the address bar** via `history.replaceState`, **debounced 400 ms** (Safari rate-limits replaceState ~100/30 s; a drag fires far more). **Still TODO:** travellermap.com URL compatibility (needs the `worldToMap`/`mapToWorld` coordinate-transform port + live verification); **Save Snapshot/PDF** export + social-share buttons; a real `?` Help/About tab. *(Embed relies on the backend not sending `X-Frame-Options: DENY` — it doesn't today.)*
-- [ ] **Style themes** — the Poster / Atlas / Print / Candy presets (the 4 thumbnails). Needs the `Stylesheet` theme system: a palette/parameter set selected at the top of `render`, threaded like `RenderOptions`. Largest item.
+- [ ] **Style themes** — the Poster / Atlas / Print / Candy presets (the 4 thumbnails). Needs the `Stylesheet` theme system: a palette/parameter set selected at the top of `render`, threaded like `RenderOptions`. Largest item. **Plan: `STYLE_THEMES_PLAN.md`** (2026-06-18) — a theme is a small palette+flags struct (5 generic cascade colors + ~15 element colors + font family + flags); all geometry/LOD is shared and already ported. Phased: A) extract `Theme::poster()` from current consts + thread `&Theme` through every `render` pass (pixel-identical) → B) Atlas (grayscale/white) proves the cascade → C) `style` signal + settings selector + `&style=` URL round-trip + border-cache invalidation → D) full 8 presets (Mongoose needs a glyph-layout override; Candy approximate). Per-preset values cited from `Stylesheet.cs` line numbers in the plan.
 - [x] **Dim Unofficial Data — DONE 2026-06-12 (commit `4107389a`).** `SectorInfo.tags` now carries the review status; `status::draw_dim_overlay` greys the bounds of sectors not tagged `Official`/`Preserve`/`InReview`, gated by the new "Dim Unofficial" appearance toggle (off by default).
-- [ ] **Help / about** — the `?` tab; link to docs / attribution.
+- [x] **Help / about / credits — DONE 2026-06-18.** The `?` tab (top-right cluster) opens
+  an **ABOUT** panel (`panel == 5`, `main.rs`): a one-line "what is this", a **CONTROLS**
+  quick-help list (pan/zoom, click-a-world, search, route/era/share; the double-click
+  solar-system line is `#[cfg(feature = "callisto")]`), and — the point of it — a
+  **CREDITS & ATTRIBUTION** section for **Apache-2.0 compliance**: names this an
+  independent client-side reimplementation (derivative work, not affiliated/endorsed),
+  retains the **© 2006–2023 Joshua Bell** copyright, links the **Apache License 2.0**,
+  and points back to travellermap.com + `github.com/inexorabletash/travellermap`; plus a
+  **TRAVELLER** Mongoose Publishing trademark/Fair-Use notice and a link to the original
+  Credits & Data Sources. New `ext_link` helper. (LICENSE.md in the repo already retains
+  the source-form notices; this surfaces the attribution in-app.)
 
 ### Data & API compatibility
 
