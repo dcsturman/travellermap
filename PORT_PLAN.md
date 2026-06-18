@@ -1,359 +1,246 @@
 # Traveller Map — Rust/Leptos Port Plan
 
-Living roadmap for the rewrite (see `CLAUDE.md` "Mission" and the Rust-rewrite section). Multi-session — **update this file as we go**: tick boxes, record decisions/learnings inline, and note anything that changed the plan.
+Living roadmap for the rewrite (see `CLAUDE.md` "Mission" and the Rust-rewrite section).
+**Everything here is a numbered phase.** Phases 0–10 are done; 11+ are the remaining work.
+A parallel **Callisto track** holds the experimental, feature-gated extensions. Update this
+file as we go: tick boxes, fold in decisions, keep entries short.
 
 ## How we work
 
-- **Agile + demoable.** Each phase ends in something the user can run and see. Almost everything from Phase 2 on is testable in the browser at `http://localhost:8080` (`trunk serve` in `crates/frontend/`) with the backend on `:3000` (`cargo run -p tmap-backend`).
-- **Order:** real data over the wire → first pixels → make it a map → roam → zoom-out → styling → metadata → search → optimize → deploy.
-- **Per phase, record:** what shipped, how to test it, and any decisions/surprises.
+- **Agile + demoable.** Each phase ends in something you can run and see in the browser:
+  `cargo run -p tmap-backend` (`:3000`) + `trunk serve` in `crates/frontend/` (`:8080`).
+- **Order:** data over the wire → first pixels → make it a map → roam → zoom-out → styling →
+  metadata → search → optimize → parity polish → deploy.
+- Per phase, record what shipped + how to test + any decision that changed the plan.
 
 ## Baked-in tech decisions
 
-- **Rendering: all logic in Rust/WASM, behind a `Canvas` graphics trait; Canvas 2D backend now, GPU (wgpu) later.**
-  - *Why a trait:* mirror the reference's `AbstractGraphics` abstraction. Write the `RenderContext`/`Stylesheet` port **once** against `trait Canvas { fn line/fill_path/text/... }`. Provide a `Canvas2d` impl now (browser native rasterization), and we can add a `WgpuCanvas` impl later to move paint onto the GPU **without rewriting scene logic**.
-  - *Why Canvas 2D first:* fastest path to pixels, and Canvas 2D ≈ immediate-mode `AbstractGraphics`, so the port is near-mechanical. Drive it imperatively from a Leptos effect/animation loop; Leptos owns UI chrome (toolbar, search, layer toggles), canvas owns the map.
-  - *On `web-sys` and the "all rendering in Rust" goal:* WASM is sandboxed and **cannot paint to the screen itself** — every approach calls a browser API to do the actual pixel-pushing. `web-sys` is just the Rust binding layer to those APIs (Leptos uses it too); calling Canvas 2D / WebGPU through it **is** Rust/WASM. The speed win is that all the *logic* (scene, culling, LOD, coord math, parsing) runs as compiled WASM, while the browser's **native/GPU rasterizer** does the final draw. A literal pure-Rust CPU rasterizer (e.g. `tiny-skia`→`putImageData`) would be the *slowest* option, so we don't do that. GPU path = wgpu (WebGPU, WebGL fallback) when/if a zoomed-out frame ever needs it.
-- **Parsing lives in `tmap-core`** (I/O-free): `.tab`/`.sec`/`.xml` text → `dto` types. Backend does file I/O + serving; frontend consumes JSON. Same parser feeds the future pyramid precompute tool.
-- **LOD is in the API contract from day one, but full tiling is deferred to Phase 9.** LOD has two axes: *spatial quantization* (how much area per request) and *per-feature detail* (how much per world). Two invariants we hold from Phase 1:
-  - **The parser is always full-fidelity; LOD is a *projection* over parsed data, never a different parse.** A low-LOD payload is a computed subset — so the `tmap-core` types and parser never change as LOD arrives (it's a serving concern).
-  - **The API carries an explicit `lod` parameter from Phase 1** (`?lod=full` initially, the only tier implemented), and the client's fetch/cache layer is addressed by *region + lod*. So LOD becomes load-bearing only at Phase 4–5 (multi-sector / zoom-out), and Phase 9 generalizes the *spatial* axis to `(lod, x, y)` tiles — the `lod` axis is already in the contract, nothing reshapes.
-- See `CLAUDE.md` for the datastore (none), streaming (data-tile pyramid), and rendering (client-side) decisions this plan implements.
+- **All render logic in Rust/WASM behind a `Canvas` trait; Canvas 2D backend now, wgpu later.**
+  The trait mirrors the reference `AbstractGraphics`, so `RenderContext`/`Stylesheet` is ported
+  once and a `WgpuCanvas` can drop in without rewriting scene logic. WASM can't paint directly —
+  `web-sys` is the binding to Canvas 2D/WebGPU; the win is that *logic* (scene, culling, LOD,
+  parsing) is compiled WASM while the browser's native/GPU rasterizer does the final draw.
+- **Parsing lives in `tmap-core`** (I/O-free): `.tab`/`.sec`/`.xml` → `dto` types. Backend does
+  I/O + serving; frontend consumes JSON. Same parser will feed the future tile-precompute tool.
+- **LOD is in the API contract from day one** (`?lod=`), but the parser is always full-fidelity —
+  a low-LOD payload is a *projection*, never a different parse. Full `(lod,x,y)` tiling is deferred
+  (Phase 14) until profiling justifies it.
+- Datastore: **none** (`res/` is the system of record, loaded into RAM). See `CLAUDE.md`.
 
 ---
 
-## Phase 0 — Scaffold ✅ DONE
-Workspace (`tmap-core`/`tmap-backend`/`tmap-frontend`), placeholder backend (`/api/health`, `/api/sector/sample`) and frontend page.
-**Test:** `cargo run -p tmap-backend` + `trunk serve` → placeholder page loads; `curl localhost:3000/api/health` → `ok`.
+# Completed phases (0–10)
 
-## Phase 1 — Real data over the wire ✅ DONE
-Infra; verified by endpoint, not yet graphical.
-- [x] 1a. `.tab` parser in `tmap-core` (`parse::parse_tab` → `dto::World`), porting `TabDelimitedParser`/`ParseWorld` header-driven, name-keyed field logic (alternate names, `EmptyIfDash`, full 17-column fidelity). Unit tests in `parse.rs`.
-- [x] 1b. Backend loads `res/Sectors/<milieu>/` and serves `GET /api/sector/{milieu}/{name}?lod=full` as JSON. `lod` is a first-class param but only the `full` tier exists now (parser stays full-fidelity; LOD is a later projection). Path-traversal guarded; 400 bad-lod / 404 missing / 400 traversal.
-**Test (verified):** `cargo test -p tmap-core` (6 pass); `cargo run -p tmap-backend` then `curl 'localhost:3000/api/sector/M1105/Spinward%20Marches?lod=full'` → 439 worlds, Regina fully parsed.
-**Notes/learnings:** real `.tab` files carry richer fields than the sample (e.g. Regina remarks include sophont codes `(Amindii)2 Varg0 Asla0`, multi-star `F7 V BD M3 V`) — all preserved raw. `SectorInfo.location` is `None` until the sector index lands (Phase 4). Backend resolves `res/` from CWD (workspace root) or `TMAP_RES_DIR`.
+**Phase 0 — Scaffold.** Workspace (`tmap-core`/`tmap-backend`/`tmap-frontend`), placeholder
+backend + frontend page.
 
-## Phase 2 — First pixels: one sector in the browser  ✅ DONE  ← first UI win
-- [x] 2a. `Canvas` graphics trait + `Canvas2d` (web-sys) impl in `canvas.rs`; renderer in `render.rs` written **only** against the trait (no web-sys in scene logic — the swappable seam). Leptos `App` fetches one sector (gloo-net) and draws when canvas+data are ready. World dots placed via `astrometrics::parse_hex` + flat-top hex layout (`Viewport`).
-- [x] 2b. World names + faint flat-top hex grid for all 1280 parsec cells. Dots tinted by travel zone (R/A).
-**Test (verified end-to-end):** `cargo run -p tmap-backend` (repo root) + `trunk serve` (in `crates/frontend/`) → open `http://localhost:8080`; status shows "Spinward Marches — 439 worlds" and the canvas draws the sector (labeled dots on a hex grid). Verified: wasm bundles, Trunk proxies `/api`→:3000, endpoint returns 439 worlds through :8080.
-**Notes/learnings:** geometry = flat-top hexes, column pitch `0.866·ppp`, even columns staggered +0.5 row; `size = ppp/√3`. `TextAlign::{Left,Right}` unused yet (dead-code warning, intentional API surface). Drawing runs in a Leptos `Effect` keyed on canvas ref + data signal. Next phase replaces the fixed fit with a pan/zoom `Viewport`.
+**Phase 1 — Real data over the wire.** `.tab` parser in `tmap-core` (`parse::parse_tab` →
+`dto::World`, full 17-column fidelity, header-driven). Backend serves
+`GET /api/sector/{milieu}/{name}?lod=full` (path-traversal guarded). *Test:* `cargo test
+-p tmap-core`; `curl '…/api/sector/M1105/Spinward%20Marches?lod=full'` → 439 worlds.
 
-## Phase 3 — It's a map: pan & zoom  ✅ DONE
-- [x] Persistent `ViewState { scale (px/parsec), center (parsec) }` drives a uniform map↔screen transform. Mouse-drag pans (`center -= Δpx/scale`); wheel zooms about the cursor (anchor parsec point held fixed); scale clamped `MIN_SCALE..MAX_SCALE`. Off-screen cells/worlds culled; names suppressed below `NAME_MIN_SCALE` to cut clutter. View lazily inits to `fit_sector`.
-**Test:** `cargo run -p tmap-backend` + `trunk serve` → `localhost:8080`; drag to pan, scroll to zoom (zoom follows the cursor). Names appear as you zoom in, hide when zoomed out.
-**Notes/learnings:** scale is **px/parsec** = the same unit as the reference `Stylesheet` LOD thresholds, so Phase 5 plugs straight in (just lower `MIN_SCALE` and gate layers by scale). `PARSEC_SCALE_X` compression + even-col stagger are baked into `hex_to_parsec`, keeping the view transform uniform. Drag anchor kept in an untracked `RwSignal` so panning doesn't thrash draw deps beyond the view signal. Canvas still fixed 760×940 (responsive resize is a later polish).
+**Phase 2 — First pixels.** `Canvas` trait + `Canvas2d` (web-sys) impl; renderer written only
+against the trait. Leptos fetches one sector, draws labeled world dots + flat-top hex grid,
+tinted by travel zone.
 
-## Phase 4 — Roam charted space: multi-sector streaming  ✅ DONE
-- [x] Backend: cached per-milieu sector index built by scanning `res/Sectors/{milieu}/*.xml` (`parse::sector_index_entry` via roxmltree, in `tmap-core`). New `GET /api/universe?milieu=`; `/api/sector` now fills `info.location` from the index.
-- [x] Frontend: switched to **absolute** map coords (`world_hex`/`hex_parsec`, parity continuous since `SECTOR_W` even). Loads the universe index, then a streaming `Effect` fetches the sectors overlapping the viewport (+1 prefetch ring), keyed in off-reactive `StoredValue` caches with an in-flight set; a `version` signal triggers redraws as sectors arrive.
-**Test (verified end-to-end):** `/api/universe` returns 87 placed sectors; neighbors of Spinward Marches resolve to Foreven/Deneb/Gvurrdon/Trojan Reach; Gvurrdon fetches with location + 358 worlds. In the browser: open on Spinward Marches, pan → neighbors stream in and tile seamlessly.
-**Notes/learnings:**
-- **Gotcha (cost me time):** `axum::serve(...).unwrap()` panics if the port is taken, and `kill <cargo-pid>` leaves the child binary running → a *stale* backend kept serving old responses. Always `pkill -f target/debug/tmap-backend` between runs.
-- **Data gap (investigated; deferred by decision):** the map places 87 sectors. Raising coverage is bigger than first thought:
-  - Renderable ceiling with today's **tab-only parser = 90** (the `.tab` files on disk). Switching the index to the milieu region list (`M1105.xml`, authoritative coords + exact `DataFile`/`Type`) nets only ~3 more.
-  - The other ~30 "missing" sectors store data in the **legacy `.sec` format** (regex-extracted like the reference `SecParser`). ✅ **Done in Phase 10** — `parse::parse_sec` (37 M1105 sectors now full; see Phase 10 step 1).
-  - **Decision (2026-06-11):** leave the index at 87 for now; revisit coverage later as a dedicated step. When we do: (1) build the index from the region list (gives coords + DataFile + Type, and pre-stages coords for the `.sec` sectors), then (2) add the `.sec`/SecondSurvey column parser to actually render them.
-- Streaming is capped at `MAX_STREAM=48` visible sectors; beyond that (zoomed way out) it waits for Phase 5's macro overlays instead of a fetch storm. `MIN_SCALE` raised to 2.
-- `ls *.xml | wc -l` lies (columnar) — use `find -maxdepth 1` to count.
+**Phase 3 — Pan & zoom.** `ViewState { scale (px/parsec), center (parsec) }` drives a uniform
+map↔screen transform; drag pans, wheel zooms about the cursor. `scale` is px/parsec = the same
+unit as the reference `Stylesheet` LOD thresholds, so later phases plug straight in.
 
-## Phase 5 — Zoom out: macro overlays + LOD  ✅ DONE
-- [x] `tmap-core`: `VectorObject`/`Overlays` DTOs + `parse::parse_vector_object` (roxmltree). Backend parses `res/Vectors/*.xml` (border/route/rift file lists from the reference `RenderContext`), cached in a `OnceLock`, served at `GET /api/overlays`.
-- [x] Frontend: fetch overlays once; LOD gating in `render::draw` — macro overlays drawn at `scale ≤ MACRO_MAX_SCALE (8)`, worlds+grid at `scale ≥ WORLD_MIN_SCALE (4)`. `MIN_SCALE` lowered to 0.05 so you can zoom right out. Sector streaming now skips when `scale < WORLD_MIN_SCALE` (the "zoom-out is cheapest — no per-world data" model). Vector transform `(p−origin)·scale` then `PARSEC_SCALE_X` compression, matching the reference.
-**Test (verified end-to-end):** `/api/overlays` → 10 borders (Imperium, Aslan Hierate, Two Thousand Worlds, Vargr Extents, Zhodani Consulate, Solomani Sphere, Hive Federation + 3 client states), 3 routes, 5 rifts, through the Trunk proxy. In the browser: zoom out below the world threshold → polity borders/routes/rifts appear and per-sector fetching stops; zoom back in → worlds return.
-**Bugfix (post-review):** borders drew spurious straight lines between disjoint regions (wedges across the map). Cause: a `VectorObject` can hold many sub-paths, delimited by the file's base64 `<PathDataTypes>` GDI+ bytes (`0`=Start-new-subpath, `0x80`=CloseSubpath), which I'd ignored and drawn as one closed loop. Fixed: `tmap-core` now decodes the type bytes and splits into `SubPath { points, closed }`; the renderer draws each independently. Verified: Vargr Extents → 39 regions, client states → 38/12/38, Imperium/Zhodani → 1 closed region.
-**Notes/learnings:** LOD thresholds are in px/parsec, straight from `Stylesheet` (`WorldMinScale=4`). Placeholder palette (green borders/amber routes) is intentional — the real **red OTU `Stylesheet` (colors, star background, grid, labels, fills) is Phase 6**. **Galaxy background image deferred** — it needs `res/` static serving + a Trunk `/res` proxy and a special galaxy-coordinate rect; borders/routes/rifts are the substantive zoom-out feature, so the bitmap is left as polish. Macro overlays are global (milieu-independent), cached once. The `?lod=` projection tiers (lightweight per-world payloads) are still future work — Phase 5 gates *rendering* by scale; it doesn't yet trim the *wire* payload.
+**Phase 4 — Roam: multi-sector streaming.** Backend builds a per-milieu sector index (scans
+`res/Sectors/{milieu}/*.xml`); `GET /api/universe`. Frontend switched to absolute map coords,
+streams the sectors overlapping the viewport (+1 prefetch ring), off-reactive caches + in-flight
+set. *Gotcha:* `pkill -f target/debug/tmap-backend` between runs (stale child kept serving).
 
-## Phase 6 — Looks like Traveller: styling & detail tiers  ✅ DONE
-- [x] OTU palette from `Stylesheet` (`TravellerColors`: Red `#E32736`, Amber `#FFCC00`, water=DeepSkyBlue, dry=White, black bg).
-- [x] Macro view: red polity borders, **white dashed routes** (added dash support to `Canvas`), faint rifts, **region labels** ("THE IMPERIUM", multi-line) at anchors computed in core from `<Bounds>`+`NameX/NameY` (`VectorObject.label`, porting `NamePosition`). Procedural **star field** in world space (deterministic hash, pans correctly, gated/capped for perf).
-- [x] World detail tiers by zoom: dot colored by water (hydro digit), amber/red **zone rings**, names ≥ 18, **UWP** line ≥ 48.
-- [x] **Sector + subsector boundary grids** (`draw_grid_lines`, straight lines at `k·step+0.5`, steps 32×40 / 8×10) and **background names** — sector names (1–16, from the universe index, all sectors) and subsector names (24–64, from `SectorInfo.subsectors` parsed from each sector `.xml` via new `parse::sector_subsectors`, threaded through `/api/sector`).
-- [x] **Polish (post visual-review):** canvas now **fills the window**, devicePixelRatio-aware (crisp on retina), re-sizes on window `resize`; mouse coords scaled by DPR. Worlds + all text **scale with zoom**.
-- [x] **Faithful 1980 world layout** (ported pixel-positions from `RenderContext.DrawWorld` + `Stylesheet`): everything in parsec units (× scale). Stacking: hex# at y −0.5 (top), **starport above** at −0.225, disc (radius 0.1) at center with the **travel-zone as an open-bottom arc** (radius 0.4, behind text), **UWP above the name** (+0.225 / +0.37). Disc **colored by trade classification** (`WorldColors`: Ag&Ri=amber, Ag=green, Ri=purple, In=gray, dense-atmo=rust, vacuum=black+white-outline, water=blue, else white). Gas-giant dot upper-right, base marker upper-left. Tier thresholds 24/48/96 (atlas→poster→UWP) + `fontScale`. Labels center-aligned (canvas `textBaseline=middle`).
-- [x] **Glyph table ported** (`glyph.rs`, from `RenderUtil` `s_baseGlyphTable`): base codes → classic symbols — scout `▲`, naval `★`, military `✦`, depot `■`, corsair/embassy/clan `✶✶`, exploration `●`, Zhodani relay `◆`; specific-allegiance (`Im.D`/`Zh.W`) precedence, top/bottom-slot bias logic, highlighted glyphs in red. **Gas giant** is now the disc + rotated Saturn-**ring** ellipse (≥ scale 96), not a plain dot.
-- [x] **Label fidelity (2nd review):** sector/subsector names are now the **rotated −50° watermarks** (squished 0.75 wide) the reference uses (`sectorName.textStyle`) — sector font 5.5 parsec, subsector 1.5 parsec (`fill_text_rotated`). Hex numbers **top-aligned inside the hex** (were sitting on the top edge). UWP font bumped 0.1→0.13 parsec; hex/subsector grid lines made more visible.
-- [x] **filled allegiance borders + the red Imperium background fill + per-sector (micro) hex borders** — *(done in Phase 7)* driven by parsing each sector's `<Border>`/`<Route>` metadata. The big remaining visual gap closed: `draw_micro_borders` fills each region (FILL_ALPHA 0.25) and strokes the exact hex-edge outline, clipped to its region (red Imperium fill, red hex-edge borders). See Phase 7.
-**Test (verified):** core 11 tests pass; wasm compiles; `/api/overlays` labels land canonically (Zhodani spinward-coreward, Hive trailing-rimward, Vargr coreward, Imperium central); `/api/sector` now returns 16 named subsectors for Spinward Marches (Cronor, Jewell, Regina…). In the browser: zoom out → stars + red named polities + dashed routes + sector grid/names; zoom in → subsector grid/names, then blue/white worlds with zone rings, names, UWPs.
-**Notes/learnings:** `MACRO_MAX_SCALE` set to 4 (= `WORLD_MIN_SCALE`) for a clean macro↔micro handoff matching the reference (`macroBorders` < `MicroBorderMinScale`). Macro/sector/subsector labels use fixed-ish screen sizes (always readable) rather than world-scaled. Universe-index load bumps the redraw `version` so sector names appear without needing user interaction. Sector/subsector names drawn *behind* worlds as faint background labels.
+**Phase 5 — Zoom out: macro overlays.** `VectorObject`/`Overlays` DTOs + `parse_vector_object`;
+backend serves `res/Vectors/*.xml` at `GET /api/overlays` (borders/routes/rifts). LOD gating:
+macro overlays at `scale ≤ 8`, worlds+grid at `scale ≥ 4`; `MIN_SCALE` 0.05. *Bugfix:* decode
+the base64 `<PathDataTypes>` GDI+ bytes to split multi-subpath vectors (was drawing wedges).
 
-## Phase 7 — Sector metadata: micro borders & routes  ✅ DONE
-- [x] `tmap-core`: `Border`/`Route` DTOs + `parse::sector_borders`/`sector_routes`. Backend parses them from each sector `.xml` → `SectorData.borders`/`routes`.
-- [x] **Exact hex-edge borders.** `parse::border_region` computes the interior hex set (boundary + point-in-polygon fill, absolute world hexes) in the backend; the client fills those hexagons as one union path and **strokes only the edges where a region hex meets a non-region hex** — the real Traveller hex-following border (not the polygon-through-centers first pass). New canvas ops: `fill_polygons`, `stroke_segments`. Verified: Spinward Marches Imperium main region = 742 hexes (+ disjoint pockets), Zhodani 62, Sword Worlds 60, Darrian 36.
-- [x] **Full allegiance→color table** ported from `res/styles/otu.css` (`allegiance_border_color`: specific 4-char codes → prefix fallback → gray), fills at `FILL_ALPHA` 64/255 ≈ 0.25.
-- [x] **Border labels** ("Third Imperium", "Zhodani Consulate") — amber, wrapped on spaces, at the label-position hex (`microBorders.textColor`/`textStyle`), shown ≥ scale 16.
-- [x] Routes as green lines (cross-sector offsets via absolute world hex).
-**Test:** zoom into the Spinward Marches → red Imperium fill with **hex-edge** borders, colored polities, "THIRD IMPERIUM" label, green routes.
-- [x] **Pocket-empire colors:** full precedence ported — **border `Color` attr → sector's embedded `<Stylesheet>` (`parse::sector_border_styles`) → global `otu.css` table → gray**. (The sector `<Stylesheet>` was the missing source: Spinward Marches defines `border.SwCf {color:blue}`, `border.DaCf {color:lightblue}`.) Canvas `fill_polygons` applies fill alpha via `globalAlpha`, so any CSS color name/hex works with no name→rgb table.
-- [x] **Cross-sector seam fix (two root causes):** (1) Border hex lists include **off-sector marker hexes** (col 0/33, row 0/41) signalling the border continues across a seam; `border_region` mapped them into the neighbor sector, so the fill spilled one hex past the edge and **double-filled** → bright bands. Fixed by **clipping the region to the sector's own hexes** (polygon still uses the off-sector points for shape). (2) Micro borders are also grouped **by allegiance across all loaded sectors**, so a polity spanning sector boundaries (the Imperium) is one continuous region — no false hex-edge stroke where it continues. Verified: ImDd region now stays within sector col range (−118..−96 for sector −4).
-**Notes/learnings:** Region computed in backend (cached per fetch by the client). The exact J Greely `BorderPath` curve-smoothing isn't ported; the hex-edge **set** approach (fill interior hexes + stroke region↔non-region edges) gives the same Hex-style border without the 150-line state machine.
+**Phase 6 — Looks like Traveller: styling & detail tiers.** OTU palette from `Stylesheet`
+(Red `#E32736`, Amber `#FFCC00`, water=blue, dry=white, black bg). Macro: red borders, white
+dashed routes, region labels, procedural star field. World detail tiers by zoom (dot → name →
+UWP). Sector/subsector boundary grids + rotated −50° watermark names. **Faithful `DrawWorld`
+layout** in parsec units (hex# top, starport, disc colored by trade class, zone arc, UWP, name).
+**Glyph table ported** (`glyph.rs` — scout/naval/military/… symbols, allegiance precedence,
+red highlights). *Key fix:* DPR — draw in **logical (CSS) px** so `view.scale` matches the
+reference calibration (was 2× on retina, shrinking everything).
 
-## Phase 8 — Search  ✅ DONE (first pass)
-- [x] Backend: in-memory name index over worlds + sectors (`search.rs`), built lazily per milieu and cached in `AppState`. `GET /api/search?q=&milieu=` returns ranked `SearchResults` (exact > prefix > contains) with each hit's absolute world hex to jump to.
-- [x] Frontend: search box (top-left) → live results list; clicking a result jumps the view (`render::world_to_parsec`, scale 64) which then streams that sector.
-**Test (verified):** `/api/search?q=Regina` → Regina in Spinward Marches hex 1910, coord (−109,−30); "mora" → 7 results.
-**Notes/learnings:** first pass is a flat substring/prefix index (no external service, honoring "no datastore"). **Tantivy** (full-text ranking, tokenization, typo tolerance) is the planned upgrade — the `/api/search` contract stays the same. Only the default milieu is indexed on demand.
+**Phase 7 — Sector metadata: micro borders & routes.** `Border`/`Route` DTOs + parsers.
+**Exact hex-edge borders:** backend computes the interior hex set; client fills the union and
+strokes only region↔non-region edges (real hex-following border, no 150-line curve state machine).
+Allegiance→color precedence: border `Color` attr → sector `<Stylesheet>` → `otu.css` table → gray.
+*Seam fixes:* clip regions to their own sector's hexes (off-sector marker hexes were double-filling);
+group borders by 2-char allegiance prefix so multi-domain polities (the Imperium) are continuous.
 
-## Phase 9 — Optimize streaming: caching + LOD  ✅ DONE
-Scoped to the high-value, load-test-relevant wins (the sector-by-name is already the high-LOD tile; zoom-out already drops to macro overlays). Offline static-tile precompute is deferred to deploy (Cache-Control makes a CDN do the same caching).
-- [x] **Response caching:** serialized JSON bytes cached per `(milieu, name, lod)` / `universe/…` / `overlays` (`serve_cached` + `response_cache`), so repeat requests skip parse + region-compute + serialize. Big throughput win under load.
-- [x] **HTTP caching (CDN-ready):** content **ETag** + conditional `If-None-Match` → **304**. `Cache-Control: no-cache` (revalidate-always; cheap 304s, never serves stale during dev — `max-age=3600` masked a backend fix and showed a stale border-less sector). Production can switch to long max-age + versioned URLs.
-- [x] **LOD projection:** `?lod=overview` drops fields not yet rendered until extreme zoom (stellar, {Ix}/(Ex)/[Cx], nobility, W, RU) → **68 KB vs 122 KB full (−44%)**. Client now requests `overview`; `full` stays for the future detail tier.
-**Test (verified):** ETag + Cache-Control present; If-None-Match → 304; overview 44% smaller; Regina overview keys = hex/name/uwp/bases/remarks/pbg/allegiance.
-**Deferred to deploy (Phase 11):** offline precompute to static files + path versioning (`/v/{dataVersion}/…`) for a pure-static/CDN origin — the in-memory cache + headers already give the serving speed and cacheability.
+**Phase 8 — Search (first pass).** In-memory name index per milieu (exact > prefix > contains),
+`GET /api/search`. Frontend search box → live results → click jumps the view. *(Superseded by
+the Tantivy + query-language work in Phase 13.)*
 
-## Phase 10 — Coverage, parity & performance (before deploy)
-Requested 2026-06-11, to do after Phase 9, before deploy.
-- [x] **1. Fixed the missing sectors → 87 placed became 190.** (a) Index now built from the milieu **region list** (`parse_milieu_index` over `M1105.xml`) — authoritative coords + each sector's `DataFile`/`Type` — merged with the per-sector `.xml` scan as fallback. (b) Added the **column-delimited parser** (`parse_column`, ported from the reference `ColumnParser`: header + dash-separator → fixed-width spans, sharing `world_from_row` with the tab parser) for SecondSurvey (`.txt`) / SEC data. Backend reads each sector's actual `DataFile` and parses by `Type`. Verified: Mikhail (SecondSurvey) → 400 worlds; Canopus (was unplaced) → (−1,4)/393 worlds.
-- [x] **Legacy `.sec` parser (`parse_sec`).** The old HIWG/early-travellermap SEC format (column-ruler comment, no parseable header) was routing to `parse_column` → **0 worlds** (borders/metadata loaded, but the sector showed empty — e.g. Yiklerzdanzh). Ported the reference regex-driven `SecParser`: a single regex captures name/hex/UWP/base/remarks/zone/PBG/allegiance/stars, plus legacy single-char base-code decode (`SecondSurvey.DecodeLegacyBases`, e.g. `Z`→`KM`), trailing-`.`/`+` and placeholder-name fixups. Added `regex` to `tmap-core` (dead-code-stripped from the wasm frontend, which never parses — wasm size unchanged at 516 KB). Backend dispatch now splits `SEC`→`parse_sec`, `SecondSurvey`→`parse_column`. **This was not a ~2-sector tail — there are 37 `.sec` sectors in M1105**, all previously empty, now full (Yiklerzdanzh 434, Far Frontiers 470, Aerenfors 465, …). Regression test extended to assert Yiklerzdanzh parses >100 worlds.
-- [x] **Bugfix — metadata for renamed sectors.** Sectors whose display name ≠ filename (e.g. "The Beyond" → `Beyond.xml`) were silently losing **borders, routes, AND subsectors** because metadata was read as `{name}.xml`. Now resolved via the region-list `MetadataFile` (→ data-file stem `.xml` → `{name}.xml` fallback). Verified: The Beyond → 13 borders incl. the Aslan region (159 hexes), 210 routes, 16 subsectors.
-- [x] **2. Closed visual gaps vs. the reference (foundational pass).** Side-by-side against travellermap.com. The items below all landed; **remaining visual-parity gaps are tracked in the Open Backlog → Features → Rendering / visual parity** section.
-  - [x] **Sizes/fonts too small** — *root cause found:* we drew in **device** pixels (buffer = CSS×DPR), so `view.scale` was ~2× the reference on retina, making `fontScale`/LOD thresholds mis-fire and shrink everything. Fixed: context is now DPR-scaled and we draw in **logical (CSS) pixels**, matching the reference's px/parsec calibration. (Mouse/fit/streaming all use logical dims.)
-  - [x] **Allegiance code** (e.g. `NaHu`) right of each world (≥ scale 64) — was missing entirely.
-  - [x] **Footer / attribution (first approximation)** — red "The Traveller Map" + Mongoose Publishing (fair use) + community-data credit. *(Superseded by the dynamic data-source footer item in the backlog.)*
-  - [x] **Border corner gaps** — round line caps/joins on the hex-edge segments.
-  - [x] **Adjacent borders double-stroked the shared edge (offset twin lines)** — now the outline is **clipped to its region** (reference's "adjacent borders don't clash") and stroked double-width, so only the inner half shows and neighbors abut cleanly. *(Confirmed fixed by user.)*
-  - [x] **Stale-cache trap fixed at the client.** A sector cached during the Phase-9 `max-age=3600` window stayed "fresh" for an hour, so a hard refresh's `fetch()` still served the old (e.g. border-less) body — that's why The Beyond showed worlds but no borders. The client now sets `RequestCache::NoCache` (revalidate every fetch; cheap 304 if unchanged), so a backend change can never be masked by a stale cached response.
-  - [x] **Font face** — switched map text to **Arial** (the reference `DEFAULT_FONT`; Bold for names). `system-ui` (SF on macOS) is narrower and read smaller at the same px.
-  - [x] **All sectors load (190, 0 failures).** Fixed: (1) non-UTF-8 sector files (legacy CP1252 `.sec`) 500'd `read_to_string` → `read_text` (UTF-8, else Latin-1); (2) data-file resolution tries the index `DataFile` then `<stem>.{tab,txt,sec}` so `.txt`-only (SecondSurvey) sectors like Lancask/Muarne load; (3) frontend remembers **failed** sectors so it stops re-fetching them every pan (the 500-flood). "The Borderland" = subsector L of Trojan Reach, not a missing sector. **Regression test added:** `tmap-backend` `all_m1105_sectors_load` builds the index and asserts every sector serializes to valid `SectorData` (catches encoding/parse/metadata/data-file breakage).
-    - [x] **Case-insensitive file resolution — DONE 2026-06-16 (Linux bug, caught by first CI run).** The upstream region lists declare per-sector files capitalized (`Blaskon.xml`, `Kidunal.xml`) while the on-disk files are lowercase. Case-insensitive filesystems (Windows/macOS, where the reference + dev run) hide this; **case-sensitive Linux (Cloud Run + CI) silently dropped those sectors' metadata names and worlds**. Fix: `resolve_ci(dir, name)` (try the direct join, else a case-insensitive directory scan) applied at every per-sector read site (metadata-name merge, `read_meta_xml`, `resolve_and_parse_worlds`'s data-file lookup). Unit test `resolve_ci_matches_mismatched_case` exercises the scan path. *(Surfaced by the new CI's `universe_all_returned_sectors_match` failing on Linux for Blaskon/Kidunal `Names` — passed on macOS.)*
-  - [x] **Hex-fill anti-aliasing seams** — each region hex filled as its own hexagon left sub-pixel gaps (dark background bleeding through) between adjacent cells. Fill hexagons now inflated ~3% so neighbors overlap (one union fill pass → no doubled alpha); boundary-edge strokes still use the exact radius.
-  - [x] **Seams inside the Imperium** — the Imperium spans sectors in different *domains* (`ImDd`/`ImDv`/`ImDs`…), all red, but borders were grouped by exact allegiance so domain boundaries got stroked/filled as edges. Now the major multi-code polities (Imperium domains, Aslan clans, Zhodani, Solomani, Vargr, Hiver, K'kree) are merged by their 2-char prefix (`border_group_key`); pocket empires keep their full code.
-  - [x] **In-hex glyphs too small / didn't fill the hex** — even after the DPR fix, the disc/text/icons read smaller than the reference. Added a single `CONTENT_SCALE` (1.3, the reference's `hexContentScale`) that enlarges glyph **sizes** (disc, all text, gas giant, base symbols) while leaving layout **offsets** at true scale, so bigger glyphs stay inside the hex instead of spreading to the edges.
-  - [x] **Top-right control cluster (Home / Key / Hamburger).** Built the three reference controls. **Home** → `render::home_view` (charted-space macro overview, centered on the Imperium core; scale capped < 4 so overlays + capitals always show). **Key** → a scrollable **Map Legend** panel. **Hamburger** → a **Settings** panel whose toggles drive a new `RenderOptions` threaded through `render::draw` (each toggle subscribes the draw effect, so flipping it redraws). **Wired toggles:** Galactic Direction (new screen-edge COREWARD/RIMWARD/SPINWARD/TRAILING compass labels), Sector Grid, Sector Names, Borders (micro+macro), Routes (micro+macro), Region Names (subsector + polity labels), Important Worlds, More World Colors (trade-class vs. plain), Filled Borders.
-  - [x] **Full legend parity.** Ported the reference `index.html #legendBox` exactly: the two poster-theme hex-diagram plates (`Legend_1003/1006_poster.svg`, served via a new backend static route — see below) + **World Characteristics** (RiAg/Ag/Ri/In/Corrosive/Vacuum/Water/No-Water/Asteroid Belt/Unknown/Anomaly), **Bases** (all 15: Imperial Naval/Scout/Way-Station/Depot, Zhodani Base/Relay, Other Naval/Outpost, Corsair, Military, Independent, Research, Reserve, Penal, Prison), **Travel Zones** (Amber/Red), **Population** (Wef/YNAM/highlighted=subsector capital). Replaces the earlier hand-approximated symbol list.
-  - [x] **Backend static asset route** `GET /api/res/{*path}` — serves files from the shared `res/` tree (legend SVGs now; galaxy/Candy textures + markers later) with MIME + path-traversal guard. Verified: legend SVGs 200/`image/svg+xml`, `..` blocked.
-- [x] **3. Profiling + load testing — tooling stood up; backend cleared.** Frontend frame-timing HUD + a backend load-test harness are in place; the backend was profiled and found *not* to be the bottleneck. **Remaining perf work moved to Open Backlog → Performance.**
-  - [x] **Optimized build first (so we profile the real thing, not dev wasm).** Added `[profile.release]` (opt-level 3, `lto=true`, `codegen-units=1`) for both backend and wasm; switched Trunk `data-wasm-opt` from `"z"` (size) to `"3"` (speed). **Profile the optimized stack:** `cargo run -p tmap-backend --release` + `trunk serve --release` (keeps the `/api` proxy; ~20–37 s LTO rebuilds, so keep plain `trunk serve` for fast dev). Optimized wasm ≈ 0.5 MB.
-  - [x] **Browser: in-app per-layer frame-timing HUD** (DevTools can't symbolicate stripped release wasm). `render::draw` times each layer with `performance.now()` (`now()`), and `draw_perf_hud` paints total ms / fps / scale / sector-count + per-layer ms (layers > 4 ms flagged red) bottom-left. Toggle: **Settings → DEBUG → Frame Timing (HUD)** (`RenderOptions.perf_hud`). The primary tool for finding which layer eats the zoomed-out frame.
-  - [x] **Borders were the hot layer (HUD-confirmed) → cached `Path2d` + canvas transform.** The old `draw_micro_borders` rebuilt region geometry and issued a `move_to`/`line_to` **per hex vertex across the wasm→JS boundary every frame** (~tens of thousands of crossings when many bordered sectors are visible — the zoomed-out slowdown). Now: build each border group's fill + stroke as a `Path2d` in **world (parsec) coords once**, cache it (`thread_local BORDER_CACHE`) keyed by the on-screen *bordered*-sector set (+ fill flag), and each frame just `set_transform` (world→device, dpr-composed) and `fill_with_path_2d`/`clip_with_path_2d`/`stroke_with_path` — a handful of boundary calls instead of ~90k. Rebuild happens only when the set changes (sectors stream in / zoom changes it), so a pure pan re-transforms the cached paths. Same visuals. Removed the now-unused `Canvas` trait methods (`stroke_segments`/`save`/`restore`/`clip_polygons`).
-  - [x] **Border rebuild was the real cost (HUD-confirmed) → per-sector geometry cache.** The first cache (keyed by visible-sector set) re-emitted ~tens of thousands of fill-vertex `Path2d` calls on *every* set change — i.e. every pan boundary-crossing — worst at scale ~8 (most micro-border hexes on screen before the macro handoff at 4). *Loaded-set caching + eviction wouldn't fix this:* sectors still stream in per crossing, so the set still changes per crossing. Real fix: cache the expensive part **per sector** — each sector's fill `Path2d` (inflated hexagons) is built once and kept by coord (`SECTOR_GEOM`, ≤190 sectors ≈ a few MB, no eviction needed). Per rebuild we only `add_path` the cached fills together (a handful of calls) and rebuild the **boundary stroke** (cheap; cross-sector seam-correct, so it can't be per-sector cached). Rebuild drops from ~8 ms to ~1–2 ms. HUD border line shows `↻ BUILD …ms` vs `cached`. *(Note for milieu-switching: clear `SECTOR_GEOM`.)*
-  - [x] **First cold load test (2026-06-12) — backend is not the bottleneck.** Generator `loadtest/gen_targets.py` models the frontend's `visible_sectors` (12 representative `(center, scale)` viewports across dense core + sparse rim, windowed to the sector grid, MAX_STREAM-capped, unioned) → **79 distinct sector targets** (`loadtest/targets.txt`). Installed **`vegeta`** (12.13.0) + **`samply`**; added **`POST /api/admin/flush`** (clears `response_cache` only; index caches stay warm) to reset to cold between runs. *(Unauthenticated dev convenience — gate/remove before deploy.)* Results on the `--release` backend: **(A) cold single-pass** mean **1.5 ms**, max **2.6 ms** (Yiklerzdanzh, a heavy `.sec` sector) incl. localhost round-trip; **(B) max-throughput** (vegeta, 50 workers, 10 s): **~21,000 req/s, 100% success, p99 ≈ 1.6 ms**; warm vs. cold near-identical — the response cache barely matters because the parse is already so fast. **Takeaway:** no backend optimization warranted yet; `samply` flamegraph deferred (no hot path to chase). Re-run if payloads grow (full LOD tier) or after adding real work (Tantivy, route planner).
-- [x] **4. Important Worlds (hamburger).** `parse::parse_world_labels` reads `res/labels/Worlds.xml`; the backend resolves each marker's sector name → absolute coord via the canonical M1105 sector map and adds `labels: Vec<WorldLabel>` (name, coord, bias) to `/api/overlays` (`#[serde(default)]` so old payloads still deserialize). Frontend `draw_world_labels` paints a Wheat dot + red bias-offset name over the macro view (scale 0.5–4); wired to the **Important Worlds** toggle. Verified: 11 markers resolve (Reference, Capital, Vland, Terra, Zhodane, Lair, Kirur, Guaran, Glea, Kusyu, Regina). *(The remaining hamburger menu items are in the Open Backlog → Features → UI controls & panels.)*
-- [x] **5. Mobile / touch (2026-06-16).** iPhone Safari only synthesizes mouse events for *taps* (so tap-to-select already worked), never for drags/pinches — so the map couldn't pan or zoom. Added `on:touchstart/move/end/cancel` handlers driving the same `ViewState`: **one finger pans** (mirrors the mouse drag), **two fingers pinch-zoom + pan together** (the parsec point under the prior pinch-midpoint is moved under the current one, scaled by the distance ratio — same anchor math as the wheel). `touch-action:none` (already on the canvas) means the browser does no default scroll/zoom, so the handlers fully own the gesture and need no `prevent_default` (sidesteps passive-listener issues). Also fixed **oversized/clipped display**: the backing buffer was sized to `window.inner*` while the CSS box is `100vh`; on iOS the visual viewport lags the layout box as the toolbar animates, so the buffer got stretched. Now the buffer is sized to the canvas's own `clientWidth/Height` (1:1, never stretches), the canvas CSS uses `100dvh`, `<meta viewport>` gets `viewport-fit=cover`, and a `visualViewport` "resize" listener re-sizes the buffer as the toolbar shows/hides. Also switched the floating panels' `max-height` from `vh` → `dvh` (world-detail/legend/settings/search/jump-cutout) so they fit the visible area and scroll internally instead of running off the bottom. **Long-press → solar-system view (callisto):** `on:dblclick` never fires on touch, so a single stationary finger held 500 ms (cancelled by pan past 10 px, a second finger, or an early lift) opens the same popup — `launch_system` is now shared by the double-click and the long-press, and the long-press hit-tests + fetches full LOD (stellar/pbg/worlds) before rendering. Canvas got `-webkit-touch-callout/user-select:none` so iOS's own press-and-hold UI doesn't hijack it.
+**Phase 9 — Optimize streaming.** Response cache per `(milieu,name,lod)`; ETag + `If-None-Match`
+→ 304, `Cache-Control: no-cache`. LOD projection `?lod=overview` (−44% payload); client requests
+`overview`, `full` reserved for the detail panel. Offline static-tile precompute deferred to deploy.
+
+**Phase 10 — Coverage, parity & performance (foundational pass).**
+- **Coverage 87 → 190 sectors:** index built from the milieu **region list** (`M1105.xml`,
+  authoritative coords + per-sector `DataFile`/`Type`); added the **column parser** (`parse_column`)
+  and **legacy `.sec` parser** (`parse_sec`, regex-driven — 37 `.sec` sectors were silently empty).
+  Renamed-sector metadata resolved via `MetadataFile`. Non-UTF-8 (`read_text`), case-insensitive
+  file resolution (`resolve_ci` — a Linux/CI-only bug), failed-sector memo. Regression test:
+  every M1105 sector serializes (190, 0 failures).
+- **Visual gaps closed:** allegiance code right of each world; border corner gaps / double-stroke;
+  hex-fill anti-alias seams (inflate ~3%); intra-Imperium domain seams (2-char prefix grouping);
+  `CONTENT_SCALE 1.3` so glyphs fill the hex. **Home/Key/Hamburger** control cluster + full
+  **Map Legend** parity + **Settings** toggles (`RenderOptions` threaded through `draw`).
+  Backend static route `GET /api/res/{*path}` (legend SVGs, galaxy texture).
+- **Profiling:** release build + in-app **per-layer frame-timing HUD** (Settings → DEBUG).
+  Borders were the hot layer → **cached per-sector world-coord `Path2d` + canvas transform**
+  (rebuild ~8 ms → 1–2 ms; same for the hex grid and dot-tier worlds). Cold load test (vegeta):
+  **~21k req/s, p99 ≈ 1.6 ms — backend is not the bottleneck**; no backend optimization warranted.
+- **Important Worlds** (`Worlds.xml` → Wheat dot + red name). **Mobile/touch:** one-finger pan,
+  two-finger pinch-zoom; iOS viewport/buffer sizing fixed (`dvh`, `visualViewport` resize).
+- *Render module split (`9baad5ef`):* `render.rs` → `render/` (one file per pass over a shared
+  `common.rs`), to give the parity/theme work clean per-file ownership.
+
+## Phase 10+ — interactive reference features (done)
+
+Reference features built alongside/after the Phase 10 parity pass.
+
+- [x] **Jump-route planner (2026-06-12/14).** Backend A* (`tmap-core::route`, `BinaryHeap`,
+  spatially bucketed) over a per-milieu coord→world index; `GET /api/route` (+ `nored`/`wild`/`im`/`aok`
+  filters), mirroring `RouteHandler.cs`. Full planner panel: Start/Destination (name, `Sector hhhh`,
+  or click-map), J-1…J-6/H-1, the 4 routeOptions, waypoint list + leg distances, Print/Copy,
+  `draw_jump_route` on the map.
+- [x] **World detail panel (click-a-world).** `tmap_core::world_util` (ported `world_util.js`
+  decoders + tables, 16 tests); `world_panel.rs` detail sheet (thumbnail, UWP glyphs, {Ix}/(Ex)/[Cx],
+  system, population, bases, nobility, remarks, zone) at overview LOD, upgraded in place from
+  `?lod=full`; `world_print.rs` print sheet; per-J range view (jump-N neighborhood highlight).
+  *S3 world images — DECIDED skip* (only ~14 bespoke globes exist); `res/Candy/` generics used.
+- [x] **Milieu / time selector (`9bdd28bf`).** Clock button → panel of the 8 curated OTU eras;
+  switching tears down all per-milieu state + caches and re-fetches (stale-response guarded).
+- [x] **Share tab — MVP (2026-06-16).** Link + embed (`<iframe>`) panel; live `share_url`. Scheme:
+  our own `?cx&cy&scale&milieu` (a single swap-point — `build_share_url`/`parse_share_params` — for
+  the future travellermap.com `p=x!y!logScale` compat). Reads params on load; reflects the live view
+  via debounced `history.replaceState`. *TODO (Phase 13):* travellermap URL compat, Save Snapshot/PDF.
+- [x] **Help / About / Credits (2026-06-18).** `?` tab: controls quick-help + Apache-2.0-compliant
+  attribution (derivative-work notice, © 2006–2023 Joshua Bell, license + upstream links) + Mongoose
+  trademark/Fair-Use notice.
+- [x] **Prominent search bar + jump-route toggle**, **Dim Unofficial Data**, **mobile polish**
+  (top-bar restack, tap-outside-to-close panels, dynamic-viewport modals), **CI** (`2026-06-16`:
+  native clippy `-D warnings` + tests; wasm `cargo check` for default + callisto).
 
 ---
 
-# Open backlog
+# Remaining phases (11+)
 
-Everything still to do, regrouped for scannability. Order: **Performance → Features (by theme) → Container & Cloud Run deploy (last).** Done items keep their history in Phases 0–10 above.
+## Phase 11 — Style themes 🔨 IN PROGRESS
 
-## Performance
+The Poster / Atlas / Print / Candy (+ Draft/FASA/Terminal/Mongoose) presets. Plan +
+per-preset values cited from `Stylesheet.cs`: **`STYLE_THEMES_PLAN.md`**. A theme is a small
+palette+flags struct; all geometry/LOD is shared and already ported.
 
-All remaining perf work in one place. Tooling is in hand (frame-timing HUD, vegeta/samply load harness — see Phase 10 step 3); the backend is already cleared as not-the-bottleneck. What's left is browser-side render profiling and a couple of caching/LOD follow-ups.
+- [x] **A — Theme plumbing + default extraction (2026-06-18).** `render/theme.rs`: a `Theme`
+  struct + `Theme::poster()` holding today's exact colors, threaded as `&Theme` through every
+  direct-color pass (background, stars, overlays, labels, worlds). Pixel-identical by construction
+  (each literal replaced with a field whose value equals it). Borders/routes/grid keep their
+  per-allegiance otu.css cascade for now (deferred with their cache-invalidation to C).
+- [ ] **B — Atlas preset** (grayscale, white bg, black ink) — proves the cascade end-to-end.
+- [ ] **C — Selection + persistence:** `style` signal + settings-panel selector + `&style=` URL
+  round-trip + border-cache invalidation on switch.
+- [ ] **D — Full preset set** (Print, Draft, FASA, Terminal, Mongoose + a font field; Candy
+  approximate — nebula/world-images out of scope). Mongoose needs a `WorldLayout` glyph override.
 
-- [ ] **Browser DevTools Performance pass** (scripting-vs-paint split, redraw frequency during pan) once the in-app HUD points at the next hot layer after borders. The HUD (`render::draw` per-layer timing → `draw_perf_hud`, toggle **Settings → DEBUG → Frame Timing**) is the symbolication-free primary tool; use DevTools for the paint/composite breakdown the HUD can't see.
-- [ ] **Galaxy background / hex-grid caching candidates.** If the HUD flags the **hex grid** (`draw_hex_grid`, gated ≥ scale 16) or the **star field** (`draw_stars`, 45k-cell cap) as hot, apply the same world-coord `Path2d` + canvas-transform caching trick that fixed borders. (Borders are already cached per-sector — see Phase 10.) Consider **unloading distant sectors** from the client `sectors` cache if memory/iteration grows on long sessions.
-- [ ] **Real LOD tiers (deferred until profiling justifies it).** Today the `?lod=` axis is barely load-bearing: only **two tiers** (`full`, `overview`), the **client only ever requests `overview`**, and both run the **same full parse** (`overview` just strips fields right before serialize via `project_overview`). So LOD changes payload size + a sliver of serialize, **not** the dominant per-sector parse cost; zoom level changes only *which*/*how many* sectors are fetched, not backend work per sector. The design intended more aggressive tiers used **harder** as you zoom (coarser data when zoomed out, not just fewer sectors). The first cold load test shows parse/serialize is already ~1.5 ms/sector, so **don't optimize LOD before a flamegraph says it matters** — but if payloads grow (the `full` tier for the world-detail panel) or the frontend needs positions-only dots at low zoom, the fix is real LOD tiers + the eventual `(lod,x,y)` static-tile pyramid (Phase 9's deferred precompute). Re-measure with `samply` after adding the world-detail-panel `full`-tier traffic.
-- *(Done — perf pass, pre-profiling, for context:* hex grid gated scale ≥ 16 = `ParsecMinScale` (was 3.5 — tens of thousands of hexagons/frame zoomed out); routes gated ≥ 8 = `RouteMinScale`; star-field cell cap 45k; only visible sectors rendered, not every accumulated sector; border geometry cached as per-sector world-coord `Path2d` + canvas transform.*)*
-- *(Done — render batching, measured via HUD:* **hex grid** cached per-sector `Path2d` (routes+hexgrid 9.2 → 1–2.5 ms); **dot-tier worlds** batched into cached per-sector disc/zone/outline `Path2d`s by color; **detail-tier worlds** reuse those same cached disc paths + draw text in state-set-once passes, one `fillText` loop per glyph kind (worlds 11.7 → 6 ms — the 6 ms floor is now irreducible glyph rasterization; a glyph atlas / cached-text-bitmap would be the next lever but is a big lift, deferred); **border combine** drops the merged-region `HashSet`, resolving cross-sector seams locally against each neighbor's region (sustained 19.7 ms → cached/cheap, with a ~9 ms one-frame blip only on zoom-in as new bordered sectors stream in — full-rebuild → incremental `add_path` is the remaining lever, deferred as not worth the seam-correctness risk for a transient hitch).*)*
-- *(Done — `render.rs` (1,445 lines) split into a `render/` module tree (commit `9baad5ef`): one file per pass (`stars`/`overlays`/`grid`/`labels`/`borders`/`routes`/`worlds`/`status`/`hud`) over a shared `common.rs` (view/transform math, LOD thresholds, OTU palette, hex geometry); `mod.rs` keeps the `draw()` orchestrator + public API. No behavior change — done to give the parallel rendering-parity work clean per-file ownership.)*
+## Phase 12 — Visual parity finish
 
-## Features
+The remaining gap vs. travellermap.com after Phase 10. *(Most parity items are done — see below.)*
 
-Grouped by theme. Within each, the load-bearing/foundational items come first.
+- [ ] **Macro polity fill at zoomed-out (s ≤ 4).** The reference fills polities via the macro
+  polygons (`res/Vectors/*.xml`) at overview zoom; we only **stroke** them (`draw_vector`). Add a
+  fill pass and make the **macro↔micro handoff** seamless (macro off / micro on both at s = 4).
+  Region/rift/mega/minor **names** are already ported exactly (`DrawMacroNames`: major bold white
+  caps, minor red, rifts 35°, mega ≤ 0.25). The filled look at *worlds-visible* zoom (s > 4)
+  already works via the micro-border layer.
+- [x] Sector-name fade, dynamic data-source footer, galaxy background image, placeholder/anomaly
+  glyphs (`*`/`⌖`), style-value parity (zone arc, gray micro routes, scale-faded gray grids, log
+  interpolation, dotmap disc radius), far-zoom minor-region red labels — all DONE 2026-06-12/13.
 
-### Non-reference extensions (experimental, feature-gated)
+## Phase 13 — Public API compatibility
 
-Features that go **beyond** travellermap.com, gated behind a Cargo feature that is
-**OFF by default and never committed enabled** (default builds, CI, and shipped
-artifacts stay clean). Build/run locally with `--features <name>` on both crates.
+Our backend exposes a **private snake_case contract** (`/api/sector`, `/api/universe`, …) that
+diverges from the documented public API (`/api/{verb}`, `/data/{sector}/…`, PascalCase, JSONP/XML).
+Full matrix + decisions in **`PORT_API_COMPAT.md`** (the live tracker — don't duplicate it here).
 
-- [x] **Callisto — double-click a system → solar-system view (DONE 2026-06-13;
-  re-architected to an external service 2026-06-14).** Double-clicking a world pops
-  up its **generated solar system** as a high-res zoom/pan image. Gated behind the
-  frontend-only feature **`callisto`** (OFF by default). **travellermap has no
-  dependency on worldgen at all** — the image is produced by the external worldgen
-  service `https://tools.callistoflight.com/api/system?sector=&hex=&name=&uwp=&pbg=&
-  stellar=&worlds=&scale=2.0` (returns a 3200×1800 PNG; `image/png`, permissive
-  CORS, 422 on a partial/contradictory UWP). The frontend already holds the world's
-  T5 fields (from the detail panel), so `on:dblclick` builds that URL, **fetches the
-  PNG as a blob** (so the popup opens only on a real image — an unreachable service
-  or 422 is a silent no-op), and shows it in a cursor-anchored zoom (wheel) / pan
-  (drag) viewer with Reset / Print / Download / Close (Esc closes). The blob object
-  URL backs the `<img>` + cross-origin Download; Print uses the absolute service
-  URL. Over-a-world cursor hint (arrow vs grab), bounded to visible sectors.
-  Files: `crates/frontend/src/main.rs` (`SYSTEM_SERVICE` const, `system_view`,
-  dblclick, modal). *History:* first built backend-side with worldgen as an optional
-  native dep, but even an optional path/git dep must be **resolved** by Cargo, so it
-  broke standalone/CI builds — hence the move to a standalone HTTP service the client
-  calls (and which can scale/deploy independently). The service spec is in
-  `worldgen/docs/library-integration.md` consumers' notes.
-- [x] **Callisto — "World Map" button → main-world surface map (DONE 2026-06-15).**
-  A double-click *inside* the solar-system PNG can't pick a world (it's a flat image
-  with no per-planet hit-test data), so instead the detail panel gets a **"🌍 World
-  Map"** button that renders the *selected* world's surface. Same `callisto` feature,
-  same external service: `https://tools.callistoflight.com/api/world?sector=&hex=&
-  name=&uwp=&scale=2.0` (`orbit` defaults to 3 = main world; same deterministic seed
-  chain + GCS cache as `/api/system`, so the first render of a world can take 20–30 s
-  but is instant after). Because of that latency the popup was generalized to a
-  **Loading / Ready / Error** state machine (`ImgView`): clicking opens the popup
-  *immediately* with a **rotating-ring spinner + live elapsed-seconds counter** ("first
-  render can take up to a minute… cached after that"), then swaps to the existing
-  zoom/pan viewer on success or an **error card** (surfacing the service's 422 reason
-  for a partial/placeholder UWP). A generation counter ignores a stale fetch if the
-  user cancels/closes; a 1 Hz interval drives the counter. The **double-click
-  solar-system flow now routes through the same Loading state** too (it previously sat
-  silent for ~30 s on a cache miss). Files: `crates/frontend/src/main.rs`
-  (`WORLD_SERVICE`, `ImgView`, `launch_render`, `start_elapsed_timer`, `on_world_map`,
-  rebuilt modal), `crates/frontend/src/world_panel.rs` (`on_world_map` prop + button).
-- [x] **Callisto — interactive system map: double-click any world → its surface map;
-  hover/tap → UWP (DONE 2026-06-17).** The double-click popup now fetches the
-  **interactive SVG** endpoint `https://tools.callistoflight.com/api/system_svg`
-  (same query params as `/api/system` but **no `scale`** — the SVG carries a
-  `viewBox`; returns `image/svg+xml` whose bodies are each a
-  `<g class="sysmap-body" data-kind data-name data-uwp data-orbit data-distance-mkm>`)
-  instead of the flat PNG. The SVG is **inlined into the DOM** (`inner_html`), so each
-  body is a real element we can target: **hover** a body (desktop) or **tap** it
-  (mobile) shows its **UWP** in a cursor/finger-following tooltip; **double-click**
-  (desktop) or **long-press** (mobile) a `world`/`moon` renders **that body's** surface
-  map — solving the original "a flat PNG can't pick a world" limit that forced the
-  detail-panel "World Map" button (which still works for the main world). Per-body
-  `/api/world` requests reuse the system's `(sector, hex)` seed identity plus the
-  body's `data-name`/`data-uwp`/`data-orbit` read straight off the DOM
-  (`Element::closest(".sysmap-body")` + `get_attribute`); stars/gas giants/belts have
-  no `data-uwp` so they only show a name/kind tooltip and aren't surface-mappable.
-  New `ImgView::System { svg, title, sector, hex }` variant + `launch_svg` (the SVG
-  parallel to `launch_render`, same generation-guard/timer machinery, validates a
-  `<svg` body); `sys_tip`/`sys_lp` signals back the tooltip + in-popup long-press.
-  Files: `crates/frontend/src/main.rs` (`SYSTEM_SVG_SERVICE`, `ImgView::System`,
-  `launch_svg`, `body_from_target`/`kind_label`, `open_body_world`, System match arm +
-  tooltip overlay; `SYSTEM_SERVICE` PNG const removed). Spec:
-  `worldgen/docs/library-integration.md` (`generate_system_svg` / `GET /api/system_svg`).
-  **Follow-ups (2026-06-17):**
-  - **Zoom/pan in the system view** — the SVG sits in a transform wrapper with
-    wheel-zoom (cursor-anchored), drag-pan, and two-finger pinch/pan (reusing
-    `TouchGesture`/`pt_dist`/`pt_mid` + `sys_zoom`/`sys_pan`/`sys_drag`/`sys_touch`),
-    so you can zoom in to see e.g. moons around a gas giant. Mouse-move does pan or
-    hover depending on drag state; Reset button added.
-  - **Orbit-consistent "World Map" button** — the main world's surface seed depends on
-    its *generated* orbit (rolled, **not** always 3: probed Regina=4, Aramis=1, Mora=8,
-    Jenghe=2, Efate=3, Pixie=0). The button now first probes `/api/system_svg`
-    (`discover_main_orbit`, matching the body whose `data-uwp` == the input UWP) to read
-    that orbit, then requests `/api/world` with it — so the button and the in-system
-    double-click produce the **same** image and hit the same GCS cache entry.
-  - **Wait-screen copy** softened from "up to a minute" → "up to ~15 seconds".
-  - **worldgen SVG fixes (in `../worldgen`, needs redeploy to take effect):** bodies in
-    companion-star *inline subsystems* (`draw_inline_subsystem`) are now wrapped in
-    `<g class="sysmap-body">` groups with name/uwp/orbit, so **secondary/tertiary-system
-    worlds are hoverable/clickable** too; and **star groups carry `data-spectral`**
-    (e.g. `G2 V`) via a new `BodyMeta.spectral` field, which the tooltip shows. Both are
-    no-ops on the PNG raster path (group hooks ignored; new field unused there) — all 16
-    worldgen tests pass, PNG output byte-identical. Frontend reads `data-spectral` and
-    nested groups forward-compatibly (graceful no-op against the un-redeployed service).
+- [x] **Search rebuilt on Tantivy (2026-06-17).** `/api/search` backed by an embedded Tantivy
+  index per milieu (`add22936`), used as a **RegexQuery/TermQuery engine over raw fields** (not
+  BM25) to preserve exact LIKE/SOUNDEX parity. Full query language ported (`tmap_core::searchlang`:
+  `exact:`/`like:`/`uwp:`/`pbg:`/`zone:`/`alleg:`/`ex:`/`cx:`/`ix:`/`stellar:`/`remark:`/`in:`,
+  `% _ []` wildcards, multi-word AND). **Ranking is ordered-parity** with live travellermap.com
+  (`{Ix}` importance desc, tie-broken by each kind's SQL `DISTINCT` coordinate order — `f5a1936d`),
+  enforced by 12 live-parity tests (gated by `TMAP_SKIP_PARITY` off CI). Canonical envelope
+  `{"Results":{"Count","Items":[{"World"|"Sector"|"Subsector"|"Label":…}]}}`.
+- [x] Search envelope made API-compatible (`2026-06-16`); JSONP + XML content negotiation across
+  universe/search/credits/jumpworlds/route (`29ce0405`); Aslan-interior inline borders from the
+  milieu region list (`60dd139d`). Metadata XML, `/data` aliases, POST `/api/sec`+`/api/metadata`.
+- [ ] **Remaining endpoint/shape gaps** per `PORT_API_COMPAT.md` — `/api/coordinates`,
+  `/api/jumpworlds`, `(random world)`/canned search specials, and the `/data/{sector}/…` URL
+  family. **Open decision:** reshape to the documented contract vs. a thin compatibility layer.
 
-### Rendering / visual parity
+## Phase 14 — Performance: render profiling + LOD (deferred until justified)
 
-The remaining gaps vs. travellermap.com after the Phase 10 foundational pass.
+Tooling is in hand (frame-timing HUD, vegeta/samply); the backend is cleared. What's left is
+browser-side render profiling — **don't optimize before the HUD/flamegraph points somewhere.**
 
-- [~] **Prominent macro polity/region names — names DONE 2026-06-12, fill reverted for reference fidelity.** `draw_region_label`/`draw_rift_label` now port `DrawMacroNames` exactly: major polities (`NamesMajor` MapOptions flag) → **bold ALL-CAPS white** (`macroNames.textColor`), minor/client (`NamesMinor`) → **regular red** (`textHighlightColor`), fonts `8/1.4` & `5/1.4` parsec, rifts rotated 35°. **The earlier guessed translucent polity fill was removed** — the reference does *not* fill at macro zoom (macro borders are red strokes only); the filled-polity look comes from the **micro** border layer at s≥4, which already works. **Mega-names DONE 2026-06-12**: `mega_labels.tab` now streams in `Overlays.mega_labels` and renders at s≤0.25 (white, major bold / minor italic, font ≈ constant on-screen). Original spec below. At overview/macro zoom the reference shows the big bold polity names — **THE IMPERIUM, ASLAN HIERATE, VARGR EXTENTS, ZHODANI CONSULATE, TWO THOUSAND WORLDS, SOLOMANI SPHERE, HIVE FEDERATION** — over **solid-filled** polity blobs. We currently **stroke** macro borders but don't fill them (`draw_overlays`/`draw_vector`), and `draw_region_label` uses plain `system-ui` not the reference's bold white caps. *Reference behavior (`RenderContext.DrawMacroNames` + `Stylesheet`):*
-  - **Macro names** (`styles.macroNames`): visible **scale 0.5 ≤ s ≤ 4** (`MacroLabelMinScale=1/2`, `MacroLabelMaxScale=4`). Major polities → **Bold, white (`textColor`), ALL-CAPS**, size ≈ `8/1.4` pt; text + position from the **border `VectorObject`'s `Name` + `Bounds`/`NameX`/`NameY`** (res/Vectors/*.xml; already parsed into `VectorObject.label`). Rifts ("Great Rift") same tier, **rotated 35°**. Minor/client regions (`minor_labels.tab`) → **SmallFont italic, red (`textHighlightColor`), not caps**.
-  - **Mega names** (`styles.megaNames`, `mega_labels.tab`): only at **s ≤ 0.25** (galaxy overview) — "Charted Space", "Core Sophonts" — white bold caps, font scales with zoom (`min(35, 0.75/s)`).
-  - **Relation to the (now-fixed) Aslan micro-border bug:** the micro borders for the Aslan interior *do* exist — inline in `M1105.xml` — and are now read (see Data & API compatibility, commit `60dd139d`), so the **worlds-visible (s>4) zoom shades correctly**. This item is the remaining **zoomed-out (s≤4)** half: the reference fills polities via the **macro polygons (res/Vectors/*.xml) at s≤4**, while we only stroke them. So (a) **fill macro polity polygons** at macro zoom (not just stroke), and (b) make the **macro↔micro handoff** seamless (today macro borders switch off at s>4 = `MACRO_MAX_SCALE`, exactly where micro turns on). Tighten the label tiers + thresholds to the numbers above.
-- [x] **Sector names too faint to read — DONE 2026-06-12 (values ported from `Stylesheet`, not guessed).** `draw_sector_names`/`draw_subsector_names` now use the reference `sectorName.textColor` fade verbatim: **White** (`foregroundColor`) below scale 16, **DarkGray `#a9a9a9`** 16–48, **DimGray `#696969`** ≥48 — solid colors, **Regular** weight (`FontInfo(DEFAULT_FONT, 5.5/1.5)`), −50° rotation, 0.75 x-squish. (Sector names only show ≤16 → read White; subsector names show 24–64 → DarkGray→DimGray.) The earlier `rgba(214,221,245,0.38)`/weight-700 guess was the "too dark" bug. Original spec: The rotated −50° background sector-name watermarks (`draw_sector_names`, currently `rgba(208,214,236,0.16)`) read fainter than the reference's — too low contrast/opacity against the star field. Bump their color/alpha (and check font weight/size) toward the reference `sectorName.textStyle` so they're legible without overpowering the worlds. *(Background subsector names — `draw_subsector_names`, `rgba(206,200,228,0.22)` — likely want the same once-over.)*
-- [x] **Dynamic data-source footer bar — DONE 2026-06-12 (commit `4107389a`).** `SectorInfo` now carries `tags` + `credits` (parsed from sector metadata `<Credits>`/`Tags`, threaded through the backend); `status::draw_footer` shows the central sector's credit (HTML-stripped) on the left and the TRAVELLER® wordmark + tagline on the right. *Residual:* the wordmark uses a serif font stack, not the exact logo typeface. Original spec: A full-width footer strip across the bottom matching travellermap.com: **far left = the data *source* / credit for what's currently in view** (e.g. "Trojan Reach" + "Traveller 5 Second Survey — _The Pirates of Drinax, Book 2: The Trojan Reach_ by Gareth Hanrahan (Mongoose Publishing)"), and **far right = the "TRAVELLER®" wordmark** in the correct red serif logo font with the "Science Fiction Adventure in the Far Future" tagline. The left credit must be **dynamic** — per-sector, from the sector metadata `<Credits>`/source field, which the backend does **not** yet surface: `SectorInfo` has no credits field. So add `<Credits>` parsing to core, thread it into `SectorInfo`, and have the client show the credit for the sector under the viewport center. *(Supersedes the generic static "red The Traveller Map + Mongoose" footer already shipped in Phase 10 step 2.)*
-- [x] **Galaxy background image when zoomed out — DONE 2026-06-12 (commit `4107389a`).** A backend-agnostic `Canvas::draw_image` (URL-keyed `HtmlImageElement` cache, redraw-on-load) + `stars::draw_galaxy` composite `res/Candy/Galaxy.png` behind the starfield at macro zoom, mapped to the galaxy-coordinate rect and faded out by scale 2. *Residual:* no `Galaxy_Gray` light-theme variant (no themes yet). Original spec: Draw `res/Candy/Galaxy*.png` (assets present: `Galaxy.png`, `Galaxy_Gray.png`) behind the star field at macro zoom, mapped to the galaxy-coordinate rect. The static-asset route (`GET /api/res/{*path}`) already exists and can serve it; needs the galaxy-coordinate placement rect + a textured-image draw op on `Canvas`.
-- [x] **Placeholder & anomaly worlds — DONE 2026-06-12 (commit `ac1e1508`).** `worlds.rs`: `is_placeholder` (UWP `???????-?`/`XXXXXXX-X`) worlds skip the disc/zone in `build_sector_dots` and suppress the UWP/allegiance text; `draw_placeholder_glyphs` draws the central glyph instead — `*` (Georgia, white, +0.17 parsec y) normally, `⌖` U+2316 (red) when `is_anomaly` (`{Anomaly}` code), keeping the hex# + name. Verified Chandler/Riftspan Station stream `???????-?` + `{Anomaly}`. *Reference (`RenderContext` Disc block + `Stylesheet`, exact):*
-  - A world `IsPlaceholder` when **`UWP == "XXXXXXX-X"` or `UWP == "???????-?"`** (`World.cs:169`). When placeholder, draw `world.IsAnomaly ? styles.anomaly : styles.placeholder` instead of the disc, and skip the UWP/starport.
-  - **`placeholder`** (unknown world): content **`*`**, `FontInfo("Georgia", 0.6)`, color = `foregroundColor` (**white**), position `(0, 0.17)`. *(This is the multi-point asterisk seen on Foreven's unsurveyed hexes.)*
-  - **`anomaly`** (deep-space stations): a world `IsAnomaly` when it **`HasCode("{Anomaly}")`** (`World.cs:170`); e.g. **Chandler Station / Riftspan Station** in Reft (`Reft.tab`: `???????-?` + `{Anomaly}`). Content **`⌖`** (U+2316 POSITION INDICATOR), `FontInfo("Arial Unicode MS,Segoe UI Symbol", 0.6)`, **red**, position `(0,0)`. *(The red crosshair in the reference vs. our plain white disc.)*
-  - Port: in `worlds.rs`, detect placeholder/anomaly in both the dot tier (suppress the disc/zone in `build_sector_dots`) and the glyph tier (`draw_world_glyphs` — draw the `*`/`⌖` glyph, suppress starport+UWP). Needs a `World::has_code`/`codes()` check for `{Anomaly}` (we already iterate `world.codes()`).
-- [x] **Style-value parity gaps — DONE 2026-06-12.** Fixed: micro routes now use the `otu.css route.<allegiance>` palette (default `Im` → green `#048104`, not gray — the gray was a misread); all grids (sector/subsector/parsec) use the gray, log-`ScaleInterpolate`-faded `gridColor`; the galaxy opacity uses the log `scale_interpolate`; dot-tier disc radius is 0.2 (Dotmap) vs 0.1 (detail). The travel-zone shape stays the single open arc (the reference's 4-arc broken ring read as a full ring — reverted per user). Original audit notes below (see [[port-exact-style-values]]):
-  - **HIGH — Travel-zone arcs wrong shape.** Reference draws **four 80° arcs** at 5°/95°/185°/275° (a broken ring) per zone, pen width `0.05` parsec, radius +0.1 per stacked zone (`RenderContext.cs:1427-1430`, `Stylesheet.cs:456`). We draw a single ~240° crescent (`worlds.rs build_sector_dots`).
-  - **HIGH — Micro routes are green, should be Gray.** `microRoutes.pen.color = Color.Gray` (`#808080`, `Stylesheet.cs:401`); macro routes White dashed. We hardcode `rgba(60,170,70,0.85)` (`routes.rs:~23`) and ignore `C_ROUTE`. Also honor a per-route `Color` from the sector XML when present (reference uses the route's own color first).
-  - **HIGH — Parsec hex grid is static blue, should be Gray + scale-faded.** `parsecGrid.pen = PenInfo(gridColor, onePixel)` where `gridColor = Gray` at alpha `ScaleInterpolate(0,255, scale, SectorGridMinScale, SectorGridFullScale)` (`Stylesheet.cs:410-411`). We use `rgba(130,150,190,0.22)` constant (`grid.rs draw_hex_grid`).
-  - **MED — Galaxy/rift opacity uses linear, not log, interpolation.** Reference `ScaleInterpolate` is logarithmic in scale (`Stylesheet.cs:275,277`); our `stars.rs:~25` fade is linear. Port a shared `scale_interpolate(lo,hi,scale,min,max)` helper.
-  - **MED — Dotmap disc radius.** Reference `discRadius = HasFlag(Type) ? 0.1 : 0.2` parsec (`Stylesheet.cs:300`) — bigger dots at the dot-only tier; we always use `0.1·CONTENT_SCALE`.
-- [x] **Far-zoom red labels — minor regions (reported 2026-06-13; DONE `76c6033a`).** Loaded `res/labels/minor_labels.tab` into the overlay stream and render it over the macro view (scale 0.5–4), ported from `DrawMacroNames`' minor block: `Minor=False` (the common case) → red italic (`MediumFont` 6.5/1.4 parsec + `textHighlightColor`), `Minor=True` → white regular (`SmallFont` 5/1.4 parsec + `textColor`). Same `Text/X/Y/Minor` format + x-compressed coord space as the mega labels, so the shared record was generalized (`MegaLabel`→`MapLabel`, `parse_mega_labels`→`parse_map_labels`); `Overlays.minor_labels`; backend loads it; `overlays::draw_minor_labels`. (Worlds.xml capitals/homeworlds were already drawn red via `draw_world_labels`; this filled the missing minor-region *text* dataset.)
+- [ ] **Browser DevTools pass** (scripting-vs-paint, redraw frequency on pan) once the HUD flags
+  the next hot layer after borders.
+- [ ] **Galaxy/hex-grid/star-field caching** — apply the per-sector `Path2d` + transform trick if
+  the HUD flags `draw_hex_grid` or `draw_stars`. Consider unloading distant sectors on long sessions.
+- [ ] **Real LOD tiers** — today only `full`/`overview` exist and both run the full parse (overview
+  just strips fields). Build coarser tiers + the `(lod,x,y)` static-tile pyramid only if payloads
+  grow (the `full` detail-panel traffic) or low-zoom needs positions-only dots. Re-measure first.
 
-### UI controls & panels
+## Phase 15 — Polish & quality
 
-The hamburger / search-bar menu items still stubbed in the Settings panel ("Not yet ported: style themes, milieu time-travel, and share links" — Dim Unofficial is now wired). Each must work before deploy.
+- [ ] **World-detail panel tails** — Generate World Map outbound link (`travellerworlds.com`),
+  placeholder (`XXXXXXX-X`) styling, surface RU. *(Core panel + print sheet + per-J range view all
+  shipped — `WORLD_DETAIL_PLAN.md`.)*
+- [ ] **Reference-parity harness** — diff parsed data / rendered frames against travellermap.com
+  (or a local reference build) to catch regressions.
+- [ ] **CI gating tails** — frontend (wasm) clippy has pre-existing warnings to clean before it can
+  join the deny-warnings gate; `cargo fmt --check` likewise (tree isn't rustfmt-clean).
 
-- [ ] **Prominent search bar + jump-route toggle (reported 2026-06-12).** Make the search box more prominent like the reference: a wider white rounded input with the magnifier icon inside on the right, and a **jump-route toggle button** immediately to its right (the squiggle icon — opens the route planner below). Currently it's a plain box top-left (`main.rs` `<input type="search">`).
-- [x] **Jump-route planner — DONE (backend 2026-06-12 `40801021`; full panel UI 2026-06-14).** The route *finder* is backend-first: a pure A* (`BinaryHeap`, spatially bucketed) in `tmap-core::route` over a per-milieu coordinate→world index (cached in `AppState`, `tmap-backend::route`), exposed as `GET /api/route?start=<Sector Name 0101>&end=...&jump=N&milieu=` (+ `nored`/`wild`/`im`/`aok` filters), mirroring `RouteHandler.cs` (minimize jumps, tie-break parsecs; filters exclude worlds from the neighbor set). The **planner panel** (`main.rs`) is complete: squiggle toggle (Traveller-red on hover/active), Start + Destination fields (type a world **name** or `Sector hhhh`, or **click the map** — `fill_endpoint`) with ✕ clear / ⇅ swap, the **J-1…J-6 + H-1** rating buttons, the **4 routeOptions checkboxes** (Require Wilderness Fueling=`wild`, Only Imperial Worlds=`im`, Avoid Red Zones=`nored`, Allow Anomalies=`aok`) which re-run live when toggled, a parsecs/jumps summary + per-stop waypoint list with leg distances, **Print + Copy**, and `render::draw_jump_route` on the map. Seeded from the world panel's "Jump Route" button. A filter that admits no path returns 404 → shown as a "No route" status. *(Reference-algorithm notes retained below for context.)*
-  - *Reference algorithm* — two implementations: (1) client-side `make/path.js` `computeRoute(map, startHex, endHex, jump)`, a textbook **A*/best-first search** over the world set: open/closed lists, neighbors = `reachable(hex, jump)` (every hex within `jump` parsecs, via a square-walk + hex `dist`), **obstacle = no world at that hex** (`map[hex]===undefined`, so jumps only land on worlds), goal test on `endHex`, reconstruct via parent links. (2) Server-side `server/api/RouteHandler.cs` (193 lines) — the authoritative **cross-sector** jump-route API travellermap.com actually calls.
-  - *Known inefficiencies / decision points:* the JS version uses **linear `List`s, not a binary heap** (O(V²) `getLowestCostNode`/`contains`); `reachable()` **walks a bounding square** per node instead of a hex disc; and the **cost function is quirky** — `cost = parent.cost + dist(neighbor, goal)` accumulates the *heuristic* as the cost, so it's greedy best-first, **not** true A*, and it **doesn't minimize jump count or weight by jump distance** (J-1 vs J-6 cost the same). Comments flag intended tweaks (red zone +2, amber +1, no-water +1, non-Imperial +1).
-  - *Likely Rust approach:* a proper **Dijkstra/A* with a `BinaryHeap`** over the already-in-RAM world set (this could be a backend `/api/route` endpoint mirroring `RouteHandler`, or run client-side in WASM over streamed sectors). Decide jump-cost model: minimize **# jumps**, total parsecs, or a weighted cost (avoid red/amber, fuel availability). Cross-sector from the start.
-- [~] **World detail panel (click-a-world, requested 2026-06-12).** **Plan: `WORLD_DETAIL_PLAN.md`.** Core feature shipped:
-  - [x] **Phase A** (`3c8dedab`): `tmap_core::world_util` — `world_util.js` decoders ported verbatim (split_uwp + 8 tables, split_pbg, split_remarks + patterns + sophont population, parse_ix, (Ex)/[Cx], nobility, bases incl. Zhodani special, stellar, zone, total population, Worlds/OtherWorlds; sophont + allegiance code tables `include_str!`-baked). 16 table tests.
-  - [x] **Phase B+C** (`1156fb98`): `world_panel.rs` + `select_world` in `main.rs` — click a world → detail sheet (thumbnail via `res/Candy/`, name, subsector/sector, wiki link, Jump Route seed, expand toggle; expanded: Allegiance, full UWP glyphs, {Ix}/(Ex)/[Cx], System (stellar + GG/belt/other-worlds), Population, Bases, Nobility, Remarks, Travel Zone). Shows overview-LOD immediately, upgrades in place from an on-demand `?lod=full` fetch (cached per sector). Route mode still wins; empty-space click dismisses.
-  - [x] **Print sheet** (`c7c13bd2`): `world_print.rs` — self-printing data sheet ported from `print/world.html` (title, Allegiance, System, UWP decode table w/ reference brace SVGs, {Ix}/(Ex)/[Cx], Total Population, Nobility, Remarks, Travel Zone + TAS rating). Shared `open_print_html()` Blob helper (route print uses it too).
-  - [x] **Per-J range view** (`e30f8f69`): J-1…J-6 pills in the panel highlight the world's jump-N neighborhood on the map (`render/range.rs` — cyan discs in range, edge ring, origin ring; toggle off by re-clicking). Distinct from the A→B route planner; loaded-worlds-only, no fetch; distances via `world_hex` so they match the route backend.
-  - [ ] **Remaining (minor polish):** Generate World Map outbound link (`travellerworlds.com`); placeholder (`XXXXXXX-X`) styling; surface RU.
-  - **S3 world images — DECIDED: skip (2026-06-13).** Queried the bucket: only **14** bespoke globe renders + **113** poster maps (.jpg) exist — ~0.03% / ~0.24% of M1105's ~47k worlds, a tiny hand-curated set (mostly Spinward Marches). Not worth wiring even as a best-effort layer; the `res/Candy/` Hyd/Belt generics (already used) remain the thumbnail. Revisit only if upstream ever expands the set.
-  - **The wiki is NOT fetched or cached — it's just an outbound hyperlink.** `world_util.js` `makeWikiURL` only **builds** a `https://wiki.travellerrpg.com/<Name>_(world)` link; the tool never pulls wiki content. **Every field in the panel is decoded *client-side* from the world's own T5 data** by `prepareWorld()` — hence it's instant. We don't need a wiki proxy/cache; we need to port the decoders.
-  - **Port `world_util.js prepareWorld` + its decode tables:** `splitUWP`, `splitPBG`, `splitRemarks` (trade/remark code → full name), `parseIx`, `STELLAR_TABLE` (e.g. `M8 III` → "Red Giant"), `NOBILITY_TABLE` (→ "Knight"), `BASE_TABLE`, zone → "No Restrictions" + TAS rating, sophont population. Overlaps the renderer's glyph decode but needs the full **human-readable** expansion.
-  - **LOD interaction (important):** the panel needs the **full** fields — stellar, {Ix}/(Ex)/[Cx], nobility, Worlds, RU — which `?lod=overview` (the only thing the client fetches now) **strips out**. So clicking a world must fetch/hold that sector at **`?lod=full`** (or add a per-world endpoint). First concrete use of the `full` tier (the backend already supports it).
-  - **World thumbnail image:** ~~the reference pulls a pre-rendered world image from S3~~ → **resolved: use the `res/Candy/` generics** (see the "S3 world images — DECIDED: skip" note above; the S3 set covers only ~14 worlds). `res/maps/world_details.json` carries extra per-world detail if ever wanted.
-  - **Prereqs/links:** needs **click hit-testing** (screen point → world hex; no world picking yet). **Jump Route** button + J-1…J-6 tie into the route planner above. **Generate World Map** is an outbound link to `travellerworlds.com` with the world's params — port as a link.
-- [x] **Milieu / time selector (DONE `9bdd28bf`).** Clock button → panel listing the 8 curated era snapshots (current one a Traveller-red dot), click to switch. `MILIEU` const → `RwSignal` threaded through every milieu-keyed fetch; the universe load became an effect that, on switch, tears down all per-milieu state (index/sectors/inflight/failed/full-LOD cache + `render::clear_caches()`) and milieu-scoped UI (selection/jump-map/route/search) then re-fetches. Stale-response guards drop fetches whose milieu changed mid-flight. Macro overlays are milieu-independent (kept). *Original spec below.*
-- [x] **Milieu / time selector — DONE.** Clock tab → a panel listing the era snapshots, current one **checked + Traveller-red**, click to switch (rebuilds per-milieu state: index/sectors/caches, resets selection/route/jumpmap, stale-response guarded). Exact list + labels (code → display):
-  - **IW** — The Interstellar Wars
-  - **M0** — Milieu 0 – Early Imperium
-  - **M990** — 990 – Solomani Rim War
-  - **M1105** — 1105 – The Golden Age **(default)**
-  - **M1120** — 1120 – The Rebellion
-  - **M1201** — 1201 – The New Era
-  - **M1248** — 1248 – The New, New Era
-  - **M1900** — 1900 – The Far Far Future
+## Phase 16 — Deploy (mostly done)
 
-  The display labels are a **curated hardcoded list** (ported from the reference `index.html` `#settings` milieu radios — *not* in the data; `res/Sectors/milieu.tab` only lists which milieu XMLs exist + an OTU/non-OTU tag). The data also has **M600** etc.; mirror the curated OTU subset above (no M600). Selecting one switches the active milieu: `MILIEU` is currently a **const** in `main.rs` — make it a signal, re-fetch universe + overlays + visible sectors, and **clear `SECTOR_GEOM`/border caches** (geometry is per-milieu). Index/stream/search already key off milieu server-side, so the backend needs no change.
-- [~] **Share tab — MVP DONE 2026-06-16 (link + embed).** Share button (link icon) in the top-right cluster opens a panel (`panel == 4`) with a **"Share this link"** field + Copy and an **"Embed this HTML"** field (`<iframe width=400 height=300 src="…">`) + Copy, both fed by a live `share_url` memo. **Scheme decision (user, 2026-06-16): our own params now, travellermap.com-compat later** — `?cx&cy&scale&milieu` (center in our parsec space, px/parsec scale, milieu omitted when default), encapsulated in `build_share_url`/`parse_share_params` as a single swap-point for the reference `p=x!y!logScale` format. The app **reads the params on load** (seeds the initial view + milieu, overriding the default Spinward-Marches fit) and **reflects the live view in the address bar** via `history.replaceState`, **debounced 400 ms** (Safari rate-limits replaceState ~100/30 s; a drag fires far more). **Still TODO:** travellermap.com URL compatibility (needs the `worldToMap`/`mapToWorld` coordinate-transform port + live verification); **Save Snapshot/PDF** export + social-share buttons; a real `?` Help/About tab. *(Embed relies on the backend not sending `X-Frame-Options: DENY` — it doesn't today.)*
-- [ ] **Style themes** — the Poster / Atlas / Print / Candy presets (the 4 thumbnails). Needs the `Stylesheet` theme system: a palette/parameter set selected at the top of `render`, threaded like `RenderOptions`. Largest item. **Plan: `STYLE_THEMES_PLAN.md`** (2026-06-18) — a theme is a small palette+flags struct (5 generic cascade colors + ~15 element colors + font family + flags); all geometry/LOD is shared and already ported. Phased: A) extract `Theme::poster()` from current consts + thread `&Theme` through every `render` pass (pixel-identical) → B) Atlas (grayscale/white) proves the cascade → C) `style` signal + settings selector + `&style=` URL round-trip + border-cache invalidation → D) full 8 presets (Mongoose needs a glyph-layout override; Candy approximate). Per-preset values cited from `Stylesheet.cs` line numbers in the plan.
-- [x] **Dim Unofficial Data — DONE 2026-06-12 (commit `4107389a`).** `SectorInfo.tags` now carries the review status; `status::draw_dim_overlay` greys the bounds of sectors not tagged `Official`/`Preserve`/`InReview`, gated by the new "Dim Unofficial" appearance toggle (off by default).
-- [x] **Help / about / credits — DONE 2026-06-18.** The `?` tab (top-right cluster) opens
-  an **ABOUT** panel (`panel == 5`, `main.rs`): a one-line "what is this", a **CONTROLS**
-  quick-help list (pan/zoom, click-a-world, search, route/era/share; the double-click
-  solar-system line is `#[cfg(feature = "callisto")]`), and — the point of it — a
-  **CREDITS & ATTRIBUTION** section for **Apache-2.0 compliance**: names this an
-  independent client-side reimplementation (derivative work, not affiliated/endorsed),
-  retains the **© 2006–2023 Joshua Bell** copyright, links the **Apache License 2.0**,
-  and points back to travellermap.com + `github.com/inexorabletash/travellermap`; plus a
-  **TRAVELLER** Mongoose Publishing trademark/Fair-Use notice and a link to the original
-  Credits & Data Sources. New `ext_link` helper. (LICENSE.md in the repo already retains
-  the source-form notices; this surfaces the attribution in-app.)
+- [x] **Single-container service (2026-06-15).** One container serves API + WASM frontend from one
+  origin (relative `/api`). Multi-stage `Dockerfile` (Trunk `--release --features callisto` → cargo
+  → `debian-slim` + `dist/` + `res/`); backend binds `0.0.0.0:$PORT`, SPA fallback, universe warm-up.
+- [x] **Cloud Run deploy scripts (2026-06-15).** `scripts/build.sh` (local verify) + `scripts/deploy.sh`
+  (`gcloud builds submit` → Artifact Registry → `gcloud run deploy`, scale-to-zero). Custom domain
+  `travellermap.callistoflight.com` (`DEPLOY.md`). Admin flush gated behind `TMAP_ENABLE_ADMIN`.
+- [ ] **CDN** — `Cache-Control`/ETag → Cloud CDN via an HTTPS load balancer (optimization).
+- [ ] **`res/` contribute-back hygiene** — keep `res/` edits upstream-compatible.
 
-### Data & API compatibility
+*Test:* `scripts/build.sh run` → full app on `:8080`; `scripts/deploy.sh` → live on Cloud Run.
 
-- [~] **Full API-compatibility audit — DONE; implementation pending.** The audit itself is complete: see **`PORT_API_COMPAT.md`** (background agent, 2026-06-12) — a full endpoint → reference-handler → our-status → gap matrix against https://travellermap.com/doc/api. **Headline finding:** our backend exposes a *private* snake_case contract (`/api/sector/...`, `/api/universe`, `/api/overlays`, `/api/search`) that **diverges completely** from the documented public API (`/api/{verb}?params`, `/data/{sector}/...`, PascalCase envelopes, JSONP/XML). So for **every** data endpoint, drop-in compatibility is Missing or Partial — the data is computed but URL shapes + JSON envelopes don't match. Image endpoints (Tile/Poster/JumpMap) are intentionally N/A (client renders). **Open decision (don't duplicate the matrix here — read the doc):** re-shape to the documented contract, or add a thin **compatibility layer** alongside the private one. High-value missing endpoints flagged there: `/api/coordinates` (name→coord, many tools need it), `/api/jumpworlds`, `/api/milieux`, text output for `/api/sec`.
-- [x] **Aslan-interior border fix — inline borders in the milieu region list (DONE 2026-06-12, commit `60dd139d`).** Sectors without their own metadata `.xml` — the whole Aslan Hierate interior (Hlakhoi, Iwahfuah, Staihaia'yo, Karleaya, …) plus Ustral Quadrant for Solomani — keep their `<Border>`/`<Route>`/subsector data **inline in the milieu region list** (`M1105.xml`'s `<Sector>` blocks). The backend read borders only from a separate `<name>.xml`, so 22 Aslan sectors (and 1 Solomani) loaded worlds but had **zero border region** → unshaded even fully zoomed in. **Fix:** `parse::milieu_sector_block(region_xml, name)` (core) extracts a sector's inline `<Sector>…</Sector>` block; `build_sector_bytes` now reads the per-sector `.xml` **and** that inline block and **merges** borders/routes/subsectors/border-styles with dedup (never either/or — a sector may carry borders in both places). `AppState` caches the raw region XML per milieu. Verified: all 190 M1105 sectors re-scanned, **zero remaining holes** (Hlakhoi `As` region 0 → 1208); regression test asserts Hlakhoi has an Aslan border region. *(Distinct from the macro-polygon Aslan fill in Rendering / visual parity, still open — that fills the deep interior at the zoomed-**out** s≤4 overview; this recovers the micro borders at the worlds-visible zoom.)*
+---
 
-### Search
+# Callisto track (non-reference, feature-gated)
 
-- [x] **`/api/search` envelope made API-compatible — DONE 2026-06-16 (urgent: external clients were breaking).** The handler now emits the canonical travellermap.com shape `{"Results":{"Count":N,"Items":[{"World"|"Sector"|"Subsector":{…}}]}}` (PascalCase, externally-tagged `SearchItem` enum). World items carry all eight required fields (`HexX HexY Sector Uwp SectorX SectorY Name SectorTags`); `SectorTags` reuses the `/api/universe` tag-combine (own tags + metafile tag, deduped). The old private `{query, results:[{name,kind,…}]}` shape is gone; the frontend now maps the envelope to a local `Hit` view-model. Verified against `refs/search_regina.json` (Regina → `A788899-C`, `-4/-1`, `Official OTU`). *Still TODO for exact golden/`search_public_envelope` parity:* **Subsector** hits (need per-sector subsector-name loading at index build) and reference ranking. The DTOs (`SearchItem`/`SearchWorld`/`SearchSector`/`SearchSubsector`) are in place for both.
-- [ ] **Tantivy upgrade.** `search.rs` is still a flat in-memory substring/prefix index (exact > prefix > contains over world+sector names), built lazily per milieu — no external service, honoring "no datastore". **Tantivy** (full-text ranking, tokenization, typo tolerance) is the planned upgrade; the `/api/search` contract stays the same. *(Pairs with the API-compat work, which also wants a real query language: `* % ? _ []` wildcards, `exact:`/`like:`/`uwp:`/`pbg:`/`zone:`/`alleg:`/`stellar:`/`remark:`/`in:`, multi-word AND, subsector/label hits.)*
+Experimental extensions **beyond** travellermap.com, gated behind the Cargo feature `callisto`
+(**OFF by default, never committed enabled** — default builds, CI, and shipped artifacts stay
+clean). The map images come from the **external worldgen service** (`tools.callistoflight.com`);
+travellermap has no worldgen dependency. Spec: `worldgen/docs/library-integration.md`.
 
-### Cross-cutting quality
-
-- [ ] **Reference-parity harness:** diff our parsed data / rendered frames against travellermap.com (or a local reference build) to catch regressions.
-- [x] **CI — DONE 2026-06-16 (`.github/workflows/ci.yml`).** Two parallel jobs on push/PR to `main` (path-filtered to `crates/**`, manifests, `res/**`, the workflow): **native** = `cargo clippy -p tmap-core -p tmap-backend -- -D warnings` then `cargo test --locked`; **wasm** = `cargo check -p tmap-frontend --target wasm32-unknown-unknown` for both the default and `callisto` feature sets. `dtolnay/rust-toolchain@stable` + `Swatinem/rust-cache@v2`; concurrency-cancels superseded runs. Fixed the 4 native clippy warnings to make the deny-warnings gate green (range pattern, `is_multiple_of`, dangling doc comment, `RouteKey` type alias). *Not yet gated:* frontend (wasm) clippy has many pre-existing warnings — a separate cleanup before it can join the gate; `cargo fmt --check` likewise (the tree isn't rustfmt-clean).
-
-## Container & GCP/Cloud Run deployment (last)
-
-- [x] **Containerize as a single service (DONE 2026-06-15).** Decision: **one container
-  serves both the API and the WASM frontend from one origin** (not a separate static host) —
-  the frontend already uses relative `/api` URLs, so same-origin "just works" and the whole
-  app lives at one URL. `Dockerfile` is multi-stage: Trunk builds the frontend
-  (`--release --features callisto`) → cargo builds the backend → `debian-slim` runtime with
-  the binary + `dist/` + `res/`. Backend now binds `0.0.0.0:$PORT` (default 3000 locally),
-  and `main()` adds a `ServeDir`+`ServeFile` SPA fallback (mounted after the API routes, only
-  when a `dist/` exists, so local `cargo run` + Trunk dev is unchanged) plus a background
-  `spawn_blocking` warm-up of the M1105 universe. `.dockerignore` trims the context to the
-  Cargo manifests + `crates/` + `res/`. Files: `crates/backend/src/main.rs`, `Dockerfile`,
-  `.dockerignore`.
-- [x] **GCP deploy scripts → Cloud Run (DONE 2026-06-15).** `scripts/build.sh` (local image +
-  run on :8080 to verify before shipping) and `scripts/deploy.sh` (per-push: `gcloud builds
-  submit` → amd64 image in Artifact Registry → `gcloud run deploy`, scale-to-zero, config from
-  `scripts/deploy.env`). One-time GCP setup + custom-domain mapping
-  (`travellermap.callistoflight.com`) documented in `DEPLOY.md` / `scripts/README.md`.
-  Cold-start data latency is negligible (M1105 parse ≈150 ms + background warm-up).
-- [x] **Pre-public hardening — admin gate (DONE 2026-06-15).** `POST /api/admin/flush` (a
-  dev/profiling cache-flush, nothing in the app calls it) is now **only mounted when
-  `TMAP_ENABLE_ADMIN` is truthy** (`admin_enabled()` in `main.rs`); unset → the route 404s, so
-  the public deployment never exposes it. Permissive CORS is kept intentionally (public,
-  read-only data API meant for cross-origin third-party tools). Still open: `Cache-Control`/ETag
-  → Cloud CDN via an HTTPS load balancer (optimization, later).
-- [ ] Remaining parity features as prioritized (jump maps, world data sheet, print); `res/` contribute-back hygiene.
-
-**Test:** `scripts/build.sh run` → full app on `http://localhost:8080`; `scripts/deploy.sh` puts it live on Cloud Run.
+- [x] **Double-click a system → solar-system view (2026-06-13).** Builds the world's T5 fields into
+  a worldgen request and shows the result in a zoom/pan popup (`Loading`/`Ready`/`Error` state
+  machine, spinner + elapsed counter, Reset/Print/Download/Close). *(Re-architected from an optional
+  native worldgen dep to the external HTTP service — even an optional dep must be Cargo-resolved,
+  breaking standalone/CI builds.)*
+- [x] **"World Map" button → main-world surface map (2026-06-15).** `/api/world` PNG (deterministic
+  seed + GCS cache). Now **orbit-consistent** with the in-system double-click: probes `/api/system_svg`
+  for the main world's *generated* orbit (rolled, not always 3) so both paths hit the same cache entry.
+- [x] **Interactive SVG system map (2026-06-17).** Switched to `/api/system_svg` (bodies are
+  `<g class="sysmap-body" data-*>`), inlined into the DOM: **hover/tap** any body → its UWP (or star
+  spectral type); **double-click/long-press** a world/moon → its surface map. Wheel/drag + pinch
+  zoom/pan in the popup. Reads `data-spectral` + nested companion-subsystem groups forward-compatibly.
+  *(Companion-subsystem hover + star `data-spectral` need a worldgen redeploy to appear live — spec
+  handed off to the worldgen repo; not edited from here.)*
