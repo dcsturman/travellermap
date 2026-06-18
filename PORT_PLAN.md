@@ -197,6 +197,50 @@ artifacts stay clean). Build/run locally with `--features <name>` on both crates
   silent for ~30 s on a cache miss). Files: `crates/frontend/src/main.rs`
   (`WORLD_SERVICE`, `ImgView`, `launch_render`, `start_elapsed_timer`, `on_world_map`,
   rebuilt modal), `crates/frontend/src/world_panel.rs` (`on_world_map` prop + button).
+- [x] **Callisto — interactive system map: double-click any world → its surface map;
+  hover/tap → UWP (DONE 2026-06-17).** The double-click popup now fetches the
+  **interactive SVG** endpoint `https://tools.callistoflight.com/api/system_svg`
+  (same query params as `/api/system` but **no `scale`** — the SVG carries a
+  `viewBox`; returns `image/svg+xml` whose bodies are each a
+  `<g class="sysmap-body" data-kind data-name data-uwp data-orbit data-distance-mkm>`)
+  instead of the flat PNG. The SVG is **inlined into the DOM** (`inner_html`), so each
+  body is a real element we can target: **hover** a body (desktop) or **tap** it
+  (mobile) shows its **UWP** in a cursor/finger-following tooltip; **double-click**
+  (desktop) or **long-press** (mobile) a `world`/`moon` renders **that body's** surface
+  map — solving the original "a flat PNG can't pick a world" limit that forced the
+  detail-panel "World Map" button (which still works for the main world). Per-body
+  `/api/world` requests reuse the system's `(sector, hex)` seed identity plus the
+  body's `data-name`/`data-uwp`/`data-orbit` read straight off the DOM
+  (`Element::closest(".sysmap-body")` + `get_attribute`); stars/gas giants/belts have
+  no `data-uwp` so they only show a name/kind tooltip and aren't surface-mappable.
+  New `ImgView::System { svg, title, sector, hex }` variant + `launch_svg` (the SVG
+  parallel to `launch_render`, same generation-guard/timer machinery, validates a
+  `<svg` body); `sys_tip`/`sys_lp` signals back the tooltip + in-popup long-press.
+  Files: `crates/frontend/src/main.rs` (`SYSTEM_SVG_SERVICE`, `ImgView::System`,
+  `launch_svg`, `body_from_target`/`kind_label`, `open_body_world`, System match arm +
+  tooltip overlay; `SYSTEM_SERVICE` PNG const removed). Spec:
+  `worldgen/docs/library-integration.md` (`generate_system_svg` / `GET /api/system_svg`).
+  **Follow-ups (2026-06-17):**
+  - **Zoom/pan in the system view** — the SVG sits in a transform wrapper with
+    wheel-zoom (cursor-anchored), drag-pan, and two-finger pinch/pan (reusing
+    `TouchGesture`/`pt_dist`/`pt_mid` + `sys_zoom`/`sys_pan`/`sys_drag`/`sys_touch`),
+    so you can zoom in to see e.g. moons around a gas giant. Mouse-move does pan or
+    hover depending on drag state; Reset button added.
+  - **Orbit-consistent "World Map" button** — the main world's surface seed depends on
+    its *generated* orbit (rolled, **not** always 3: probed Regina=4, Aramis=1, Mora=8,
+    Jenghe=2, Efate=3, Pixie=0). The button now first probes `/api/system_svg`
+    (`discover_main_orbit`, matching the body whose `data-uwp` == the input UWP) to read
+    that orbit, then requests `/api/world` with it — so the button and the in-system
+    double-click produce the **same** image and hit the same GCS cache entry.
+  - **Wait-screen copy** softened from "up to a minute" → "up to ~15 seconds".
+  - **worldgen SVG fixes (in `../worldgen`, needs redeploy to take effect):** bodies in
+    companion-star *inline subsystems* (`draw_inline_subsystem`) are now wrapped in
+    `<g class="sysmap-body">` groups with name/uwp/orbit, so **secondary/tertiary-system
+    worlds are hoverable/clickable** too; and **star groups carry `data-spectral`**
+    (e.g. `G2 V`) via a new `BodyMeta.spectral` field, which the tooltip shows. Both are
+    no-ops on the PNG raster path (group hooks ignored; new field unused there) — all 16
+    worldgen tests pass, PNG output byte-identical. Frontend reads `data-spectral` and
+    nested groups forward-compatibly (graceful no-op against the un-redeployed service).
 
 ### Rendering / visual parity
 

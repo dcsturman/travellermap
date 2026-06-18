@@ -134,11 +134,12 @@ fn open_print_html(html: &str) {
     let _ = win().open_with_url_and_target(&url, "_blank");
 }
 
-/// Base URL of the external worldgen solar-system image service (Callisto). The
-/// double-click popup calls this directly — travellermap has no worldgen
-/// dependency. Change here (or later make it configurable) to point elsewhere.
+/// Base URL of the external worldgen *interactive* solar-system service (Callisto):
+/// same query params as `/api/system` but returns an `image/svg+xml` whose bodies
+/// are wrapped in `<g class="sysmap-body" data-…>` groups, so we can inline it and
+/// make each world hoverable (UWP tooltip) and double-clickable (its surface map).
 #[cfg(feature = "callisto")]
-const SYSTEM_SERVICE: &str = "https://tools.callistoflight.com/api/system";
+const SYSTEM_SVG_SERVICE: &str = "https://tools.callistoflight.com/api/system_svg";
 
 /// Base URL of the external worldgen planet-surface image service (Callisto). The
 /// "World Map" button in the detail panel calls this directly. Same deterministic
@@ -157,7 +158,14 @@ const WORLD_SERVICE: &str = "https://tools.callistoflight.com/api/world";
 enum ImgView {
     /// Render in flight — show a spinner + elapsed-seconds counter.
     Loading { title: String },
-    /// Render arrived — zoom/pan viewer over the PNG.
+    /// Interactive solar-system map (SVG inlined into the DOM). Each body is a
+    /// `<g class="sysmap-body" data-name/data-uwp/data-orbit/data-kind>`; hovering
+    /// (or tapping) one shows its UWP, double-clicking (or long-pressing) a
+    /// world/moon renders that body's surface map. `sector`/`hex` are the system's
+    /// seed identity, threaded through so a per-body `/api/world` request can be
+    /// built from the body's data-attributes.
+    System { svg: String, title: String, sector: String, hex: String },
+    /// Render arrived — zoom/pan viewer over the PNG (world-surface map).
     Ready { obj: String, svc: String, title: String },
     /// Render failed (unreachable service, or a 422 from a partial/placeholder UWP).
     Error { title: String, msg: String },
@@ -298,6 +306,153 @@ fn launch_render(
             system_view.set(Some(state));
         }
     });
+}
+
+/// Open the popup on an interactive system-map SVG: spinner immediately, fetch the
+/// SVG text in the background, then inline it (`ImgView::System`) or show an error.
+/// The vector parallel to [`launch_render`] — same generation-guard + timer
+/// machinery, but the body is an SVG string rather than PNG bytes. `sector`/`hex`
+/// ride along so the popup can build per-body world-surface requests.
+#[cfg(feature = "callisto")]
+#[allow(clippy::too_many_arguments)]
+fn launch_svg(
+    system_view: RwSignal<Option<ImgView>>,
+    sys_zoom: RwSignal<f64>,
+    sys_pan: RwSignal<(f64, f64)>,
+    sys_elapsed: RwSignal<u32>,
+    sys_timer: RwSignal<Option<i32>>,
+    sys_gen: RwSignal<u64>,
+    url: String,
+    title: String,
+    sector: String,
+    hex: String,
+) {
+    if let Some(ImgView::Ready { obj, .. }) = system_view.get_untracked() {
+        let _ = web_sys::Url::revoke_object_url(&obj);
+    }
+    if let Some(id) = sys_timer.get_untracked() {
+        win().clear_interval_with_handle(id);
+    }
+    sys_zoom.set(1.0);
+    sys_pan.set((0.0, 0.0));
+    let gen = sys_gen.get_untracked().wrapping_add(1);
+    sys_gen.set(gen);
+    system_view.set(Some(ImgView::Loading { title: title.clone() }));
+    sys_timer.set(Some(start_elapsed_timer(sys_elapsed)));
+
+    spawn_local(async move {
+        let result = gloo_net::http::Request::get(&url).send().await;
+        if sys_gen.get_untracked() != gen {
+            return;
+        }
+        if let Some(id) = sys_timer.get_untracked() {
+            win().clear_interval_with_handle(id);
+            sys_timer.set(None);
+        }
+        let state = match result {
+            Ok(resp) if resp.ok() => match resp.text().await {
+                Ok(svg) if svg.contains("<svg") => ImgView::System { svg, title, sector, hex },
+                Ok(_) => ImgView::Error {
+                    title,
+                    msg: "The service returned data that wasn't an SVG.".into(),
+                },
+                Err(_) => ImgView::Error { title, msg: "Couldn't read the system map.".into() },
+            },
+            // Non-2xx: surface the service's plain-text reason (422 = bad/partial UWP).
+            Ok(resp) => {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                let msg = if body.trim().is_empty() {
+                    format!("The map service returned HTTP {status}.")
+                } else {
+                    body
+                };
+                ImgView::Error { title, msg }
+            }
+            Err(_) => ImgView::Error { title, msg: "Couldn't reach the map service.".into() },
+        };
+        if sys_gen.get_untracked() == gen {
+            system_view.set(Some(state));
+        }
+    });
+}
+
+/// Build the `/api/system_svg` request for a world's system from its T5 fields.
+/// Shared by the double-click popup and the "World Map" button's orbit probe.
+#[cfg(feature = "callisto")]
+fn system_svg_url(sector: &str, w: &World) -> String {
+    let enc = |s: &str| String::from(js_sys::encode_uri_component(s));
+    let mut url = format!(
+        "{SYSTEM_SVG_SERVICE}?sector={}&hex={}&name={}&uwp={}&pbg={}&stellar={}",
+        enc(sector), enc(&w.hex), enc(&w.name), enc(&w.uwp), enc(&w.pbg), enc(&w.stellar),
+    );
+    if let Some(n) = w.worlds {
+        url.push_str(&format!("&worlds={n}"));
+    }
+    url
+}
+
+/// Fetch a world's generated *system* SVG and read back the **main world's**
+/// generated orbit slot, so the "World Map" button seeds the surface render the
+/// same way double-clicking that world in the system view does (the main-world
+/// orbit is rolled by generation — it is *not* always 3). The main world is the
+/// only body whose `data-uwp` equals the input UWP, so we match on that and pull
+/// its `data-orbit`. Returns `None` on any failure (→ caller uses the service
+/// default), so a slow/old/unavailable service degrades gracefully.
+#[cfg(feature = "callisto")]
+async fn discover_main_orbit(sector: &str, w: &World) -> Option<String> {
+    let resp = gloo_net::http::Request::get(&system_svg_url(sector, w)).send().await.ok()?;
+    if !resp.ok() {
+        return None;
+    }
+    let svg = resp.text().await.ok()?;
+    // UWP has no XML metacharacters, so a raw substring match is exact.
+    let needle = format!("data-uwp=\"{}\"", w.uwp);
+    let group = svg.split("<g ").find(|g| {
+        g.split('>').next().is_some_and(|head| head.contains(&needle))
+    })?;
+    let head = group.split('>').next()?;
+    let after = head.split("data-orbit=\"").nth(1)?;
+    Some(after.split('"').next()?.to_string())
+}
+
+/// Walk up from an event's target to the enclosing `<g class="sysmap-body">`, if
+/// any — the interactive body the user is pointing at inside an inlined system SVG.
+/// Returns `None` over empty space / orbit rings / header text.
+#[cfg(feature = "callisto")]
+fn body_from_target(target: Option<web_sys::EventTarget>) -> Option<web_sys::Element> {
+    let el = target?.dyn_into::<web_sys::Element>().ok()?;
+    el.closest(".sysmap-body").ok().flatten()
+}
+
+/// Human-readable label for a `data-kind` value, for the hover tooltip on bodies
+/// without a UWP or spectral class (gas giants).
+#[cfg(feature = "callisto")]
+fn kind_label(kind: &str) -> &'static str {
+    match kind {
+        "star" => "Star",
+        "gas-giant" => "Gas Giant",
+        "belt" => "Planetoid Belt",
+        "moon" => "Moon",
+        _ => "World",
+    }
+}
+
+/// Tooltip text for a `<g class="sysmap-body">`: `"Name · <detail>"` where detail is
+/// the world/belt/moon `data-uwp`, the star `data-spectral` (e.g. `G2 V`), or the
+/// kind label as a fallback (gas giants).
+#[cfg(feature = "callisto")]
+fn tooltip_text(g: &web_sys::Element) -> String {
+    let name = g.get_attribute("data-name").unwrap_or_default();
+    let detail = g
+        .get_attribute("data-uwp")
+        .or_else(|| g.get_attribute("data-spectral"))
+        .unwrap_or_else(|| kind_label(&g.get_attribute("data-kind").unwrap_or_default()).to_string());
+    if name.is_empty() {
+        detail
+    } else {
+        format!("{name}  ·  {detail}")
+    }
 }
 
 /// Trigger a browser download of a canvas as a PNG (via a data-URL `<a download>`).
@@ -686,6 +841,17 @@ fn App() -> impl IntoView {
     let sys_timer = RwSignal::new(None::<i32>);
     #[cfg(feature = "callisto")]
     let sys_gen = RwSignal::new(0_u64);
+    // In-popup hover/tap tooltip for the interactive system SVG: `(client_x,
+    // client_y, text)` of the body under the cursor/finger, or `None` to hide.
+    #[cfg(feature = "callisto")]
+    let sys_tip = RwSignal::new(None::<(f64, f64, String)>);
+    // Pending long-press timer for a body inside the system SVG (mobile: a held
+    // finger on a world → its surface map). Distinct from the map's `lp_timer`.
+    #[cfg(feature = "callisto")]
+    let sys_lp = RwSignal::new(None::<i32>);
+    // Touch gesture state inside the system SVG (one-finger pan / two-finger pinch).
+    #[cfg(feature = "callisto")]
+    let sys_touch = RwSignal::new(None::<TouchGesture>);
     let (route_status, set_route_status) = signal(String::new());
     // Distinguish a click (set endpoint) from a drag (pan): remember press origin.
     let down_pos = RwSignal::new(None::<(f64, f64)>);
@@ -787,6 +953,11 @@ fn App() -> impl IntoView {
                         win().clear_interval_with_handle(id);
                         sys_timer.set(None);
                     }
+                    if let Some(id) = sys_lp.get_untracked() {
+                        clear_timeout(id);
+                        sys_lp.set(None);
+                    }
+                    sys_tip.set(None);
                     sys_gen.update(|g| *g = g.wrapping_add(1)); // invalidate any in-flight fetch
                     system_view.set(None);
                 }
@@ -1194,20 +1365,40 @@ fn App() -> impl IntoView {
     // seeding/parsing/render; it needs the full-LOD fields (stellar/pbg/worlds).
     #[cfg(feature = "callisto")]
     let launch_system = move |sector_name: &str, w: &World| {
-        let enc = |s: &str| String::from(js_sys::encode_uri_component(s));
-        let mut url = format!(
-            "{SYSTEM_SERVICE}?sector={}&hex={}&name={}&uwp={}&pbg={}&stellar={}&scale=2.0",
-            enc(sector_name), enc(&w.hex), enc(&w.name), enc(&w.uwp), enc(&w.pbg), enc(&w.stellar),
-        );
-        if let Some(n) = w.worlds {
-            url.push_str(&format!("&worlds={n}"));
-        }
+        let url = system_svg_url(sector_name, w);
         let name = if w.name.is_empty() { w.hex.clone() } else { w.name.clone() };
         let title = format!("{name} — {} {}", sector_name, w.hex);
-        launch_render(
-            system_view, sys_zoom, sys_pan, sys_elapsed, sys_timer, sys_gen, url, title,
+        launch_svg(
+            system_view, sys_zoom, sys_pan, sys_elapsed, sys_timer, sys_gen,
+            url, title, sector_name.to_string(), w.hex.clone(),
         );
     };
+    // Render one body's surface map (`/api/world`) from the data-attributes the
+    // system SVG carries on each `<g class="sysmap-body">`. `sector`/`hex` are the
+    // system's seed identity; `orbit` (absent for moons) defaults to the service's
+    // main-world orbit. This is the "double-click/long-press any world in the
+    // system" path — it reuses the PNG zoom/pan viewer via `launch_render`.
+    #[cfg(feature = "callisto")]
+    let open_body_world =
+        move |sector: &str, hex: &str, name: &str, uwp: &str, orbit: Option<String>| {
+            let enc = |s: &str| String::from(js_sys::encode_uri_component(s));
+            let mut url = format!(
+                "{WORLD_SERVICE}?sector={}&hex={}&name={}&uwp={}&scale=2.0",
+                enc(sector), enc(hex), enc(name), enc(uwp),
+            );
+            if let Some(o) = orbit.filter(|o| !o.is_empty()) {
+                url.push_str(&format!("&orbit={}", enc(&o)));
+            }
+            let title = format!("{name} — {sector} {hex} · World Map");
+            sys_tip.set(None);
+            if let Some(id) = sys_lp.get_untracked() {
+                clear_timeout(id);
+                sys_lp.set(None);
+            }
+            launch_render(
+                system_view, sys_zoom, sys_pan, sys_elapsed, sys_timer, sys_gen, url, title,
+            );
+        };
     // Double-click a world → solar-system popup (Callisto, dev-only). The
     // preceding single-clicks already selected + upgraded the world to full LOD,
     // so reuse `selected` rather than re-hit-testing.
@@ -1223,23 +1414,47 @@ fn App() -> impl IntoView {
     let on_dblclick = move |_ev: web_sys::MouseEvent| {};
 
     // "World Map" button (detail panel, callisto-only): render the selected main
-    // world's surface map. Builds the `/api/world` request from the world's T5
-    // fields and opens the same popup (spinner → image), `orbit` left to the
-    // service default (3 = main world).
+    // world's surface map — identically to double-clicking it inside the system view.
+    // The surface seed depends on the main world's *generated orbit* (rolled, not
+    // always 3), so we first probe `/api/system_svg` for that orbit, then request
+    // `/api/world` with it; this guarantees the button and the in-system double-click
+    // produce the same image and hit the same GCS cache entry. The probe is quick;
+    // the spinner covers both it and the (slower) surface render.
     #[cfg(feature = "callisto")]
     let on_world_map = move |()| {
         let Some(sw) = selected.get_untracked() else { return };
-        let w = &sw.world;
-        let enc = |s: &str| String::from(js_sys::encode_uri_component(s));
+        let w = sw.world.clone();
+        let sector = sw.sector_name.clone();
         let name = if w.name.is_empty() { w.hex.clone() } else { w.name.clone() };
-        let url = format!(
-            "{WORLD_SERVICE}?sector={}&hex={}&name={}&uwp={}&scale=2.0",
-            enc(&sw.sector_name), enc(&w.hex), enc(&name), enc(&w.uwp),
-        );
-        let title = format!("{name} — {} {} · World Map", sw.sector_name, w.hex);
-        launch_render(
-            system_view, sys_zoom, sys_pan, sys_elapsed, sys_timer, sys_gen, url, title,
-        );
+        let title = format!("{name} — {sector} {} · World Map", w.hex);
+        // Spinner immediately (covers the orbit probe), with a fresh generation that a
+        // close/supersede can invalidate before we kick the actual world render.
+        if let Some(id) = sys_timer.get_untracked() {
+            win().clear_interval_with_handle(id);
+        }
+        let gen = sys_gen.get_untracked().wrapping_add(1);
+        sys_gen.set(gen);
+        system_view.set(Some(ImgView::Loading { title: title.clone() }));
+        sys_timer.set(Some(start_elapsed_timer(sys_elapsed)));
+        spawn_local(async move {
+            let orbit = discover_main_orbit(&sector, &w).await;
+            if sys_gen.get_untracked() != gen {
+                return; // popup closed / superseded during the probe
+            }
+            let enc = |s: &str| String::from(js_sys::encode_uri_component(s));
+            let mut url = format!(
+                "{WORLD_SERVICE}?sector={}&hex={}&name={}&uwp={}&scale=2.0",
+                enc(&sector), enc(&w.hex), enc(&name), enc(&w.uwp),
+            );
+            if let Some(o) = orbit.filter(|o| !o.is_empty()) {
+                url.push_str(&format!("&orbit={}", enc(&o)));
+            }
+            // launch_render restarts the spinner/timer under a new generation and
+            // swaps to the image (or error) when the render lands.
+            launch_render(
+                system_view, sys_zoom, sys_pan, sys_elapsed, sys_timer, sys_gen, url, title,
+            );
+        });
     };
     #[cfg(not(feature = "callisto"))]
     let on_world_map = move |()| {};
@@ -1547,6 +1762,11 @@ fn App() -> impl IntoView {
             win().clear_interval_with_handle(id);
             sys_timer.set(None);
         }
+        if let Some(id) = sys_lp.get_untracked() {
+            clear_timeout(id);
+            sys_lp.set(None);
+        }
+        sys_tip.set(None);
         sys_gen.update(|g| *g = g.wrapping_add(1)); // ignore any in-flight fetch
         system_view.set(None);
     };
@@ -1617,7 +1837,7 @@ fn App() -> impl IntoView {
                                         animation:tmap-spin 0.9s linear infinite;"></div>
                             <div style="font:700 17px system-ui; color:#fff; max-width:32ch;">{title}</div>
                             <div style="font:13px system-ui; color:#9aa3b8; max-width:38ch; line-height:1.5;">
-                                "Generating the map — the first render of a world can take up to a minute. \
+                                "Generating the map — the first render of a world can take up to ~15 seconds. \
                                  It's cached after that, so it'll be instant next time."
                             </div>
                             <div style="font:700 30px ui-monospace,monospace; color:#e9eef9; letter-spacing:0.04em;">
@@ -1636,6 +1856,156 @@ fn App() -> impl IntoView {
                             <button style=btn on:click=move |_| close_system()>"Close"</button>
                         </div>
                     }.into_any(),
+                    // Interactive system map — inline SVG with hover→UWP and
+                    // double-click/long-press→world-surface on each body.
+                    Some(ImgView::System { svg, title, sector, hex }) => {
+                        let (sec_d, hex_d) = (sector.clone(), hex.clone());
+                        let (sec_t, hex_t) = (sector.clone(), hex.clone());
+                        // Mouse move: pan while a drag is in progress, otherwise hover →
+                        // show the body's UWP/spectral under the cursor.
+                        let on_svg_move = move |ev: web_sys::MouseEvent| {
+                            if let Some((sx, sy, opx, opy)) = sys_drag.get_untracked() {
+                                sys_pan.set((opx + ev.client_x() as f64 - sx, opy + ev.client_y() as f64 - sy));
+                                sys_tip.set(None);
+                            } else {
+                                match body_from_target(ev.target()) {
+                                    Some(g) => sys_tip.set(Some((ev.client_x() as f64, ev.client_y() as f64, tooltip_text(&g)))),
+                                    None => sys_tip.set(None),
+                                }
+                            }
+                        };
+                        // Double-click (desktop): render a world/moon's surface map.
+                        let on_svg_dbl = move |ev: web_sys::MouseEvent| {
+                            let Some(g) = body_from_target(ev.target()) else { return };
+                            let kind = g.get_attribute("data-kind").unwrap_or_default();
+                            if kind != "world" && kind != "moon" {
+                                return; // stars / gas giants / belts have no surface map
+                            }
+                            let Some(uwp) = g.get_attribute("data-uwp") else { return };
+                            let name = g.get_attribute("data-name").unwrap_or_else(|| "World".into());
+                            let orbit = g.get_attribute("data-orbit");
+                            open_body_world(&sec_d, &hex_d, &name, &uwp, orbit);
+                        };
+                        // Touch start: seed the gesture (one-finger pan / two-finger pinch).
+                        // A single finger also shows the tooltip and arms a long-press
+                        // (→ world surface); two fingers cancel both.
+                        let on_svg_tstart = move |ev: web_sys::TouchEvent| {
+                            let pts = touch_points(&ev);
+                            match *pts.as_slice() {
+                                [a, b, ..] => sys_touch.set(Some(TouchGesture::Two { dist: pt_dist(a, b), mid: pt_mid(a, b) })),
+                                [a] => sys_touch.set(Some(TouchGesture::One { last: a })),
+                                _ => sys_touch.set(None),
+                            }
+                            if let Some(id) = sys_lp.get_untracked() {
+                                clear_timeout(id);
+                                sys_lp.set(None);
+                            }
+                            let [a] = *pts.as_slice() else { sys_tip.set(None); return };
+                            let Some(g) = body_from_target(ev.target()) else {
+                                sys_tip.set(None);
+                                return;
+                            };
+                            sys_tip.set(Some((a.0, a.1, tooltip_text(&g))));
+                            let kind = g.get_attribute("data-kind").unwrap_or_default();
+                            let launchable = kind == "world" || kind == "moon";
+                            if let Some(uwp) = g.get_attribute("data-uwp").filter(|_| launchable) {
+                                let name = g.get_attribute("data-name").unwrap_or_else(|| "World".into());
+                                let orbit = g.get_attribute("data-orbit");
+                                let (sec, hex) = (sec_t.clone(), hex_t.clone());
+                                let id = set_timeout(LONG_PRESS_MS, move || {
+                                    sys_lp.set(None);
+                                    open_body_world(&sec, &hex, &name, &uwp, orbit.clone());
+                                });
+                                sys_lp.set(Some(id));
+                            }
+                        };
+                        // Touch move: one finger pans, two fingers pinch-zoom + pan
+                        // (anchored on the pinch midpoint); any real movement cancels a
+                        // pending long-press and hides the tooltip.
+                        let on_svg_tmove = move |ev: web_sys::TouchEvent| {
+                            ev.prevent_default();
+                            let pts = touch_points(&ev);
+                            match (sys_touch.get_untracked(), pts.as_slice()) {
+                                (Some(TouchGesture::One { last }), [a]) => {
+                                    let (dx, dy) = (a.0 - last.0, a.1 - last.1);
+                                    if dx.abs() > 6.0 || dy.abs() > 6.0 {
+                                        if let Some(id) = sys_lp.get_untracked() { clear_timeout(id); sys_lp.set(None); }
+                                        sys_tip.set(None);
+                                    }
+                                    let (px, py) = sys_pan.get_untracked();
+                                    sys_pan.set((px + dx, py + dy));
+                                    sys_touch.set(Some(TouchGesture::One { last: *a }));
+                                }
+                                (Some(TouchGesture::Two { dist, mid }), [a, b]) => {
+                                    if let Some(id) = sys_lp.get_untracked() { clear_timeout(id); sys_lp.set(None); }
+                                    sys_tip.set(None);
+                                    let center = ev.current_target()
+                                        .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+                                        .map(|el| { let r = el.get_bounding_client_rect(); (r.x() + r.width() / 2.0, r.y() + r.height() / 2.0) })
+                                        .unwrap_or((0.0, 0.0));
+                                    let nd = pt_dist(*a, *b);
+                                    let nm = pt_mid(*a, *b);
+                                    let z = sys_zoom.get_untracked();
+                                    let factor = if dist > 1.0 { nd / dist } else { 1.0 };
+                                    let nz = (z * factor).clamp(1.0, 8.0);
+                                    let (mx, my) = (nm.0 - center.0, nm.1 - center.1);
+                                    let (omx, omy) = (mid.0 - center.0, mid.1 - center.1);
+                                    let (px, py) = sys_pan.get_untracked();
+                                    // pan by the midpoint's travel, then re-anchor the zoom on it
+                                    let npx = mx - nz * (mx - (px + mx - omx)) / z;
+                                    let npy = my - nz * (my - (py + my - omy)) / z;
+                                    if nz <= 1.0 + 1e-6 { sys_pan.set((0.0, 0.0)); } else { sys_pan.set((npx, npy)); }
+                                    sys_zoom.set(nz);
+                                    sys_touch.set(Some(TouchGesture::Two { dist: nd, mid: nm }));
+                                }
+                                _ => {}
+                            }
+                        };
+                        let on_svg_tend = move |ev: web_sys::TouchEvent| {
+                            if let Some(id) = sys_lp.get_untracked() { clear_timeout(id); sys_lp.set(None); }
+                            match *touch_points(&ev).as_slice() {
+                                [a, b, ..] => sys_touch.set(Some(TouchGesture::Two { dist: pt_dist(a, b), mid: pt_mid(a, b) })),
+                                [a] => sys_touch.set(Some(TouchGesture::One { last: a })),
+                                _ => sys_touch.set(None),
+                            }
+                        };
+                        view! {
+                            <style>".tmap-sysmap svg{width:100%;height:100%;display:block}"</style>
+                            <div style="flex:none; display:flex; align-items:center; gap:8px; padding:10px 14px;">
+                                <span style="flex:1; min-width:0; font:700 15px system-ui; color:#fff; \
+                                             overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                                    {title.clone()}
+                                </span>
+                                <span style="flex:none; color:#9aa3b8; font:12px system-ui; white-space:nowrap;">
+                                    "Scroll/pinch to zoom · drag to pan · double-click a world for its surface"
+                                </span>
+                                <button style=btn on:click=move |_| reset_sys()>"⟳  Reset"</button>
+                                <span on:click=move |_| close_system()
+                                      style="cursor:pointer; color:#fff; font-size:24px; line-height:1; padding:0 6px;">"✕"</span>
+                            </div>
+                            <div on:wheel=on_sys_wheel
+                                 on:mousedown=on_sys_down
+                                 on:mousemove=on_svg_move
+                                 on:mouseup=on_sys_up
+                                 on:mouseleave=move |_| { sys_drag.set(None); sys_tip.set(None); }
+                                 on:dblclick=on_svg_dbl
+                                 on:touchstart=on_svg_tstart
+                                 on:touchmove=on_svg_tmove
+                                 on:touchend=on_svg_tend
+                                 on:touchcancel=on_svg_tend
+                                 style="flex:1; overflow:hidden; position:relative; touch-action:none;"
+                                 style:cursor=move || if sys_drag.get().is_some() { "grabbing" } else { "default" }>
+                                <div class="tmap-sysmap" inner_html=svg
+                                     style="position:absolute; inset:0; transform-origin:center center; box-sizing:border-box; \
+                                            display:flex; align-items:center; justify-content:center; padding:8px;"
+                                     style:transform=move || {
+                                         let z = sys_zoom.get();
+                                         let (px, py) = sys_pan.get();
+                                         format!("translate({px}px, {py}px) scale({z})")
+                                     } />
+                            </div>
+                        }.into_any()
+                    }
                     // Rendered — the zoom (wheel) / pan (drag) viewer with Reset / Print / Download.
                     Some(ImgView::Ready { obj, svc, title }) => {
                         let (svc_p, title_p) = (svc.clone(), title.clone());
@@ -1672,6 +2042,18 @@ fn App() -> impl IntoView {
                     }
                     None => ().into_any(),
                 }}
+                // Hover/tap tooltip for a body inside the system SVG — follows the
+                // cursor/finger, never intercepts pointer events.
+                {move || sys_tip.get().map(|(x, y, txt)| view! {
+                    <div style=format!(
+                        "position:fixed; left:{}px; top:{}px; z-index:31; pointer-events:none; \
+                         padding:4px 9px; border-radius:6px; background:rgba(12,15,24,0.94); \
+                         border:1px solid #2a3145; color:#e9eef9; \
+                         font:600 13px ui-monospace,monospace; white-space:nowrap; \
+                         box-shadow:0 2px 10px rgba(0,0,0,0.5);",
+                        x + 14.0, y + 14.0,
+                    )>{txt}</div>
+                })}
             </div>
         </Show>
     }
