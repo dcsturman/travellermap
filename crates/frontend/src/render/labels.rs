@@ -9,9 +9,10 @@ use tmap_core::dto::SectorData;
 use crate::canvas::{Canvas, TextAlign};
 
 use super::common::{
-    hex_parsec, on_screen, sector_center, world_hex, ViewState, C_AMBER, DEFAULT_FONT, SECTOR_H,
+    hex_parsec, on_screen, sector_center, world_hex, ViewState, DEFAULT_FONT, SECTOR_H,
     SECTOR_W, SUBSECTOR_H, SUBSECTOR_W,
 };
+use super::Theme;
 
 /// Big diagonal watermark labels — the reference rotates sector/subsector
 /// names −50° and squishes them to 0.75 width (`sectorName.textStyle`).
@@ -23,13 +24,13 @@ const LABEL_SCALE_X: f64 = 0.75;
 /// foreground **White** below scale 16, **DarkGray** 16–48, **DimGray** at/above
 /// 48. In practice sector names only show at scale ≤ 16 (so they read solid
 /// White), and subsector names at 24–64 (so they read DarkGray → DimGray).
-fn fade_name_color(scale: f64) -> &'static str {
+fn fade_name_color(scale: f64, theme: &Theme) -> &'static str {
     if scale < 16.0 {
-        "#ffffff" // Color.White (foregroundColor)
+        theme.name_full // Color.White (foregroundColor)
     } else if scale < 48.0 {
-        "#a9a9a9" // Color.DarkGray
+        theme.name_dark // Color.DarkGray
     } else {
-        "#696969" // Color.DimGray
+        theme.name_dim // Color.DimGray
     }
 }
 
@@ -40,10 +41,11 @@ pub(crate) fn draw_sector_names(
     w: f64,
     h: f64,
     sector_index: &HashMap<(i32, i32), String>,
+    theme: &Theme,
 ) {
     let font_px = (5.5 * view.scale).clamp(10.0, 520.0);
     let font = format!("{}px {DEFAULT_FONT}", font_px as i32); // FontInfo(DEFAULT_FONT, 5.5) — Regular
-    let color = fade_name_color(view.scale);
+    let color = fade_name_color(view.scale, theme);
     for (&(sx, sy), name) in sector_index {
         let (cx, cy) = view.to_screen(w, h, sector_center(sx, sy));
         if !on_screen(cx, cy, w, h, font_px) {
@@ -54,13 +56,13 @@ pub(crate) fn draw_sector_names(
 }
 
 /// Subsector names: rotated watermark at subsector centers (font 1.5 parsec).
-pub(crate) fn draw_subsector_names(c: &impl Canvas, view: &ViewState, w: f64, h: f64, sector: &SectorData) {
+pub(crate) fn draw_subsector_names(c: &impl Canvas, view: &ViewState, w: f64, h: f64, sector: &SectorData, theme: &Theme) {
     let Some(loc) = sector.info.location else {
         return;
     };
     let font_px = (1.5 * view.scale).clamp(10.0, 260.0);
     let font = format!("{}px {DEFAULT_FONT}", font_px as i32); // FontInfo(DEFAULT_FONT, 1.5) — Regular
-    let color = fade_name_color(view.scale);
+    let color = fade_name_color(view.scale, theme);
     for ss in &sector.info.subsectors {
         let Some(letter) = ss.index.bytes().next() else {
             continue;
@@ -86,7 +88,7 @@ pub(crate) fn draw_subsector_names(c: &impl Canvas, view: &ViewState, w: f64, h:
 /// backend-side). Bold; size = `microBorders` font (0.25 parsec, floored so it
 /// stays legible at the scale-16 minimum, matching the reference's special case).
 /// Only wrapped when the border is flagged `WrapLabel`.
-pub(crate) fn draw_border_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f64, sector: &SectorData) {
+pub(crate) fn draw_border_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f64, sector: &SectorData, theme: &Theme) {
     let Some(loc) = sector.info.location else {
         return;
     };
@@ -108,14 +110,14 @@ pub(crate) fn draw_border_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f
             continue;
         }
         let lines = if border.wrap_label { wrap_label_text(label) } else { vec![label.clone()] };
-        draw_label_lines(c, &lines, x, y, size, C_AMBER, &font);
+        draw_label_lines(c, &lines, x, y, size, theme.amber, &font);
     }
 }
 
 /// Standalone hand-placed labels (`<Label>`: "Outrim Void", "Strend Cluster", …) —
 /// drawn in the label's own color (default amber) at its `Size` font (small
 /// 0.15 / medium 0.25 / large 0.75 parsec, bold). Wrapped only when flagged.
-pub(crate) fn draw_sector_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f64, sector: &SectorData) {
+pub(crate) fn draw_sector_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f64, sector: &SectorData, theme: &Theme) {
     let Some(loc) = sector.info.location else {
         return;
     };
@@ -137,7 +139,7 @@ pub(crate) fn draw_sector_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f
         if !on_screen(x, y, w, h, size * 4.0) {
             continue;
         }
-        let color = label.color.as_deref().unwrap_or(C_AMBER);
+        let color = label.color.as_deref().unwrap_or(theme.amber);
         let lines = if label.wrap { wrap_label_text(&label.text) } else { vec![label.text.clone()] };
         draw_label_lines(c, &lines, x, y, size, color, &font);
     }

@@ -7,33 +7,32 @@ use tmap_core::dto::{Overlays, VectorObject};
 
 use crate::canvas::{Canvas, TextAlign};
 
-use super::common::{
-    hex_parsec, on_screen, RenderOptions, ViewState, C_BORDER, C_RED, C_RIFT, C_ROUTE, DEFAULT_FONT,
-};
+use super::common::{hex_parsec, on_screen, RenderOptions, ViewState, DEFAULT_FONT};
+use super::Theme;
 
-pub(crate) fn draw_overlays(c: &impl Canvas, view: &ViewState, w: f64, h: f64, ov: &Overlays, opts: RenderOptions) {
+pub(crate) fn draw_overlays(c: &impl Canvas, view: &ViewState, w: f64, h: f64, ov: &Overlays, opts: RenderOptions, theme: &Theme) {
     // The reference strokes macro borders red (no fill) at macro zoom; the
     // filled polity look comes from the micro-border layer at scale >= 4.
     for v in &ov.rifts {
-        draw_vector(c, view, w, h, v, C_RIFT, 1.0, false, &[]);
+        draw_vector(c, view, w, h, v, theme.rift, 1.0, false, &[]);
     }
     if opts.borders {
         for v in &ov.borders {
-            draw_vector(c, view, w, h, v, C_BORDER, 1.5, false, &[]);
+            draw_vector(c, view, w, h, v, theme.macro_border, 1.5, false, &[]);
         }
     }
     if opts.routes {
         for v in &ov.routes {
-            draw_vector(c, view, w, h, v, C_ROUTE, 1.3, true, &[6.0, 4.0]);
+            draw_vector(c, view, w, h, v, theme.route, 1.3, true, &[6.0, 4.0]);
         }
     }
     // Region names ("THE IMPERIUM", …) and rotated rift names on top.
     if opts.region_names {
         for v in &ov.borders {
-            draw_region_label(c, view, w, h, v);
+            draw_region_label(c, view, w, h, v, theme);
         }
         for v in &ov.rifts {
-            draw_rift_label(c, view, w, h, v);
+            draw_rift_label(c, view, w, h, v, theme);
         }
     }
     // Mega-names ("Charted Space", "Core Sophonts") are deferred: that data is
@@ -81,7 +80,7 @@ fn macro_name_px(major: bool, scale: f64) -> f64 {
 /// **major** polities (`NamesMajor`) → bold ALL-CAPS white (`textColor`);
 /// **minor**/client regions (`NamesMinor`) → regular red (`textHighlightColor`),
 /// original case. Only vectors carrying a `NamesMask` flag are labeled.
-fn draw_region_label(c: &impl Canvas, view: &ViewState, w: f64, h: f64, v: &VectorObject) {
+fn draw_region_label(c: &impl Canvas, view: &ViewState, w: f64, h: f64, v: &VectorObject, theme: &Theme) {
     let mo = v.map_options.as_deref().unwrap_or("");
     if v.name.is_empty() || !mo.contains("Names") {
         return;
@@ -94,9 +93,9 @@ fn draw_region_label(c: &impl Canvas, view: &ViewState, w: f64, h: f64, v: &Vect
     let major = mo.contains("NamesMajor");
     let size = macro_name_px(major, view.scale);
     let (font, color, raw) = if major {
-        (format!("700 {}px {DEFAULT_FONT}", size as i32), "#ffffff", v.name.to_uppercase())
+        (format!("700 {}px {DEFAULT_FONT}", size as i32), theme.macro_name, v.name.to_uppercase())
     } else {
-        (format!("{}px {DEFAULT_FONT}", size as i32), C_RED, v.name.clone())
+        (format!("{}px {DEFAULT_FONT}", size as i32), theme.red, v.name.clone())
     };
     let lines: Vec<&str> = raw.split('\n').map(str::trim).collect();
     let top = sy - (lines.len() as f64 - 1.0) * size * 0.5;
@@ -107,7 +106,7 @@ fn draw_region_label(c: &impl Canvas, view: &ViewState, w: f64, h: f64, v: &Vect
 
 /// Rift name (Great Rift, …), ported from `DrawMacroNames`: same major/minor
 /// font + color as regions, but rotated 35°.
-fn draw_rift_label(c: &impl Canvas, view: &ViewState, w: f64, h: f64, v: &VectorObject) {
+fn draw_rift_label(c: &impl Canvas, view: &ViewState, w: f64, h: f64, v: &VectorObject, theme: &Theme) {
     let mo = v.map_options.as_deref().unwrap_or("");
     if v.name.is_empty() || !mo.contains("Names") {
         return;
@@ -120,9 +119,9 @@ fn draw_rift_label(c: &impl Canvas, view: &ViewState, w: f64, h: f64, v: &Vector
     let major = mo.contains("NamesMajor");
     let size = macro_name_px(major, view.scale);
     let (font, color) = if major {
-        (format!("700 {}px {DEFAULT_FONT}", size as i32), "#ffffff")
+        (format!("700 {}px {DEFAULT_FONT}", size as i32), theme.macro_name)
     } else {
-        (format!("{}px {DEFAULT_FONT}", size as i32), C_RED)
+        (format!("{}px {DEFAULT_FONT}", size as i32), theme.red)
     };
     c.fill_text_rotated(&v.name.replace('\n', " "), sx, sy, color, &font, 35.0_f64.to_radians(), 1.0);
 }
@@ -131,7 +130,7 @@ fn draw_rift_label(c: &impl Canvas, view: &ViewState, w: f64, h: f64, v: &Vector
 /// Sophonts", … shown only at the most zoomed-out view. White; major labels bold,
 /// minor labels smaller italic. Font scales to a roughly constant on-screen size
 /// (reference `megaNameScaleFactor = min(35, 0.75/scale)`).
-pub(crate) fn draw_mega_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f64, ov: &Overlays) {
+pub(crate) fn draw_mega_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f64, ov: &Overlays, theme: &Theme) {
     let unit = 0.75_f64.min(35.0 * view.scale); // = scaleFactor · scale
     let major_px = (24.0 * unit).max(8.0) as i32;
     let minor_px = (18.0 * unit).max(7.0) as i32;
@@ -152,7 +151,7 @@ pub(crate) fn draw_mega_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f64
         let lines: Vec<&str> = label.text.split('\n').collect();
         let top = sy - (lines.len() as f64 - 1.0) * size * 0.6;
         for (i, line) in lines.iter().enumerate() {
-            c.fill_text(line, sx, top + i as f64 * size * 1.15, "rgba(255,255,255,0.92)", font, TextAlign::Center);
+            c.fill_text(line, sx, top + i as f64 * size * 1.15, theme.mega_name, font, TextAlign::Center);
         }
     }
 }
@@ -164,7 +163,7 @@ pub(crate) fn draw_mega_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f64
 /// + `textHighlightColor` (**red**) — so the common `Minor=False` region names
 /// ("Mixed Client States", "Aslan Colonies", …) read as red italic. `x`/`y` are
 /// in the same x-compressed world space as the mega labels (straight to_screen).
-pub(crate) fn draw_minor_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f64, ov: &Overlays) {
+pub(crate) fn draw_minor_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f64, ov: &Overlays, theme: &Theme) {
     for label in &ov.minor_labels {
         // X is in raw (un-compressed) parsec units, like the vector region
         // labels — apply the x-compression to land them on the map.
@@ -176,9 +175,9 @@ pub(crate) fn draw_minor_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f6
         let parsec = if label.minor { 5.0 / 1.4 } else { 6.5 / 1.4 };
         let size = (parsec * view.scale).max(8.0) as i32;
         let (font, color) = if label.minor {
-            (format!("{size}px {DEFAULT_FONT}"), "#ffffff")
+            (format!("{size}px {DEFAULT_FONT}"), theme.macro_name)
         } else {
-            (format!("italic {size}px {DEFAULT_FONT}"), C_RED)
+            (format!("italic {size}px {DEFAULT_FONT}"), theme.red)
         };
         let size = size as f64;
         let lines: Vec<&str> = label.text.split('\n').map(str::trim).collect();
@@ -191,7 +190,7 @@ pub(crate) fn draw_minor_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f6
 
 /// Capitals + homeworlds (`Overlays.labels`): a Wheat dot at the world hex with
 /// a red name label offset by its `bias` (reference `WorldObject.Paint`).
-pub(crate) fn draw_world_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f64, ov: &Overlays) {
+pub(crate) fn draw_world_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f64, ov: &Overlays, theme: &Theme) {
     let font = format!("600 13px {DEFAULT_FONT}");
     let r = (1.5 * view.scale).clamp(2.0, 6.0);
     for label in &ov.labels {
@@ -199,7 +198,7 @@ pub(crate) fn draw_world_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f6
         if !on_screen(x, y, w, h, 140.0) {
             continue;
         }
-        c.fill_circle(x, y, r, "#f5deb3"); // Color.Wheat
+        c.fill_circle(x, y, r, theme.capital_fill); // Color.Wheat
         let (bx, by) = (label.bias.0 as f64, label.bias.1 as f64);
         let off = r + 4.0;
         let (lx, ly) = (x + bx * off, y + by * off);
@@ -217,7 +216,7 @@ pub(crate) fn draw_world_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f6
         // by>0, centered if 0).
         let top = ly - (n - 1.0) * line_h * if by < 0.0 { 1.0 } else if by > 0.0 { 0.0 } else { 0.5 };
         for (i, line) in lines.iter().enumerate() {
-            c.fill_text(line, lx, top + i as f64 * line_h, "#e8636f", &font, align);
+            c.fill_text(line, lx, top + i as f64 * line_h, theme.capital, &font, align);
         }
     }
 }

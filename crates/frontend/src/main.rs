@@ -103,8 +103,10 @@ impl Hit {
 const BTN_STYLE: &str = "width:40px; height:38px; border:none; border-radius:6px; \
     background:rgba(40,44,58,0.92); color:#e6ecf7; font-size:18px; line-height:1; \
     cursor:pointer; box-shadow:0 1px 4px rgba(0,0,0,0.5);";
-/// Shared style for the floating panels (legend / settings).
-const PANEL_STYLE: &str = "position:fixed; top:56px; right:12px; width:300px; \
+/// Shared style for the floating panels (legend / settings). `z-index:6` keeps the
+/// panel above the tap-to-dismiss backdrop (`z-index:5`); the controls/search sit
+/// above both (`z-index:7`) so they stay tappable while a panel is open.
+const PANEL_STYLE: &str = "position:fixed; top:56px; right:12px; width:300px; z-index:6; \
     max-height:78dvh; overflow:auto; box-sizing:border-box; padding:14px 18px 18px; \
     background:rgba(12,14,22,0.96); border:1px solid #2a3145; border-radius:10px; \
     color:#cfd6e6; font:14px system-ui,sans-serif; box-shadow:0 6px 24px rgba(0,0,0,0.6);";
@@ -923,7 +925,7 @@ fn App() -> impl IntoView {
             let refs: Vec<&SectorData> = loaded.values().collect();
             overlays.with_value(|ov| {
                 index.with_value(|idx| {
-                    render::draw(&canvas_el, &refs, ov.as_ref(), idx, v, opts, None);
+                    render::draw(&canvas_el, &refs, ov.as_ref(), idx, v, opts, &render::Theme::poster(), None);
                 });
             });
         });
@@ -1162,7 +1164,7 @@ fn App() -> impl IntoView {
             overlays.with_value(|ov| {
                 index.with_value(|idx| {
                     route.with(|r| {
-                        render::draw(&canvas_el, &refs, ov.as_ref(), idx, v, opts, r.as_ref());
+                        render::draw(&canvas_el, &refs, ov.as_ref(), idx, v, opts, &render::Theme::poster(), r.as_ref());
                     });
                 });
             });
@@ -2156,8 +2158,16 @@ fn App() -> impl IntoView {
                    .tmap-controls{top:10px!important;right:8px!important;}\
                  }"
             </style>
+            // Tap-outside-to-dismiss backdrop: when any top-right panel is open, a
+            // full-screen transparent layer catches a click/tap anywhere else and
+            // closes it. Sits above the map (z 0) but below the panels (z 6) and the
+            // controls/search (z 7), so those stay interactive.
+            <Show when=move || panel.get() != 0>
+                <div on:click=move |_| panel.set(0)
+                     style="position:fixed; inset:0; z-index:5;"></div>
+            </Show>
             <div class="tmap-search"
-                 style="position:fixed; top:10px; left:12px; width:320px; \
+                 style="position:fixed; top:10px; left:12px; width:320px; z-index:7; \
                         font:14px system-ui,sans-serif; color:#cfd6e6;">
                 <div style="display:flex; gap:6px; align-items:stretch;">
                     <div style="flex:1; min-width:0; position:relative;">
@@ -2460,7 +2470,7 @@ fn App() -> impl IntoView {
 
             // --- top-right control cluster: home / clock / key / hamburger ---
             <div class="tmap-controls"
-                 style="position:fixed; top:10px; right:12px; display:flex; gap:6px;">
+                 style="position:fixed; top:10px; right:12px; z-index:7; display:flex; gap:6px;">
                 <button on:click=on_home title="Home — charted-space overview"
                         style=BTN_STYLE>"⌂"</button>
                 <button title="Milieu — time period" style=BTN_STYLE

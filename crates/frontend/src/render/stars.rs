@@ -53,7 +53,7 @@ fn hash2(a: i32, b: i32) -> u32 {
 
 /// Procedural star field in world space (pans with the map). Skipped when so
 /// zoomed out that the cell count explodes.
-pub(crate) fn draw_stars(c: &impl Canvas, view: &ViewState, w: f64, h: f64) {
+pub(crate) fn draw_stars(c: &impl Canvas, view: &ViewState, w: f64, h: f64, theme: &super::Theme) {
     if view.scale < STAR_MIN_SCALE {
         return;
     }
@@ -74,12 +74,7 @@ pub(crate) fn draw_stars(c: &impl Canvas, view: &ViewState, w: f64, h: f64) {
             if !on_screen(sx, sy, w, h, 2.0) {
                 continue;
             }
-            let color = match (hsh >> 19) & 3 {
-                0 => "rgba(170,180,205,0.35)",
-                1 => "rgba(205,215,235,0.55)",
-                2 => "rgba(230,235,250,0.75)",
-                _ => "rgba(255,255,255,0.9)",
-            };
+            let color = theme.stars[((hsh >> 19) & 3) as usize];
             let r = if (hsh >> 27) & 1 == 0 { 0.7 } else { 1.1 };
             c.fill_circle(sx, sy, r, color);
         }

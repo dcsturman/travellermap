@@ -19,6 +19,7 @@ mod overlays;
 mod routes;
 mod stars;
 mod status;
+mod theme;
 mod worlds;
 
 use std::collections::HashMap;
@@ -34,6 +35,7 @@ pub use common::{
     fit_jump_view, fit_sector, home_view, sector_hex_parsec, visible_sectors, world_hex,
     world_to_parsec, JumpClip, RenderOptions, ViewState, MAX_SCALE, MIN_SCALE, WORLD_MIN_SCALE,
 };
+pub use theme::Theme;
 
 use common::{
     hex_vertex_r, jump_hexes, MACRO_LABEL_MAX_SCALE, MACRO_MAX_SCALE, MACRO_WORLDS_MIN,
@@ -65,6 +67,7 @@ pub fn draw(
     sector_index: &HashMap<(i32, i32), String>,
     view: ViewState,
     opts: RenderOptions,
+    theme: &Theme,
     route: Option<&RouteResult>,
 ) {
     let Some(ctx) = canvas
@@ -107,19 +110,21 @@ pub fn draw(
         let clip = build_jump_clip_path(&view, w, h, jc);
         c.ctx.save();
         c.ctx.clip_with_path_2d(&clip);
-        c.clear("#000000", w, h); // deep space inside the bubble
+        c.clear(theme.background, w, h); // deep space inside the bubble
         mark("stars", &mut marks);
         mark("macro", &mut marks);
     } else {
-        c.clear("#000000", w, h);
+        c.clear(theme.background, w, h);
         // Galaxy image behind the starfield (macro zoom only; fades out by scale 2).
-        stars::draw_galaxy(&c, &view, w, h);
-        stars::draw_stars(&c, &view, w, h);
+        if theme.show_galaxy {
+            stars::draw_galaxy(&c, &view, w, h);
+        }
+        stars::draw_stars(&c, &view, w, h, theme);
         mark("stars", &mut marks);
 
         if view.scale < MACRO_MAX_SCALE {
             if let Some(ov) = overlays {
-                overlays::draw_overlays(&c, &view, w, h, ov, opts);
+                overlays::draw_overlays(&c, &view, w, h, ov, opts, theme);
             }
         }
         // Capitals + homeworlds (Worlds.xml): red dot+name labels. Kept visible
@@ -128,19 +133,19 @@ pub fn draw(
         // shows them alongside sector names + micro borders (see MACRO_LABEL_MAX).
         if opts.important_worlds && (MACRO_WORLDS_MIN..=MACRO_LABEL_MAX_SCALE).contains(&view.scale) {
             if let Some(ov) = overlays {
-                overlays::draw_world_labels(&c, &view, w, h, ov);
+                overlays::draw_world_labels(&c, &view, w, h, ov, theme);
             }
         }
         // Minor region labels (minor_labels.tab) — red region names, same band.
         if opts.region_names && (MACRO_WORLDS_MIN..=MACRO_LABEL_MAX_SCALE).contains(&view.scale) {
             if let Some(ov) = overlays {
-                overlays::draw_minor_labels(&c, &view, w, h, ov);
+                overlays::draw_minor_labels(&c, &view, w, h, ov, theme);
             }
         }
         // Galaxy-scale mega labels at the most zoomed-out view (MegaLabelMaxScale=1/4).
         if opts.region_names && view.scale <= 0.25 {
             if let Some(ov) = overlays {
-                overlays::draw_mega_labels(&c, &view, w, h, ov);
+                overlays::draw_mega_labels(&c, &view, w, h, ov, theme);
             }
         }
         mark("macro", &mut marks);
@@ -156,11 +161,11 @@ pub fn draw(
         grid::draw_grid_lines(&c, &view, w, h, SECTOR_W, SECTOR_H, &gc, 1.6);
     }
     if opts.sector_names && (SECTOR_NAME_MIN..=SECTOR_NAME_MAX).contains(&view.scale) {
-        labels::draw_sector_names(&c, &view, w, h, sector_index);
+        labels::draw_sector_names(&c, &view, w, h, sector_index, theme);
     }
     if opts.region_names && (SUBSECTOR_NAME_MIN..=SUBSECTOR_NAME_MAX).contains(&view.scale) {
         for sector in sectors {
-            labels::draw_subsector_names(&c, &view, w, h, sector);
+            labels::draw_subsector_names(&c, &view, w, h, sector, theme);
         }
     }
     mark("grid+names", &mut marks);
@@ -185,15 +190,15 @@ pub fn draw(
         // Disc / zone-ring / vacuum-outline layer: identical geometry at every
         // detail scale (the reference's in-hex disc), so always drawn from the
         // batched, cached per-sector dot paths — a few fills, not a call/world.
-        worlds::draw_world_dots(&c, &view, w, h, dpr, sectors, opts.more_world_colors);
+        worlds::draw_world_dots(&c, &view, w, h, dpr, sectors, opts.more_world_colors, theme);
         // Placeholder (`*`) / anomaly (`⌖`) glyphs stand in for the disc on
         // unknown-UWP worlds and deep-space stations.
-        worlds::draw_placeholder_glyphs(&c, &view, w, h, sectors);
+        worlds::draw_placeholder_glyphs(&c, &view, w, h, sectors, theme);
         // At basic scale and up, add the per-world text + small glyphs (hex#,
         // starport, gas giant, bases, UWP, allegiance, name) in state-batched
         // passes: canvas font/fill/align set once per pass, not once per glyph.
         if view.scale >= WORLD_BASIC_SCALE {
-            worlds::draw_world_glyphs(&c, &view, w, h, sectors);
+            worlds::draw_world_glyphs(&c, &view, w, h, sectors, theme);
         }
         mark("worlds", &mut marks);
         // Border/region labels ("Third Imperium", "Florian League") and
@@ -201,8 +206,8 @@ pub fn draw(
         // MicroNameMinScale (16) up (reference `showMicroNames`).
         if opts.region_names && view.scale >= 16.0 {
             for sector in sectors {
-                labels::draw_border_labels(&c, &view, w, h, sector);
-                labels::draw_sector_labels(&c, &view, w, h, sector);
+                labels::draw_border_labels(&c, &view, w, h, sector, theme);
+                labels::draw_sector_labels(&c, &view, w, h, sector, theme);
             }
         }
     }
