@@ -14,11 +14,6 @@ use super::common::{
 };
 use super::Theme;
 
-/// Big diagonal watermark labels — the reference rotates sector/subsector
-/// names −50° and squishes them to 0.75 width (`sectorName.textStyle`).
-const LABEL_ROT: f64 = -50.0 * std::f64::consts::PI / 180.0;
-const LABEL_SCALE_X: f64 = 0.75;
-
 /// Sector/subsector name color — the discrete fade ported verbatim from the
 /// reference `Stylesheet` (`sectorName.textColor`, default Poster palette):
 /// foreground **White** below scale 16, **DarkGray** 16–48, **DimGray** at/above
@@ -51,7 +46,18 @@ pub(crate) fn draw_sector_names(
         if !on_screen(cx, cy, w, h, font_px) {
             continue;
         }
-        c.fill_text_rotated(name, cx, cy, color, &font, LABEL_ROT, LABEL_SCALE_X);
+        let text = upcase(name, theme);
+        let (sx, sy) = theme.sector_name_scale;
+        c.fill_text_rotated(&text, cx, cy, color, &font, theme.name_rotation, sx, sy);
+    }
+}
+
+/// Uppercase a label when the theme asks (Candy's `textStyle.Uppercase`).
+fn upcase(s: &str, theme: &Theme) -> String {
+    if theme.uppercase_labels {
+        s.to_uppercase()
+    } else {
+        s.to_string()
     }
 }
 
@@ -85,7 +91,9 @@ pub(crate) fn draw_subsector_names(
         if !on_screen(cx, cy, w, h, font_px) {
             continue;
         }
-        c.fill_text_rotated(&ss.name, cx, cy, color, &font, LABEL_ROT, LABEL_SCALE_X);
+        let text = upcase(&ss.name, theme);
+        let (sx, sy) = theme.subsector_name_scale;
+        c.fill_text_rotated(&text, cx, cy, color, &font, theme.name_rotation, sx, sy);
     }
 }
 
@@ -126,10 +134,11 @@ pub(crate) fn draw_border_labels(
         if !on_screen(x, y, w, h, size * 4.0) {
             continue;
         }
+        let label = upcase(label, theme);
         let lines = if border.wrap_label {
-            wrap_label_text(label)
+            wrap_label_text(&label)
         } else {
-            vec![label.clone()]
+            vec![label]
         };
         draw_label_lines(c, &lines, x, y, size, theme.micro_border_text, &font);
     }
@@ -171,10 +180,11 @@ pub(crate) fn draw_sector_labels(
             continue;
         }
         let color = label.color.as_deref().unwrap_or(theme.micro_border_text);
+        let text = upcase(&label.text, theme);
         let lines = if label.wrap {
-            wrap_label_text(&label.text)
+            wrap_label_text(&text)
         } else {
-            vec![label.text.clone()]
+            vec![text]
         };
         draw_label_lines(c, &lines, x, y, size, color, &font);
     }
@@ -248,6 +258,6 @@ pub(crate) fn draw_galactic_directions(c: &impl Canvas, w: f64, h: f64) {
     use std::f64::consts::FRAC_PI_2;
     c.fill_text("COREWARD", cx, 20.0, COLOR, &font, TextAlign::Center);
     c.fill_text("RIMWARD", cx, h - 34.0, COLOR, &font, TextAlign::Center);
-    c.fill_text_rotated("SPINWARD", 18.0, cy, COLOR, &font, -FRAC_PI_2, 1.0);
-    c.fill_text_rotated("TRAILING", w - 18.0, cy, COLOR, &font, FRAC_PI_2, 1.0);
+    c.fill_text_rotated("SPINWARD", 18.0, cy, COLOR, &font, -FRAC_PI_2, 1.0, 1.0);
+    c.fill_text_rotated("TRAILING", w - 18.0, cy, COLOR, &font, FRAC_PI_2, 1.0, 1.0);
 }

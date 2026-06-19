@@ -6,6 +6,42 @@ use super::common::{
     hex_parsec, on_screen, scale_interpolate, visible_hex_range, ViewState, STAR_MIN_SCALE,
 };
 
+/// **Candy** nebula background — tiles `res/Candy/Nebula.png` to fill the viewport
+/// at detail zoom (`DrawNebulaBackground`, `RenderContext.cs:929-963`). The tile is
+/// a fixed 2048 px (1024 × `backgroundImageScale` 2.0) anchored to the world origin
+/// so it scrolls with panning. Shown when `showNebulaBackground` — i.e. the
+/// reference `deepBackgroundOpacity = ScaleInterpolate(1,0,scale,1/8,2) < 0.5`
+/// (true once zoomed past `scale ≈ 0.5`, the opposite end from the galaxy).
+pub(crate) fn draw_nebula(c: &impl Canvas, view: &ViewState, w: f64, h: f64) {
+    if scale_interpolate(1.0, 0.0, view.scale, 0.125, 2.0) >= 0.5 {
+        return;
+    }
+    const TILE: f64 = 2048.0; // 1024 * backgroundImageScale (2.0), fixed screen px
+    let (ax, ay) = view.to_screen(w, h, (0.0, 0.0)); // world origin → screen anchor
+    let mut ox = ax % TILE;
+    let mut oy = ay % TILE;
+    if ox > 0.0 {
+        ox -= TILE;
+    }
+    if oy > 0.0 {
+        oy -= TILE;
+    }
+    let nx = (w / TILE).floor() as i32 + 2;
+    let ny = (h / TILE).floor() as i32 + 2;
+    for ix in 0..nx {
+        for iy in 0..ny {
+            c.draw_image(
+                "/api/res/Candy/Nebula.png",
+                ox + ix as f64 * TILE,
+                oy + iy as f64 * TILE,
+                TILE + 1.0,
+                TILE + 1.0,
+                1.0,
+            );
+        }
+    }
+}
+
 /// Galaxy background image, composited behind the procedural starfield at macro
 /// (zoomed-out) view and faded out as you zoom in.
 ///

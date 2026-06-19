@@ -116,6 +116,10 @@ pub fn draw(
         mark("macro", &mut marks);
     } else {
         c.clear(theme.background, w, h);
+        // Candy nebula fills the viewport at detail zoom, below the galaxy.
+        if theme.show_nebula {
+            stars::draw_nebula(&c, &view, w, h);
+        }
         // Galaxy image behind the starfield (macro zoom only; fades out by scale 2).
         if theme.show_galaxy {
             stars::draw_galaxy(&c, &view, w, h);
@@ -206,15 +210,23 @@ pub fn draw(
         // Disc / zone-ring / vacuum-outline layer: identical geometry at every
         // detail scale (the reference's in-hex disc), so always drawn from the
         // batched, cached per-sector dot paths — a few fills, not a call/world.
-        worlds::draw_world_dots(&c, &view, w, h, dpr, sectors, opts.more_world_colors, theme);
-        // Placeholder (`*`) / anomaly (`⌖`) glyphs stand in for the disc on
-        // unknown-UWP worlds and deep-space stations.
-        worlds::draw_placeholder_glyphs(&c, &view, w, h, sectors, theme);
-        // At basic scale and up, add the per-world text + small glyphs (hex#,
-        // starport, gas giant, bases, UWP, allegiance, name) in state-batched
-        // passes: canvas font/fill/align set once per pass, not once per glyph.
-        if view.scale >= WORLD_BASIC_SCALE {
-            worlds::draw_world_glyphs(&c, &view, w, h, sectors, theme);
+        // Candy ("eye-candy") replaces the colored disc + below-disc glyphs with a
+        // hydrographics globe texture and a to-the-right decoration ring, but only
+        // at detail zoom; the dot tier below that still uses the batched dots.
+        if theme.use_world_images && view.scale >= WORLD_BASIC_SCALE {
+            worlds::draw_placeholder_glyphs(&c, &view, w, h, sectors, theme);
+            worlds::draw_world_images(&c, &view, w, h, sectors, theme);
+        } else {
+            worlds::draw_world_dots(&c, &view, w, h, dpr, sectors, opts.more_world_colors, theme);
+            // Placeholder (`*`) / anomaly (`⌖`) glyphs stand in for the disc on
+            // unknown-UWP worlds and deep-space stations.
+            worlds::draw_placeholder_glyphs(&c, &view, w, h, sectors, theme);
+            // At basic scale and up, add the per-world text + small glyphs (hex#,
+            // starport, gas giant, bases, UWP, allegiance, name) in state-batched
+            // passes: canvas font/fill/align set once per pass, not once per glyph.
+            if view.scale >= WORLD_BASIC_SCALE {
+                worlds::draw_world_glyphs(&c, &view, w, h, sectors, theme);
+            }
         }
         mark("worlds", &mut marks);
         // Border/region labels ("Third Imperium", "Florian League") and

@@ -41,9 +41,9 @@ pub trait Canvas {
         dash: &[f64],
     );
     fn fill_text(&self, text: &str, x: f64, y: f64, color: &str, font: &str, align: TextAlign);
-    /// Centered text rotated by `rot` radians about `(x, y)`, with an
-    /// independent horizontal scale (for the squished diagonal sector/subsector
-    /// watermark labels).
+    /// Centered text rotated by `rot` radians about `(x, y)`, with independent
+    /// horizontal/vertical scales (for the squished sector/subsector watermark
+    /// labels — diagonal in most styles, horizontal + non-uniform in Candy).
     #[allow(clippy::too_many_arguments)]
     fn fill_text_rotated(
         &self,
@@ -54,6 +54,7 @@ pub trait Canvas {
         font: &str,
         rot: f64,
         scale_x: f64,
+        scale_y: f64,
     );
     /// Draw a (lazily loaded, cached) image referenced by `url` into the screen
     /// rect `(dx, dy, dw, dh)` at `alpha`. Backend-agnostic by design: callers
@@ -164,11 +165,12 @@ impl Canvas for Canvas2d {
         font: &str,
         rot: f64,
         scale_x: f64,
+        scale_y: f64,
     ) {
         self.ctx.save();
         let _ = self.ctx.translate(x, y);
         let _ = self.ctx.rotate(rot);
-        let _ = self.ctx.scale(scale_x, 1.0);
+        let _ = self.ctx.scale(scale_x, scale_y);
         self.ctx.set_fill_style_str(color);
         self.ctx.set_font(font);
         self.ctx.set_text_align("center");

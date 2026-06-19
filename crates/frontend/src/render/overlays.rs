@@ -174,6 +174,7 @@ fn draw_rift_label(
         &font,
         35.0_f64.to_radians(),
         1.0,
+        1.0,
     );
 }
 

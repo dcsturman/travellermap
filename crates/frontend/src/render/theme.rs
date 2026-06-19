@@ -16,8 +16,9 @@
 //! **Not yet replicated** (flagged per preset; colors/fonts/case/detail-drops are
 //! faithful): curved micro borders (FASA/Candy), all-hex numbering + subsector hex
 //! coords (Draft/FASA/Terminal), the Mongoose glyph re-layout + zone-perimeters +
-//! filled-UWP, and text scale-expansion. Candy is deferred entirely (needs world
-//! globe images + nebula background, out of our renderer's scope).
+//! filled-UWP, and the non-uniform text `Scale` squish. **Candy** is implemented as
+//! a palette/flags preset (Phase 1); its world-globe + nebula raster compositing
+//! (`use_world_images`/`show_nebula`) is Phase 2 — see PORT_PLAN.md.
 
 use super::common::{C_AMBER, C_BORDER, C_DRY, C_RED, C_RIFT, C_ROUTE, C_WATER};
 
@@ -74,6 +75,16 @@ pub struct Theme {
     pub text_uwp: &'static str,   // uwp.textColor ← foreground
     pub text_alleg: &'static str, // allegiance ← foreground
     pub uppercase_worlds: bool,   // worlds.textStyle.Uppercase
+    // Uppercase the sector/subsector watermarks + micro-border region labels
+    // (Candy sets `*.textStyle.Uppercase` on these classes too, not just worlds).
+    pub uppercase_labels: bool,
+
+    // ── Candy raster behaviors (local `res/Candy/` assets) ──
+    // World discs replaced by globe textures (`useWorldImages`, → worlds.rs
+    // `draw_world_images`); tiled nebula background (`showNebulaBackground`, →
+    // stars.rs `draw_nebula`). Both off for every other preset.
+    pub use_world_images: bool,
+    pub show_nebula: bool,
 
     // worldDetails drops (`worldDetails &= ~…`)
     pub drop_starport: bool,
@@ -95,6 +106,15 @@ pub struct Theme {
     pub name_full: &'static str,
     pub name_dark: &'static str,
     pub name_dim: &'static str,
+    // Watermark `textStyle`: rotation (radians) + per-class non-uniform (scale_x,
+    // scale_y). Most styles use the −50° squished-width diagonal; **Candy is
+    // horizontal (rotation 0) with a vertical squish** (`Stylesheet.cs:828-836`).
+    pub name_rotation: f64,
+    pub sector_name_scale: (f64, f64),
+    pub subsector_name_scale: (f64, f64),
+    // World-name `textStyle.Scale` (`worlds.textStyle.Scale`): Candy squishes names
+    // to half height `(1.0, 0.5)` (`Stylesheet.cs:851`); everyone else `(1.0, 1.0)`.
+    pub world_name_scale: (f64, f64),
 
     // ── grids ──
     pub grid: Option<&'static str>, // pen color override; None ⇒ scale-faded gray (gridColor)
@@ -139,6 +159,9 @@ impl Theme {
             text_uwp: "#c9d2e4",
             text_alleg: "#aab3c8",
             uppercase_worlds: false,
+            uppercase_labels: false,
+            use_world_images: false,
+            show_nebula: false,
             drop_starport: false,
             drop_bases: false,
             drop_gas_giant: false,
@@ -152,6 +175,12 @@ impl Theme {
             name_full: "#ffffff",
             name_dark: "#a9a9a9",
             name_dim: "#696969",
+            // −50° diagonal watermark, squished to 0.75 width (matches labels.rs
+            // LABEL_ROT/LABEL_SCALE_X); no vertical squish, no world-name squish.
+            name_rotation: -50.0 * std::f64::consts::PI / 180.0,
+            sector_name_scale: (0.75, 1.0),
+            subsector_name_scale: (0.75, 1.0),
+            world_name_scale: (1.0, 1.0),
             grid: None,
             stars: [
                 "rgba(170,180,205,0.35)",
@@ -383,7 +412,46 @@ impl Theme {
         }
     }
 
-    /// All selectable presets, in UI order (Candy deferred — see module docs).
+    /// **Candy** — globes on a nebula field (`Stylesheet.cs:790-860`). Black bg +
+    /// galaxy + always-on rifts; **per-polity borders** (Candy's `microBorders.pen.color
+    /// = FromArgb(128,Red)` is only the no-color *fallback*, `RenderContext.cs:1825-1830`
+    /// — so `micro_border` stays `None`); **Amber** border labels (the default at
+    /// `Stylesheet.cs:405`, which Candy doesn't change); **Goldenrod@128** sector/
+    /// subsector watermarks (no fade, `fadeSectorSubsectorNames=false`); **Goldenrod**
+    /// amber zones; drops starport/allegiance/bases/hex; UPPERCASE worlds + labels.
+    /// `use_world_images`/`show_nebula` drive the Phase-2 globe + nebula compositing
+    /// (local `res/Candy/` assets). **Not yet replicated:** the non-uniform text
+    /// `Scale` squish, curved micro borders (own track), grid dash/width, `Shadow`
+    /// text background, per-scale width taper, `hexContentScale`.
+    pub fn candy() -> Self {
+        Self {
+            name: "Candy",
+            // background: not set by Candy → Poster black. galaxy ON (inherited).
+            show_rift: true, // forced on for Candy (Stylesheet.cs:271)
+            // micro_border: None (per-polity) + micro_border_text: Amber both inherited.
+            amber: "#daa520", // amberZone Goldenrod (Stylesheet.cs:825); red zone unchanged
+            uppercase_worlds: true, // worlds.textStyle.Uppercase (Stylesheet.cs:853)
+            uppercase_labels: true, // sector/subsector/microBorder Uppercase (:831,:836,:843)
+            drop_starport: true, // worldDetails drops (Stylesheet.cs:817-818)
+            drop_allegiance: true,
+            drop_bases: true,
+            // sector/subsector watermark = FromArgb(128, Goldenrod) (Stylesheet.cs:838),
+            // fadeSectorSubsectorNames=false (:796) → flat color, no fade tiers.
+            name_full: "rgba(218,165,32,0.502)",
+            name_dark: "rgba(218,165,32,0.502)",
+            name_dim: "rgba(218,165,32,0.502)",
+            // Horizontal (rotation 0) + non-uniform squish (Stylesheet.cs:828-836,850).
+            name_rotation: 0.0,
+            sector_name_scale: (0.5, 0.25),
+            subsector_name_scale: (0.3, 0.15),
+            world_name_scale: (1.0, 0.5),
+            use_world_images: true, // Stylesheet.cs:794 (Phase 2)
+            show_nebula: true,      // showNebulaBackground (Stylesheet.cs:798; Phase 2)
+            ..Self::poster()
+        }
+    }
+
+    /// All selectable presets, in UI order.
     #[allow(clippy::type_complexity)]
     pub const PRESETS: &'static [(&'static str, fn() -> Theme)] = &[
         ("Poster", Theme::poster),
@@ -393,6 +461,7 @@ impl Theme {
         ("FASA", Theme::fasa),
         ("Terminal", Theme::terminal),
         ("Mongoose", Theme::mongoose),
+        ("Candy", Theme::candy),
     ];
 
     /// Resolve a preset by name (case-insensitive); unknown → Poster.

@@ -9,7 +9,7 @@ use tmap_core::astrometrics::parse_hex;
 use tmap_core::dto::{SectorData, World};
 use web_sys::Path2d;
 
-use crate::canvas::Canvas2d;
+use crate::canvas::{Canvas, Canvas2d};
 use crate::glyph;
 
 use super::common::{
@@ -508,6 +508,10 @@ pub(crate) fn draw_world_glyphs(
     ctx.set_text_align("center");
     let mut last = "";
     let name_dy = name_y * s;
+    // Candy squishes names vertically (`worlds.textStyle.Scale (1.0, 0.5)`); other
+    // styles draw 1:1, so skip the save/scale/restore overhead unless asked.
+    let (nsx, nsy) = theme.world_name_scale;
+    let squish = (nsx - 1.0).abs() > f64::EPSILON || (nsy - 1.0).abs() > f64::EPSILON;
     for (world, x, y) in &vis {
         let hi_pop = world
             .uwp
@@ -528,11 +532,180 @@ pub(crate) fn draw_world_glyphs(
             ctx.set_fill_style_str(col);
             last = col;
         }
-        if hi_pop || theme.uppercase_worlds {
-            let _ = ctx.fill_text(&world.name.to_uppercase(), *x, *y + name_dy);
+        let name = if hi_pop || theme.uppercase_worlds {
+            world.name.to_uppercase()
         } else {
-            let _ = ctx.fill_text(&world.name, *x, *y + name_dy);
+            world.name.clone()
+        };
+        if squish {
+            ctx.save();
+            let _ = ctx.translate(*x, *y + name_dy);
+            let _ = ctx.scale(nsx, nsy);
+            let _ = ctx.fill_text(&name, 0.0, 0.0);
+            ctx.restore();
+        } else {
+            let _ = ctx.fill_text(&name, *x, *y + name_dy);
         }
+    }
+}
+
+/// **Candy** world rendering — the reference `useWorldImages` ("Eye-Candy")
+/// branch of `DrawWorld` (`RenderContext.cs:1356-1481`). Replaces the colored disc
+/// with a hydrographics globe texture (`res/Candy/Hyd*`/`Belt`), and lays the
+/// decorations out to the **right** of the globe on a growing `decorationRadius`
+/// ring: a 4-arc near-full zone circle, the gas-giant marker, the UWP, then the
+/// (vertically-squished, left-aligned) name — not stacked below the disc.
+pub(crate) fn draw_world_images(
+    canvas: &Canvas2d,
+    view: &ViewState,
+    w: f64,
+    h: f64,
+    sectors: &[&SectorData],
+    theme: &Theme,
+) {
+    use std::f64::consts::{PI, TAU};
+    let ctx = &canvas.ctx;
+    let s = view.scale;
+    let show_uwp = s >= WORLD_UWP_SCALE;
+    let cs = s * CONTENT_SCALE;
+    let font_scale = if s <= 96.0 { 1.0 } else { 96.0 / s.min(192.0) };
+    let ff = theme.font;
+    let name_font = format!("700 {}px {ff}", (0.15 * font_scale * cs).max(7.0) as i32);
+    let uwp_font = format!("500 {}px {ff}", (0.13 * font_scale * cs).max(7.0) as i32);
+    let (nsx, nsy) = theme.world_name_scale;
+
+    // Globe (≤0.3 parsec) + a name out to its right → generous right/vertical pad.
+    let pad = 0.6 * s + (0.15 * cs).max(7.0) * 8.0 + 12.0;
+    let mut vis: Vec<(&World, f64, f64)> = Vec::new();
+    for sector in sectors {
+        let Some(loc) = sector.info.location else {
+            continue;
+        };
+        for world in &sector.worlds {
+            if is_placeholder(world) {
+                continue; // drawn by draw_placeholder_glyphs
+            }
+            let Some((col, row)) = parse_hex(&world.hex) else {
+                continue;
+            };
+            let (wc, wr) = world_hex(loc.x, loc.y, col, row);
+            let (x, y) = view.to_screen(w, h, hex_parsec(wc, wr));
+            if !on_screen(x, y, w, h, pad) {
+                continue;
+            }
+            vis.push((world, x, y));
+        }
+    }
+    if vis.is_empty() {
+        return;
+    }
+
+    for (world, x, y) in &vis {
+        let b = world.uwp.as_bytes();
+        let size = b.get(1).copied().and_then(ehex).unwrap_or(0);
+        let hyd = b.get(3).copied().and_then(ehex).unwrap_or(0);
+
+        // imageRadius (parsec): belt 0.3, else 0.3·(Size/5 + 0.2) / 2 (RenderContext:1360).
+        let image_radius = (if size <= 0 {
+            0.6
+        } else {
+            0.3 * (size as f64 / 5.0 + 0.2)
+        }) / 2.0;
+
+        if size <= 0 {
+            // Belt: 1.5×1.0 aspect (RenderContext:1375-1379).
+            let (rw, rh) = (image_radius * 1.5 * s, image_radius * s);
+            canvas.draw_image(
+                "/api/res/Candy/Belt.png",
+                *x - rw,
+                *y - rh,
+                rw * 2.0,
+                rh * 2.0,
+                1.0,
+            );
+        } else {
+            let n = if (1..=10).contains(&hyd) { hyd } else { 0 };
+            let digit = if n == 10 {
+                "A".to_string()
+            } else {
+                n.to_string()
+            };
+            let r = image_radius * s;
+            canvas.draw_image(
+                &format!("/api/res/Candy/Hyd{digit}.png"),
+                *x - r,
+                *y - r,
+                r * 2.0,
+                r * 2.0,
+                1.0,
+            );
+        }
+
+        let mut deco = image_radius + 0.1; // decorationRadius (RenderContext:1417)
+
+        // ── Zone: four 80° arcs → a dashed near-full circle (RenderContext:1427-1430).
+        let (amber, red) = (world.zone == "A", world.zone == "R");
+        if amber || red {
+            ctx.set_stroke_style_str(if amber { theme.amber } else { theme.red_zone });
+            ctx.set_line_width((0.035 * s).max(1.0));
+            let r = deco * s;
+            for start in [5.0_f64, 95.0, 185.0, 275.0] {
+                ctx.begin_path();
+                let _ = ctx.arc(*x, *y, r, start * PI / 180.0, (start + 80.0) * PI / 180.0);
+                ctx.stroke();
+            }
+            deco += 0.1;
+        }
+
+        // ── Gas giant: small highlight disc riding the ring, to the right (RenderContext:1437-1447).
+        let has_gg = world
+            .pbg
+            .as_bytes()
+            .get(2)
+            .is_some_and(|&c| c > b'0' && c != b'?');
+        if has_gg && !theme.drop_gas_giant {
+            let gr = (0.05 * s).max(1.5);
+            deco += 0.05;
+            ctx.set_fill_style_str(theme.highlight);
+            ctx.begin_path();
+            let _ = ctx.arc(*x + deco * s, *y, gr, 0.0, TAU);
+            ctx.fill();
+            deco += 0.1;
+        }
+
+        // ── UWP (right of the ring, left-aligned) once past the UWP scale.
+        if show_uwp && !theme.drop_uwp {
+            ctx.set_font(&uwp_font);
+            ctx.set_text_align("left");
+            ctx.set_text_baseline("middle");
+            ctx.set_fill_style_str(theme.text_uwp);
+            let _ = ctx.fill_text(&world.uwp, *x + deco * s, *y - 0.18 * s);
+        }
+
+        // ── Name (right of the ring, left-aligned, vertically squished).
+        let hi_pop = b.get(4).copied().and_then(ehex).is_some_and(|p| p >= 9);
+        let is_capital = world
+            .codes()
+            .any(|c| matches!(c, "Cp" | "Cs" | "Cx" | "Capital"));
+        let name = if hi_pop || theme.uppercase_worlds {
+            world.name.to_uppercase()
+        } else {
+            world.name.clone()
+        };
+        let col = if is_capital && !theme.drop_highlight {
+            theme.capital
+        } else {
+            theme.text
+        };
+        ctx.set_font(&name_font);
+        ctx.set_text_align("left");
+        ctx.set_text_baseline("middle");
+        ctx.set_fill_style_str(col);
+        ctx.save();
+        let _ = ctx.translate(*x + deco * s, *y);
+        let _ = ctx.scale(nsx, nsy);
+        let _ = ctx.fill_text(&name, 0.0, 0.0);
+        ctx.restore();
     }
 }
 
