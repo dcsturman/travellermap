@@ -13,8 +13,10 @@ use super::Theme;
 pub(crate) fn draw_overlays(c: &impl Canvas, view: &ViewState, w: f64, h: f64, ov: &Overlays, opts: RenderOptions, theme: &Theme) {
     // The reference strokes macro borders red (no fill) at macro zoom; the
     // filled polity look comes from the micro-border layer at scale >= 4.
-    for v in &ov.rifts {
-        draw_vector(c, view, w, h, v, theme.rift, 1.0, false, &[]);
+    if theme.show_rift {
+        for v in &ov.rifts {
+            draw_vector(c, view, w, h, v, theme.rift, 1.0, false, &[]);
+        }
     }
     if opts.borders {
         for v in &ov.borders {
@@ -95,7 +97,7 @@ fn draw_region_label(c: &impl Canvas, view: &ViewState, w: f64, h: f64, v: &Vect
     let (font, color, raw) = if major {
         (format!("700 {}px {DEFAULT_FONT}", size as i32), theme.macro_name, v.name.to_uppercase())
     } else {
-        (format!("{}px {DEFAULT_FONT}", size as i32), theme.red, v.name.clone())
+        (format!("{}px {DEFAULT_FONT}", size as i32), theme.highlight, v.name.clone())
     };
     let lines: Vec<&str> = raw.split('\n').map(str::trim).collect();
     let top = sy - (lines.len() as f64 - 1.0) * size * 0.5;
@@ -121,7 +123,7 @@ fn draw_rift_label(c: &impl Canvas, view: &ViewState, w: f64, h: f64, v: &Vector
     let (font, color) = if major {
         (format!("700 {}px {DEFAULT_FONT}", size as i32), theme.macro_name)
     } else {
-        (format!("{}px {DEFAULT_FONT}", size as i32), theme.red)
+        (format!("{}px {DEFAULT_FONT}", size as i32), theme.highlight)
     };
     c.fill_text_rotated(&v.name.replace('\n', " "), sx, sy, color, &font, 35.0_f64.to_radians(), 1.0);
 }
@@ -177,7 +179,7 @@ pub(crate) fn draw_minor_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f6
         let (font, color) = if label.minor {
             (format!("{size}px {DEFAULT_FONT}"), theme.macro_name)
         } else {
-            (format!("italic {size}px {DEFAULT_FONT}"), theme.red)
+            (format!("italic {size}px {DEFAULT_FONT}"), theme.highlight)
         };
         let size = size as f64;
         let lines: Vec<&str> = label.text.split('\n').map(str::trim).collect();

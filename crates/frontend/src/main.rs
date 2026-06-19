@@ -880,6 +880,8 @@ fn App() -> impl IntoView {
     let opt_world_colors = RwSignal::new(true);
     let opt_dim = RwSignal::new(false);
     let opt_perf = RwSignal::new(false);
+    // Selected style-theme preset name (Stylesheet.cs verbatim presets; see render::Theme).
+    let style = RwSignal::new(String::from("Poster"));
     // Which floating panel is open: 0 none, 1 legend (key), 2 settings (menu).
     let panel = RwSignal::new(0u8);
 
@@ -925,7 +927,7 @@ fn App() -> impl IntoView {
             let refs: Vec<&SectorData> = loaded.values().collect();
             overlays.with_value(|ov| {
                 index.with_value(|idx| {
-                    render::draw(&canvas_el, &refs, ov.as_ref(), idx, v, opts, &render::Theme::poster(), None);
+                    render::draw(&canvas_el, &refs, ov.as_ref(), idx, v, opts, &render::Theme::from_name(&style.get()), None);
                 });
             });
         });
@@ -1164,7 +1166,7 @@ fn App() -> impl IntoView {
             overlays.with_value(|ov| {
                 index.with_value(|idx| {
                     route.with(|r| {
-                        render::draw(&canvas_el, &refs, ov.as_ref(), idx, v, opts, &render::Theme::poster(), r.as_ref());
+                        render::draw(&canvas_el, &refs, ov.as_ref(), idx, v, opts, &render::Theme::from_name(&style.get()), r.as_ref());
                     });
                 });
             });
@@ -2638,16 +2640,38 @@ fn App() -> impl IntoView {
                     {toggle_row("Routes", opt_routes)}
                     {toggle_row("Region Names", opt_region_names)}
                     {toggle_row("Important Worlds", opt_important)}
+                    <div style="font-weight:700; color:#aab3c8; margin:12px 0 2px;">"STYLE"</div>
+                    <div style="display:flex; flex-wrap:wrap; gap:6px; margin:4px 0 2px;">
+                        {render::Theme::PRESETS.iter().map(|(name, _)| {
+                            let name = *name;
+                            view! {
+                                <button
+                                    on:click=move |_| {
+                                        if style.get_untracked() != name {
+                                            // The world-dot cache bakes theme colors; clear it
+                                            // (and the geometry caches) so the new palette takes.
+                                            render::clear_caches();
+                                            style.set(name.to_string());
+                                        }
+                                    }
+                                    style="padding:5px 11px; border-radius:14px; cursor:pointer; \
+                                           border:1px solid #2a3145; font:600 12px system-ui;"
+                                    style:background=move || if style.get() == name { "#e32736" } else { "rgba(40,44,58,0.7)" }
+                                    style:color=move || if style.get() == name { "#fff" } else { "#cdd5e6" }>
+                                    {name}
+                                </button>
+                            }
+                        }).collect_view()}
+                    </div>
+                    <div style="font-size:11px; color:#7e879c; line-height:1.45; margin-top:3px;">
+                        "Verbatim from the reference Stylesheet. Candy (world-globe images) is not yet supported."
+                    </div>
                     <div style="font-weight:700; color:#aab3c8; margin:12px 0 2px;">"APPEARANCE"</div>
                     {toggle_row("More World Colors", opt_world_colors)}
                     {toggle_row("Filled Borders", opt_filled)}
                     {toggle_row("Dim Unofficial", opt_dim)}
                     <div style="font-weight:700; color:#aab3c8; margin:12px 0 2px;">"DEBUG"</div>
                     {toggle_row("Frame Timing (HUD)", opt_perf)}
-                    <div style="margin-top:14px; padding-top:10px; border-top:1px solid #20283a; \
-                                font-size:12px; color:#7e879c; line-height:1.5;">
-                        "Not yet ported: style themes."
-                    </div>
                 </div>
             </Show>
 

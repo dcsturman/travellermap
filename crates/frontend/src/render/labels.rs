@@ -44,7 +44,7 @@ pub(crate) fn draw_sector_names(
     theme: &Theme,
 ) {
     let font_px = (5.5 * view.scale).clamp(10.0, 520.0);
-    let font = format!("{}px {DEFAULT_FONT}", font_px as i32); // FontInfo(DEFAULT_FONT, 5.5) — Regular
+    let font = format!("{}px {}", font_px as i32, theme.font); // FontInfo(DEFAULT_FONT, 5.5) — Regular
     let color = fade_name_color(view.scale, theme);
     for (&(sx, sy), name) in sector_index {
         let (cx, cy) = view.to_screen(w, h, sector_center(sx, sy));
@@ -61,7 +61,7 @@ pub(crate) fn draw_subsector_names(c: &impl Canvas, view: &ViewState, w: f64, h:
         return;
     };
     let font_px = (1.5 * view.scale).clamp(10.0, 260.0);
-    let font = format!("{}px {DEFAULT_FONT}", font_px as i32); // FontInfo(DEFAULT_FONT, 1.5) — Regular
+    let font = format!("{}px {}", font_px as i32, theme.font); // FontInfo(DEFAULT_FONT, 1.5) — Regular
     let color = fade_name_color(view.scale, theme);
     for ss in &sector.info.subsectors {
         let Some(letter) = ss.index.bytes().next() else {
@@ -93,7 +93,7 @@ pub(crate) fn draw_border_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f
         return;
     };
     let size = micro_label_px(0.25, view.scale);
-    let font = format!("700 {}px {DEFAULT_FONT}", size as i32);
+    let font = format!("700 {}px {}", size as i32, theme.font);
     for border in &sector.borders {
         let (Some(label), Some(pos)) = (&border.label, &border.label_position) else {
             continue;
@@ -110,7 +110,7 @@ pub(crate) fn draw_border_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f
             continue;
         }
         let lines = if border.wrap_label { wrap_label_text(label) } else { vec![label.clone()] };
-        draw_label_lines(c, &lines, x, y, size, theme.amber, &font);
+        draw_label_lines(c, &lines, x, y, size, theme.micro_border_text, &font);
     }
 }
 
@@ -131,7 +131,7 @@ pub(crate) fn draw_sector_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f
             _ => 0.25,
         };
         let size = micro_label_px(parsec, view.scale);
-        let font = format!("700 {}px {DEFAULT_FONT}", size as i32);
+        let font = format!("700 {}px {}", size as i32, theme.font);
         let (wc, wr) = world_hex(loc.x, loc.y, col, row);
         let (px, py) = hex_parsec(wc, wr);
         let (px, py) = (px + label.offset.0 as f64 * 0.7, py - label.offset.1 as f64 * 0.7);
@@ -139,7 +139,7 @@ pub(crate) fn draw_sector_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f
         if !on_screen(x, y, w, h, size * 4.0) {
             continue;
         }
-        let color = label.color.as_deref().unwrap_or(theme.amber);
+        let color = label.color.as_deref().unwrap_or(theme.micro_border_text);
         let lines = if label.wrap { wrap_label_text(&label.text) } else { vec![label.text.clone()] };
         draw_label_lines(c, &lines, x, y, size, color, &font);
     }

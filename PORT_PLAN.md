@@ -135,20 +135,29 @@ Reference features built alongside/after the Phase 10 parity pass.
 
 ## Phase 11 — Style themes 🔨 IN PROGRESS
 
-The Poster / Atlas / Print / Candy (+ Draft/FASA/Terminal/Mongoose) presets. Plan +
-per-preset values cited from `Stylesheet.cs`: **`STYLE_THEMES_PLAN.md`**. A theme is a small
-palette+flags struct; all geometry/LOD is shared and already ported.
+The Poster / Atlas / Print / Draft / FASA / Terminal / Mongoose presets (+ Candy, deferred).
+Plan + per-preset values cited from `Stylesheet.cs`: **`STYLE_THEMES_PLAN.md`**. A theme is a
+small palette+flags struct; all geometry/LOD is shared and already ported.
 
 - [x] **A — Theme plumbing + default extraction (2026-06-18).** `render/theme.rs`: a `Theme`
-  struct + `Theme::poster()` holding today's exact colors, threaded as `&Theme` through every
-  direct-color pass (background, stars, overlays, labels, worlds). Pixel-identical by construction
-  (each literal replaced with a field whose value equals it). Borders/routes/grid keep their
-  per-allegiance otu.css cascade for now (deferred with their cache-invalidation to C).
-- [ ] **B — Atlas preset** (grayscale, white bg, black ink) — proves the cascade end-to-end.
-- [ ] **C — Selection + persistence:** `style` signal + settings-panel selector + `&style=` URL
-  round-trip + border-cache invalidation on switch.
-- [ ] **D — Full preset set** (Print, Draft, FASA, Terminal, Mongoose + a font field; Candy
-  approximate — nebula/world-images out of scope). Mongoose needs a `WorldLayout` glyph override.
+  struct + `Theme::poster()` holding today's exact colors, threaded as `&Theme` through every pass.
+  Pixel-identical by construction (each literal replaced with a field whose value equals it).
+- [x] **B–D — 7 presets + selector (2026-06-18).** Decision (user): keep Poster's current custom
+  tints; the alternates are **transcribed verbatim from `Stylesheet.cs`** (the `switch (style)`
+  block + the `DefaultTo` cascade — world text ← foreground, hex# ← light, highlights ← highlight,
+  stars ← foreground). Each preset is `Self { <overrides>, ..poster() }`, mirroring the C# cases.
+  Threaded the new behaviors: per-preset `font`, `background`, world water/dry/**outline**/plain
+  (`showWorldDetailColors`), split `red_zone`/`highlight`, `micro_border`/`micro_route`/
+  `micro_border_text` overrides (draw-time, no cache rebuild), grid override, `uppercase_worlds`,
+  the `worldDetails &= ~…` field drops (FASA/Draft/Mongoose), `show_galaxy`/`show_rift`. Settings →
+  **STYLE** selector (red-highlighted, like the milieu picker); switching `render::clear_caches()`
+  then redraws (the world-dot cache bakes colors). **Not yet replicated (flagged in `theme.rs`):**
+  curved micro borders (FASA), all-hex numbering + subsector hex coords (Draft/FASA/Terminal), the
+  Mongoose glyph re-layout + zone-perimeters + filled-UWP, text scale-expansion, and macro-name
+  fonts. **Candy deferred** (needs per-world globe images + nebula background — out of scope) but
+  planned to fully support later (user).
+- [ ] **C tail — `&style=` URL round-trip** in `build_share_url`/`parse_share_params` (the `name`
+  field is already on `Theme` for this), + Candy when its prerequisites land.
 
 ## Phase 12 — Visual parity finish
 

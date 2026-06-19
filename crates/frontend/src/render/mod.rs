@@ -153,7 +153,9 @@ pub fn draw(
 
     // Sector / subsector boundary grids and background names. All grids share the
     // reference's gray, scale-faded `gridColor`.
-    let gc = common::grid_color(view.scale);
+    // Grid color: the theme can force a flat color (FASA/Draft/Terminal/Mongoose);
+    // otherwise the scale-faded gray `gridColor`.
+    let gc = theme.grid.map(str::to_string).unwrap_or_else(|| common::grid_color(view.scale));
     if opts.sector_grid && view.scale >= SUBSECTOR_GRID_MIN {
         grid::draw_grid_lines(&c, &view, w, h, SUBSECTOR_W, SUBSECTOR_H, &gc, 1.4);
     }
@@ -173,18 +175,18 @@ pub fn draw(
     if view.scale >= WORLD_MIN_SCALE {
         // Micro borders (fill behind everything, then stroke).
         if opts.borders {
-            borders::draw_micro_borders(&c, &view, w, h, dpr, sectors, opts.filled_borders);
+            borders::draw_micro_borders(&c, &view, w, h, dpr, sectors, opts.filled_borders, theme.micro_border);
         }
         mark("borders", &mut marks);
         if opts.routes && view.scale >= ROUTE_MIN_SCALE {
             for sector in sectors {
-                routes::draw_routes(&c, &view, w, h, sector);
+                routes::draw_routes(&c, &view, w, h, sector, theme.micro_route);
             }
         }
         // Per-parsec hex grid only once hexes are big enough to read (and to
         // avoid drawing tens of thousands of hexagons when zoomed out).
         if opts.sector_grid && view.scale >= PARSEC_GRID_MIN_SCALE {
-            grid::draw_hex_grid(&c, &view, w, h, dpr, sector_index);
+            grid::draw_hex_grid(&c, &view, w, h, dpr, sector_index, theme.grid);
         }
         mark("routes+hexgrid", &mut marks);
         // Disc / zone-ring / vacuum-outline layer: identical geometry at every

@@ -22,7 +22,7 @@ fn route_color(allegiance: &str) -> &'static str {
     }
 }
 
-pub(crate) fn draw_routes(c: &impl Canvas, view: &ViewState, w: f64, h: f64, sector: &SectorData) {
+pub(crate) fn draw_routes(c: &impl Canvas, view: &ViewState, w: f64, h: f64, sector: &SectorData, micro_override: Option<&str>) {
     let Some(loc) = sector.info.location else {
         return;
     };
@@ -35,11 +35,13 @@ pub(crate) fn draw_routes(c: &impl Canvas, view: &ViewState, w: f64, h: f64, sec
         let (ewc, ewr) = world_hex(loc.x + route.end_offset.0, loc.y + route.end_offset.1, ec, er);
         let p0 = view.to_screen(w, h, hex_parsec(swc, swr));
         let p1 = view.to_screen(w, h, hex_parsec(ewc, ewr));
-        // A route's explicit `Color` wins; otherwise the reference applies the
-        // `otu.css route.<allegiance>` rule, defaulting to "Im" → green.
-        let color = match &route.color {
-            Some(c) => c.as_str(),
-            None => route_color(route.allegiance.as_deref().unwrap_or("Im")),
+        // A theme that forces a single micro-route color (Atlas/Print/Draft/FASA/
+        // Terminal) wins; else a route's explicit `Color`; else the `otu.css
+        // route.<allegiance>` rule, defaulting to "Im" → green.
+        let color = match (micro_override, &route.color) {
+            (Some(o), _) => o,
+            (None, Some(c)) => c.as_str(),
+            (None, None) => route_color(route.allegiance.as_deref().unwrap_or("Im")),
         };
         c.stroke_polyline(&[p0, p1], color, width, false, &[]);
     }

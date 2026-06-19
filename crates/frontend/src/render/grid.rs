@@ -91,6 +91,7 @@ pub(crate) fn draw_hex_grid(
     h: f64,
     dpr: f64,
     sector_index: &HashMap<(i32, i32), String>,
+    grid_override: Option<&str>,
 ) {
     let s = view.scale;
     if s / 3f64.sqrt() < 2.0 {
@@ -122,7 +123,11 @@ pub(crate) fn draw_hex_grid(
     ctx.save();
     let _ = ctx.set_transform(a, 0.0, 0.0, a, e, f);
     ctx.set_line_width(1.0 / s); // ~1 css px (the transform scales by s)
-    ctx.set_stroke_style_str(&grid_color(s)); // gray, scale-faded (reference gridColor)
+    // Theme override (flat color) or the scale-faded gray `gridColor`.
+    match grid_override {
+        Some(c) => ctx.set_stroke_style_str(c),
+        None => ctx.set_stroke_style_str(&grid_color(s)),
+    }
     ctx.stroke_with_path(&combined);
     ctx.restore();
 }

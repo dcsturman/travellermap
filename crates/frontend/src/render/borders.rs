@@ -249,7 +249,8 @@ fn build_border_geometry(sectors: &[&SectorData]) -> Vec<(String, Path2d, Path2d
 /// world-space `Path2d`s under a view transform (see `border_group_key` for the
 /// cross-sector polity grouping). `dpr` composes into the world→device transform
 /// so strokes stay crisp on retina.
-pub(crate) fn draw_micro_borders(canvas: &Canvas2d, view: &ViewState, w: f64, h: f64, dpr: f64, sectors: &[&SectorData], filled: bool) {
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_micro_borders(canvas: &Canvas2d, view: &ViewState, w: f64, h: f64, dpr: f64, sectors: &[&SectorData], filled: bool, micro_override: Option<&str>) {
     let key = border_cache_key(sectors, filled);
     BORDER_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -283,6 +284,10 @@ pub(crate) fn draw_micro_borders(canvas: &Canvas2d, view: &ViewState, w: f64, h:
         ctx.set_line_join("round");
         ctx.set_line_width(stroke_w);
         for (color, fill, stroke) in &bc.groups {
+            // A theme may force a single micro-border color (Atlas/FASA); otherwise
+            // each group keeps its baked per-allegiance otu.css color. The geometry
+            // is color-independent, so this needs no cache rebuild on a style switch.
+            let color = micro_override.unwrap_or(color);
             if filled {
                 ctx.set_global_alpha(0.25); // FILL_ALPHA = 64/255
                 ctx.set_fill_style_str(color);

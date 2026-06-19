@@ -14,7 +14,7 @@ use crate::glyph;
 
 use super::common::{
     hex_parsec, on_screen, sector_in_viewport, world_hex, ViewState, ALLEGIANCE_MIN_SCALE,
-    CONTENT_SCALE, DEFAULT_FONT, WORLD_BASIC_SCALE, WORLD_FULL_SCALE, WORLD_UWP_SCALE,
+    CONTENT_SCALE, WORLD_BASIC_SCALE, WORLD_FULL_SCALE, WORLD_UWP_SCALE,
 };
 use super::Theme;
 
@@ -101,7 +101,7 @@ pub(crate) fn draw_placeholder_glyphs(canvas: &Canvas2d, view: &ViewState, w: f6
             // Placeholders are rare, so set state per glyph (no batching needed).
             if is_anomaly(world) {
                 ctx.set_font(&anomaly_font);
-                ctx.set_fill_style_str(theme.red);
+                ctx.set_fill_style_str(theme.highlight);
                 let _ = ctx.fill_text("\u{2316}", x, y); // position (0, 0)
             } else {
                 ctx.set_font(&star_font);
@@ -144,7 +144,7 @@ fn build_sector_dots(sector: &SectorData, more_colors: bool, dotmap: bool, theme
             let (wc, wr) = world_hex(loc.x, loc.y, col, row);
             let (cx, cy) = hex_parsec(wc, wr);
             // Travel zone: a single open-bottom arc behind the disc (amber/red).
-            let zc = match world.zone.as_str() { "A" => Some(theme.amber), "R" => Some(theme.red), _ => None };
+            let zc = match world.zone.as_str() { "A" => Some(theme.amber), "R" => Some(theme.red_zone), _ => None };
             if let Some(zc) = zc {
                 let (a0, a1) = (PI - 0.384, 2.0 * PI + 0.384);
                 let p = zones.entry(zc.to_owned()).or_insert_with(|| Path2d::new().unwrap());
@@ -169,6 +169,7 @@ fn build_sector_dots(sector: &SectorData, more_colors: bool, dotmap: bool, theme
 
 /// Dot-tier worlds (scale < `WORLD_BASIC_SCALE`): batched discs + zone rings
 /// from the per-sector cache, drawn under one view transform.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_world_dots(canvas: &Canvas2d, view: &ViewState, w: f64, h: f64, dpr: f64, sectors: &[&SectorData], more_colors: bool, theme: &Theme) {
     let s = view.scale;
     let dotmap = s < WORLD_BASIC_SCALE; // bigger discs when no per-world detail
@@ -247,11 +248,12 @@ pub(crate) fn draw_world_glyphs(canvas: &Canvas2d, view: &ViewState, w: f64, h: 
     let name_pt = (if poster { 0.15 * font_scale } else { 0.2 }) * cs;
     let uwp_pt = 0.13 * font_scale * cs;
     let hex_pt = 0.10 * font_scale * cs;
-    let name_font = format!("700 {}px {DEFAULT_FONT}", name_pt.max(7.0) as i32);
-    let uwp_font = format!("500 {}px {DEFAULT_FONT}", uwp_pt.max(7.0) as i32);
-    let hex_font = format!("{}px {DEFAULT_FONT}", hex_pt.max(6.0) as i32);
+    let ff = theme.font;
+    let name_font = format!("700 {}px {ff}", name_pt.max(7.0) as i32);
+    let uwp_font = format!("500 {}px {ff}", uwp_pt.max(7.0) as i32);
+    let hex_font = format!("{}px {ff}", hex_pt.max(6.0) as i32);
     let glyph_pt = (if poster { 0.15 * font_scale } else { 0.175 }) * cs;
-    let glyph_font = format!("{}px {DEFAULT_FONT}", glyph_pt.max(7.0) as i32);
+    let glyph_font = format!("{}px {ff}", glyph_pt.max(7.0) as i32);
     // Base slots (left side); bottom slot rises when the UWP needs the room.
     let base_top_y = if poster { -0.18 } else { -0.125 };
     let base_bottom_y = if show_uwp { 0.1 } else if poster { 0.18 } else { 0.125 };
@@ -289,19 +291,21 @@ pub(crate) fn draw_world_glyphs(canvas: &Canvas2d, view: &ViewState, w: f64, h: 
     }
 
     // ── Starport class (above the disc). Same font as names (700, name_pt).
-    ctx.set_font(&name_font);
-    ctx.set_fill_style_str(theme.text);
-    for (world, x, y) in &vis {
-        if let Some(sp) = world.uwp.chars().next() {
-            if sp != '?' {
-                let _ = ctx.fill_text(sp.encode_utf8(&mut [0u8; 4]), *x, *y + sp_y * s);
+    if !theme.drop_starport {
+        ctx.set_font(&name_font);
+        ctx.set_fill_style_str(theme.text);
+        for (world, x, y) in &vis {
+            if let Some(sp) = world.uwp.chars().next() {
+                if sp != '?' {
+                    let _ = ctx.fill_text(sp.encode_utf8(&mut [0u8; 4]), *x, *y + sp_y * s);
+                }
             }
         }
     }
 
     // ── Gas giant (upper-right): filled discs batched into one path; Saturn
     // ring (only when zoomed past the UWP threshold) stroked per giant.
-    {
+    if !theme.drop_gas_giant {
         let r = (0.05 * cs).max(1.0);
         let disc = Path2d::new().unwrap();
         let mut any = false;
@@ -333,7 +337,10 @@ pub(crate) fn draw_world_glyphs(canvas: &Canvas2d, view: &ViewState, w: f64, h: 
     }
 
     // ── Bases (left side) as classic glyphs. Font/align set once; fill toggles
-    // only between white and red (red is sparse), so track the last color.
+    // only between the text color and the highlight (highlight is sparse), so track
+    // the last color. `hi` is the highlight color unless this theme drops highlights.
+    let hi = if theme.drop_highlight { theme.text } else { theme.highlight };
+    if !theme.drop_bases {
     ctx.set_font(&glyph_font);
     ctx.set_text_align("center");
     let mut last = "";
@@ -344,7 +351,7 @@ pub(crate) fn draw_world_glyphs(canvas: &Canvas2d, view: &ViewState, w: f64, h: 
         if let Some(c0) = chars.next() {
             if let Some(g) = glyph::base_glyph(&world.allegiance, c0) {
                 bottom_used = g.bias == glyph::Bias::Bottom;
-                let col = if g.highlight { theme.red } else { theme.text };
+                let col = if g.highlight { hi } else { theme.text };
                 if col != last { ctx.set_fill_style_str(col); last = col; }
                 let gy = if bottom_used { base_bottom_y } else { base_top_y } * s;
                 let _ = ctx.fill_text(g.chars, *x + bx, *y + gy);
@@ -353,16 +360,17 @@ pub(crate) fn draw_world_glyphs(canvas: &Canvas2d, view: &ViewState, w: f64, h: 
         if let Some(c1) = chars.next() {
             if let Some(g) = glyph::base_glyph(&world.allegiance, c1) {
                 let bottom = !bottom_used;
-                let col = if g.highlight { theme.red } else { theme.text };
+                let col = if g.highlight { hi } else { theme.text };
                 if col != last { ctx.set_fill_style_str(col); last = col; }
                 let gy = if bottom { base_bottom_y } else { base_top_y } * s;
                 let _ = ctx.fill_text(g.chars, *x + bx, *y + gy);
             }
         }
     }
+    } // end !drop_bases
 
     // ── UWP (above name), only past the UWP scale threshold.
-    if show_uwp {
+    if show_uwp && !theme.drop_uwp {
         ctx.set_font(&uwp_font);
         ctx.set_text_align("center");
         ctx.set_fill_style_str(theme.text_uwp);
@@ -375,7 +383,7 @@ pub(crate) fn draw_world_glyphs(canvas: &Canvas2d, view: &ViewState, w: f64, h: 
     }
 
     // ── Allegiance code (e.g. NaHu) to the right of the disc, when zoomed in.
-    if s >= ALLEGIANCE_MIN_SCALE {
+    if s >= ALLEGIANCE_MIN_SCALE && !theme.drop_allegiance {
         ctx.set_font(&uwp_font);
         ctx.set_text_align("left");
         ctx.set_fill_style_str(theme.text_alleg);
@@ -399,9 +407,9 @@ pub(crate) fn draw_world_glyphs(canvas: &Canvas2d, view: &ViewState, w: f64, h: 
     for (world, x, y) in &vis {
         let hi_pop = world.uwp.as_bytes().get(4).copied().and_then(ehex).is_some_and(|p| p >= 9);
         let is_capital = world.codes().any(|c| matches!(c, "Cp" | "Cs" | "Cx" | "Capital"));
-        let col = if is_capital { theme.capital } else { theme.text };
+        let col = if is_capital && !theme.drop_highlight { theme.capital } else { theme.text };
         if col != last { ctx.set_fill_style_str(col); last = col; }
-        if hi_pop {
+        if hi_pop || theme.uppercase_worlds {
             let _ = ctx.fill_text(&world.name.to_uppercase(), *x, *y + name_dy);
         } else {
             let _ = ctx.fill_text(&world.name, *x, *y + name_dy);
@@ -424,18 +432,19 @@ fn world_colors(world: &World, more_colors: bool, theme: &Theme) -> (&'static st
     let has = |code: &str| world.codes().any(|c| c == code);
     let atmo = world.uwp.as_bytes().get(2).copied().and_then(ehex);
     let hydro = world.uwp.as_bytes().get(3).copied().and_then(ehex);
-    if !more_colors {
-        // Plain mode: water worlds blue, everything else white (no trade-class
-        // tints) — the reference's "More World Colors" off.
+    // Plain mode: water worlds blue, everything else the dry color (no trade-class
+    // tints). The theme can force this (`showWorldDetailColors = false` — Atlas/FASA)
+    // regardless of the user's "More World Colors" toggle.
+    if !more_colors || theme.force_plain_worlds {
         let water = hydro.is_some_and(|h| h > 0)
             && atmo.is_some_and(|a| (2..=9).contains(&a) || (13..=15).contains(&a));
         let vacuum = has("Va") || atmo == Some(0);
         return if vacuum {
             (theme.vacuum_fill, Some(theme.world_dry))
         } else if water {
-            (theme.world_water, None)
+            (theme.world_water, theme.world_dry_outline)
         } else {
-            (theme.world_dry, None)
+            (theme.world_dry, theme.world_dry_outline)
         };
     }
     let (ag, ri, ind) = (has("Ag"), has("Ri"), has("In"));
@@ -456,8 +465,8 @@ fn world_colors(world: &World, more_colors: bool, theme: &Theme) -> (&'static st
     } else if vacuum {
         (theme.vacuum_fill, Some(theme.world_dry)) // Black disc, white outline
     } else if water {
-        (theme.world_water, None) // DeepSkyBlue
+        (theme.world_water, theme.world_dry_outline) // DeepSkyBlue
     } else {
-        (theme.world_dry, None) // White
+        (theme.world_dry, theme.world_dry_outline) // White
     }
 }
