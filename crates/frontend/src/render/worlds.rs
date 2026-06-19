@@ -359,12 +359,16 @@ pub(crate) fn draw_world_glyphs(
     ctx.set_text_baseline("middle");
 
     // ── Hex number (top, just inside the top edge — reference TopCenter).
-    ctx.set_font(&hex_font);
-    ctx.set_text_align("center");
-    ctx.set_fill_style_str(theme.text_hex);
-    let hex_dy = -0.5 * s + hex_pt * 0.55;
-    for (world, x, y) in &vis {
-        let _ = ctx.fill_text(&world.hex, *x, *y + hex_dy);
+    // Skipped when the style numbers *every* hex (Draft/FASA/Terminal) — that pass
+    // already labels the world's hex (reference gates the per-world number the same).
+    if !theme.number_all_hexes {
+        ctx.set_font(&hex_font);
+        ctx.set_text_align("center");
+        ctx.set_fill_style_str(theme.text_hex);
+        let hex_dy = -0.5 * s + hex_pt * 0.55;
+        for (world, x, y) in &vis {
+            let _ = ctx.fill_text(&world.hex, *x, *y + hex_dy);
+        }
     }
 
     // ── Starport class (above the disc). Same font as names (700, name_pt).

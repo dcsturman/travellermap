@@ -216,6 +216,10 @@ pub fn draw(
         if opts.sector_grid && theme.show_hex_grid && view.scale >= PARSEC_GRID_MIN_SCALE {
             grid::draw_hex_grid(&c, &view, w, h, dpr, sector_index, theme.grid);
         }
+        // Blueprint styles number every hex (Draft/FASA/Terminal), not just worlds.
+        if theme.number_all_hexes && view.scale >= WORLD_BASIC_SCALE {
+            grid::draw_all_hex_numbers(&c, &view, w, h, theme);
+        }
         mark("routes+hexgrid", &mut marks);
         // Disc / zone-ring / vacuum-outline layer: identical geometry at every
         // detail scale (the reference's in-hex disc), so always drawn from the

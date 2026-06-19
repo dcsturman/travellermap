@@ -14,10 +14,9 @@
 //! `TravellerColors.Red = #E32736`, `Amber = #FFCC00`.
 //!
 //! **Candy** is fully wired (palette, text transforms, globe/nebula compositing,
-//! hidden hex grid). **Not yet replicated** (flagged per preset): curved micro
-//! borders (FASA/Candy — own Phase-3 track); all-hex numbering and subsector hex
-//! coords (Draft/FASA/Terminal); the Mongoose glyph re-layout, zone-perimeters, and
-//! filled-UWP. See PORT_PLAN.md Phase 3.
+//! hidden hex grid, curved borders); **Draft/FASA/Terminal** number every hex
+//! (`number_all_hexes`). **Not yet replicated:** the Mongoose glyph re-layout,
+//! zone-perimeters, and filled-UWP. See PORT_PLAN.md Phase 3.
 
 use super::common::{C_AMBER, C_BORDER, C_DRY, C_RED, C_RIFT, C_ROUTE, C_WATER};
 
@@ -123,6 +122,12 @@ pub struct Theme {
     // `microBorderStyle == Curve`: smooth (cardinal-spline) micro borders instead
     // of the hard hex-edge stroke. Set by FASA + Candy (`Stylesheet.cs:629,801`).
     pub curved_borders: bool,
+    // `numberAllHexes`: print the hex coordinate in *every* hex (the blueprint
+    // grid look), not just on worlds. Draft/FASA/Terminal (`Stylesheet.cs:651,777,943`).
+    pub number_all_hexes: bool,
+    // `hexCoordinateStyle == Subsector`: the all-hex numbers are subsector-relative
+    // (col 1–8 / row 1–10) instead of sector hexes. FASA only (`Stylesheet.cs:652`).
+    pub subsector_hex_coords: bool,
     // Candy tapers micro borders (÷4) and routes (÷2) once zoomed past scale 32
     // (`CandyMax{Border,Route}RelativeScale`, `Stylesheet.cs:846-848`).
     pub taper_lines: bool,
@@ -195,6 +200,8 @@ impl Theme {
             grid: None,
             show_hex_grid: true,
             curved_borders: false,
+            number_all_hexes: false,
+            subsector_hex_coords: false,
             taper_lines: false,
             text_shadow: false,
             stars: [
@@ -279,7 +286,8 @@ impl Theme {
     pub fn draft() -> Self {
         Self {
             name: "Draft",
-            background: "#faebd7", // AntiqueWhite
+            number_all_hexes: true, // Stylesheet.cs:777
+            background: "#faebd7",  // AntiqueWhite
             font: "'Comic Sans MS', 'Comic Sans', cursive",
             show_galaxy: false,
             highlight: "rgba(227,39,54,0.69)", // red@0xB0
@@ -317,8 +325,10 @@ impl Theme {
             name: "FASA",
             background: "#ffffff",
             show_galaxy: false,
-            show_rift: false,     // riftOpacity = 0
-            curved_borders: true, // microBorderStyle=Curve (Stylesheet.cs:629)
+            show_rift: false,           // riftOpacity = 0
+            curved_borders: true,       // microBorderStyle=Curve (Stylesheet.cs:629)
+            number_all_hexes: true,     // Stylesheet.cs:651
+            subsector_hex_coords: true, // hexCoordinateStyle=Subsector (Stylesheet.cs:652)
             macro_border: "#5c4033",
             route: "#5c4033",
             micro_border: Some("#5c4033"),
@@ -361,6 +371,7 @@ impl Theme {
     pub fn terminal() -> Self {
         Self {
             name: "Terminal",
+            number_all_hexes: true, // Stylesheet.cs:943
             background: "#000000",
             font: "'Courier New', 'Courier', monospace",
             show_galaxy: false,

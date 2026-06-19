@@ -10,9 +10,54 @@ use web_sys::Path2d;
 use crate::canvas::{Canvas, Canvas2d};
 
 use super::common::{
-    grid_color, hex_vertex, sector_in_viewport, visible_hex_range, visible_sectors, ViewState,
-    SECTOR_H, SECTOR_W,
+    grid_color, hex_parsec, hex_vertex, on_screen, sector_in_viewport, visible_hex_range,
+    visible_sectors, ViewState, CONTENT_SCALE, SECTOR_H, SECTOR_W,
 };
+use super::Theme;
+
+/// `numberAllHexes` — print the hex coordinate in *every* visible hex (top-center,
+/// `hexNumber` color), for the blueprint Draft/FASA/Terminal styles. FASA uses
+/// subsector-relative coords (col 1–8 / row 1–10); the others use sector hexes.
+/// (Local hex is derived in the frontend's `world_hex` convention, not tmap-core's
+/// `coordinates_to_location`, which uses a different absolute origin.)
+pub(crate) fn draw_all_hex_numbers(
+    canvas: &Canvas2d,
+    view: &ViewState,
+    w: f64,
+    h: f64,
+    theme: &Theme,
+) {
+    let s = view.scale;
+    let (c0, c1, r0, r1) = visible_hex_range(view, w, h);
+    let ctx = &canvas.ctx;
+    let font_px = (0.10 * s * CONTENT_SCALE).max(6.0);
+    ctx.set_font(&format!("{}px {}", font_px as i32, theme.font));
+    ctx.set_fill_style_str(theme.text_hex);
+    ctx.set_text_align("center");
+    ctx.set_text_baseline("top"); // reference TopCenter
+    let dy = -0.5 * s; // top edge of the hex
+    for wc in c0..=c1 {
+        for wr in r0..=r1 {
+            let (cx, cy) = view.to_screen(w, h, hex_parsec(wc, wr));
+            if !on_screen(cx, cy, w, h, font_px * 3.0) {
+                continue;
+            }
+            // Sector-local hex (1-based col/row) in the world_hex convention.
+            let col = (wc - 1).rem_euclid(SECTOR_W) + 1;
+            let row = (wr - 1).rem_euclid(SECTOR_H) + 1;
+            let label = if theme.subsector_hex_coords {
+                format!(
+                    "{:02}{:02}",
+                    (col - 1).rem_euclid(8) + 1,
+                    (row - 1).rem_euclid(10) + 1
+                )
+            } else {
+                format!("{col:02}{row:02}")
+            };
+            let _ = ctx.fill_text(&label, cx, cy + dy);
+        }
+    }
+}
 
 /// Straight sector/subsector boundary lines at every `step` parsecs (boundaries
 /// sit half a hex outside the edge cells).
