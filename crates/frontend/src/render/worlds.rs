@@ -666,10 +666,17 @@ pub(crate) fn draw_world_images(
         if has_gg && !theme.drop_gas_giant {
             let gr = (0.05 * s).max(1.5);
             deco += 0.05;
+            let gx = *x + deco * s;
             ctx.set_fill_style_str(theme.highlight);
             ctx.begin_path();
-            let _ = ctx.arc(*x + deco * s, *y, gr, 0.0, TAU);
+            let _ = ctx.arc(gx, *y, gr, 0.0, TAU);
             ctx.fill();
+            // Saturn ring: thin ellipse rotated −30° (RenderContext `DrawGasGiant`).
+            ctx.set_stroke_style_str(theme.highlight);
+            ctx.set_line_width((gr / 4.0).max(0.6));
+            ctx.begin_path();
+            let _ = ctx.ellipse(gx, *y, gr * 1.75, gr * 0.4, -PI / 6.0, 0.0, TAU);
+            ctx.stroke();
             deco += 0.1;
         }
 

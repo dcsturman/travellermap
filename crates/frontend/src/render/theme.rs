@@ -13,12 +13,11 @@
 //! .NET `Color` names → hex are the standard `KnownColor` ARGB values.
 //! `TravellerColors.Red = #E32736`, `Amber = #FFCC00`.
 //!
-//! **Not yet replicated** (flagged per preset; colors/fonts/case/detail-drops are
-//! faithful): curved micro borders (FASA/Candy), all-hex numbering + subsector hex
-//! coords (Draft/FASA/Terminal), the Mongoose glyph re-layout + zone-perimeters +
-//! filled-UWP, and the non-uniform text `Scale` squish. **Candy** is implemented as
-//! a palette/flags preset (Phase 1); its world-globe + nebula raster compositing
-//! (`use_world_images`/`show_nebula`) is Phase 2 — see PORT_PLAN.md.
+//! **Candy** is fully wired (palette + text transforms + globe/nebula compositing
+//! + hidden hex grid). **Not yet replicated** (flagged per preset): curved micro
+//! borders (FASA/Candy — own Phase-3 track), all-hex numbering + subsector hex
+//! coords (Draft/FASA/Terminal), and the Mongoose glyph re-layout + zone-perimeters
+//! + filled-UWP. See PORT_PLAN.md Phase 3.
 
 use super::common::{C_AMBER, C_BORDER, C_DRY, C_RED, C_RIFT, C_ROUTE, C_WATER};
 
@@ -118,6 +117,9 @@ pub struct Theme {
 
     // ── grids ──
     pub grid: Option<&'static str>, // pen color override; None ⇒ scale-faded gray (gridColor)
+    // Per-parsec hex grid (`parsecGrid` + `hexStyle`): Candy turns it off
+    // (`parsecGrid.visible=false`/`hexStyle=None`, Stylesheet.cs:800,805).
+    pub show_hex_grid: bool,
 
     // ── star field (4 brightness tiers; ← foreground) ──
     pub stars: [&'static str; 4],
@@ -182,6 +184,7 @@ impl Theme {
             subsector_name_scale: (0.75, 1.0),
             world_name_scale: (1.0, 1.0),
             grid: None,
+            show_hex_grid: true,
             stars: [
                 "rgba(170,180,205,0.35)",
                 "rgba(205,215,235,0.55)",
@@ -447,6 +450,7 @@ impl Theme {
             world_name_scale: (1.0, 0.5),
             use_world_images: true, // Stylesheet.cs:794 (Phase 2)
             show_nebula: true,      // showNebulaBackground (Stylesheet.cs:798; Phase 2)
+            show_hex_grid: false, // parsecGrid.visible=false / hexStyle=None (Stylesheet.cs:800,805)
             ..Self::poster()
         }
     }

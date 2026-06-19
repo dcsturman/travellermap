@@ -203,7 +203,7 @@ pub fn draw(
         }
         // Per-parsec hex grid only once hexes are big enough to read (and to
         // avoid drawing tens of thousands of hexagons when zoomed out).
-        if opts.sector_grid && view.scale >= PARSEC_GRID_MIN_SCALE {
+        if opts.sector_grid && theme.show_hex_grid && view.scale >= PARSEC_GRID_MIN_SCALE {
             grid::draw_hex_grid(&c, &view, w, h, dpr, sector_index, theme.grid);
         }
         mark("routes+hexgrid", &mut marks);
