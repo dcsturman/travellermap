@@ -24,13 +24,13 @@ pub(crate) const ROUTE_MIN_SCALE: f64 = 8.0; // routes (RouteMinScale)
 pub(crate) const PARSEC_GRID_MIN_SCALE: f64 = 16.0; // per-parsec hex grid (ParsecMinScale)
 pub(crate) const STAR_MIN_SCALE: f64 = 3.5; // procedural star field
 pub(crate) const MACRO_WORLDS_MIN: f64 = 0.5; // capitals/homeworlds (MacroWorldsMinScale)
-// The reference caps macro labels at scale 4 (MacroWorldsMaxScale), but renders
-// at quantized tile
-// scales so a single tile-scale-4 render (capitals + micro borders both visible)
-// is shown across a range of actual zooms. Our client zooms continuously, so to
-// keep the red capital/region labels visible through the micro-overview (where
-// sector names + micro borders show, like the reference), extend their upper
-// bound to the sector-name band's top.
+                                              // The reference caps macro labels at scale 4 (MacroWorldsMaxScale), but renders
+                                              // at quantized tile
+                                              // scales so a single tile-scale-4 render (capitals + micro borders both visible)
+                                              // is shown across a range of actual zooms. Our client zooms continuously, so to
+                                              // keep the red capital/region labels visible through the micro-overview (where
+                                              // sector names + micro borders show, like the reference), extend their upper
+                                              // bound to the sector-name band's top.
 pub(crate) const MACRO_LABEL_MAX_SCALE: f64 = 16.0;
 pub(crate) const SECTOR_GRID_MIN: f64 = 0.5; // sector boundary grid
 pub(crate) const SUBSECTOR_GRID_MIN: f64 = 8.0; // subsector boundary grid
@@ -114,7 +114,10 @@ pub fn fit_jump_view(w: f64, h: f64, center: Coord, jump: i32) -> ViewState {
     // name threshold, so world names show at every rating.
     let span_parsecs = 2.0 * jump as f64 + 2.0;
     let scale = (w.min(h) * 0.95 / span_parsecs).clamp(MIN_SCALE, MAX_SCALE);
-    ViewState { scale, center: hex_parsec(center.x, center.y) }
+    ViewState {
+        scale,
+        center: hex_parsec(center.x, center.y),
+    }
 }
 
 /// Layer-visibility / appearance toggles, driven by the hamburger settings menu
@@ -186,14 +189,14 @@ pub fn sector_center(sx: i32, sy: i32) -> (f64, f64) {
 }
 
 impl ViewState {
-    pub(crate) fn to_screen(&self, w: f64, h: f64, p: (f64, f64)) -> (f64, f64) {
+    pub(crate) fn to_screen(self, w: f64, h: f64, p: (f64, f64)) -> (f64, f64) {
         (
             w / 2.0 + (p.0 - self.center.0) * self.scale,
             h / 2.0 + (p.1 - self.center.1) * self.scale,
         )
     }
 
-    pub fn to_parsec(&self, w: f64, h: f64, screen: (f64, f64)) -> (f64, f64) {
+    pub fn to_parsec(self, w: f64, h: f64, screen: (f64, f64)) -> (f64, f64) {
         (
             self.center.0 + (screen.0 - w / 2.0) / self.scale,
             self.center.1 + (screen.1 - h / 2.0) / self.scale,
@@ -226,7 +229,10 @@ pub fn home_view(w: f64, h: f64) -> ViewState {
         // Stay inside the macro range (< 4) so the polity overlays + capitals/
         // homeworlds are visible at Home regardless of window size.
         .clamp(MIN_SCALE, 3.5);
-    ViewState { scale, center: (0.0, 0.0) }
+    ViewState {
+        scale,
+        center: (0.0, 0.0),
+    }
 }
 
 pub fn visible_sectors(view: &ViewState, w: f64, h: f64) -> Vec<(i32, i32)> {
@@ -352,7 +358,9 @@ pub(crate) fn allegiance_border_color(a: &str) -> &'static str {
         "ImLa" | "ImSy" | "ImLc" | "ImAp" | "ImLu" | "ImVd" => "#0000ff",
         "SoCf" => "#ffa500",
         "SoNS" | "SoRD" | "SoWu" => "#0000ff",
-        "ZhCa" | "ZhCh" | "ZhCo" | "ZhIa" | "ZhIN" | "ZhJp" | "ZhMe" | "ZhOb" | "ZhSh" | "ZhVQ" => "#0000ff",
+        "ZhCa" | "ZhCh" | "ZhCo" | "ZhIa" | "ZhIN" | "ZhJp" | "ZhMe" | "ZhOb" | "ZhSh" | "ZhVQ" => {
+            "#0000ff"
+        }
         "AsXX" => "#ffff00",
         "HvFd" => "#800080",
         "KkTw" => "#008000",

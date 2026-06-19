@@ -71,7 +71,14 @@ fn is_anomaly(world: &World) -> bool {
 /// hex, standing in for the disc. Ported from the reference `placeholder` /
 /// `anomaly` style elements (`content`/font/color/position). Drawn whenever
 /// worlds are visible (the glyph replaces the dot at every detail tier).
-pub(crate) fn draw_placeholder_glyphs(canvas: &Canvas2d, view: &ViewState, w: f64, h: f64, sectors: &[&SectorData], theme: &Theme) {
+pub(crate) fn draw_placeholder_glyphs(
+    canvas: &Canvas2d,
+    view: &ViewState,
+    w: f64,
+    h: f64,
+    sectors: &[&SectorData],
+    theme: &Theme,
+) {
     let s = view.scale;
     // `*`/`⌖` are `WorldDetails.Type` glyphs — Atlas+ only. Below that (Dotmap
     // zoom) non-anomaly placeholders render as plain dots (`build_sector_dots`).
@@ -82,17 +89,27 @@ pub(crate) fn draw_placeholder_glyphs(canvas: &Canvas2d, view: &ViewState, w: f6
     let cs = s * CONTENT_SCALE;
     // Reference FontInfo sizes are 0.6 parsec (same convention as our other
     // glyph fonts, ~size·cs px).
-    let star_font = format!("{}px Georgia, 'Times New Roman', serif", (0.6 * cs).max(6.0) as i32);
-    let anomaly_font = format!("{}px 'Arial Unicode MS', 'Segoe UI Symbol', sans-serif", (0.6 * cs).max(6.0) as i32);
+    let star_font = format!(
+        "{}px Georgia, 'Times New Roman', serif",
+        (0.6 * cs).max(6.0) as i32
+    );
+    let anomaly_font = format!(
+        "{}px 'Arial Unicode MS', 'Segoe UI Symbol', sans-serif",
+        (0.6 * cs).max(6.0) as i32
+    );
     ctx.set_text_align("center");
     ctx.set_text_baseline("middle");
     for sector in sectors {
-        let Some(loc) = sector.info.location else { continue };
+        let Some(loc) = sector.info.location else {
+            continue;
+        };
         for world in &sector.worlds {
             if !is_placeholder(world) {
                 continue;
             }
-            let Some((col, row)) = parse_hex(&world.hex) else { continue };
+            let Some((col, row)) = parse_hex(&world.hex) else {
+                continue;
+            };
             let (wc, wr) = world_hex(loc.x, loc.y, col, row);
             let (x, y) = view.to_screen(w, h, hex_parsec(wc, wr));
             if !on_screen(x, y, w, h, cs) {
@@ -112,7 +129,12 @@ pub(crate) fn draw_placeholder_glyphs(canvas: &Canvas2d, view: &ViewState, w: f6
     }
 }
 
-fn build_sector_dots(sector: &SectorData, more_colors: bool, dotmap: bool, theme: &Theme) -> SectorDots {
+fn build_sector_dots(
+    sector: &SectorData,
+    more_colors: bool,
+    dotmap: bool,
+    theme: &Theme,
+) -> SectorDots {
     use std::f64::consts::{PI, TAU};
     let disc_r = disc_radius(dotmap);
     let mut discs: HashMap<String, Path2d> = HashMap::new();
@@ -120,7 +142,9 @@ fn build_sector_dots(sector: &SectorData, more_colors: bool, dotmap: bool, theme
     let mut zones: HashMap<String, Path2d> = HashMap::new();
     if let Some(loc) = sector.info.location {
         let add_circle = |map: &mut HashMap<String, Path2d>, color: &str, cx: f64, cy: f64| {
-            let p = map.entry(color.to_owned()).or_insert_with(|| Path2d::new().unwrap());
+            let p = map
+                .entry(color.to_owned())
+                .or_insert_with(|| Path2d::new().unwrap());
             p.move_to(cx + disc_r, cy);
             let _ = p.arc(cx, cy, disc_r, 0.0, TAU);
         };
@@ -133,21 +157,31 @@ fn build_sector_dots(sector: &SectorData, more_colors: bool, dotmap: bool, theme
             // field of an uncharted sector. Anomalies draw nothing until Atlas.
             if is_placeholder(world) {
                 if dotmap && !is_anomaly(world) {
-                    let Some((col, row)) = parse_hex(&world.hex) else { continue };
+                    let Some((col, row)) = parse_hex(&world.hex) else {
+                        continue;
+                    };
                     let (wc, wr) = world_hex(loc.x, loc.y, col, row);
                     let (cx, cy) = hex_parsec(wc, wr);
                     add_circle(&mut discs, theme.world_dry, cx, cy);
                 }
                 continue;
             }
-            let Some((col, row)) = parse_hex(&world.hex) else { continue };
+            let Some((col, row)) = parse_hex(&world.hex) else {
+                continue;
+            };
             let (wc, wr) = world_hex(loc.x, loc.y, col, row);
             let (cx, cy) = hex_parsec(wc, wr);
             // Travel zone: a single open-bottom arc behind the disc (amber/red).
-            let zc = match world.zone.as_str() { "A" => Some(theme.amber), "R" => Some(theme.red_zone), _ => None };
+            let zc = match world.zone.as_str() {
+                "A" => Some(theme.amber),
+                "R" => Some(theme.red_zone),
+                _ => None,
+            };
             if let Some(zc) = zc {
                 let (a0, a1) = (PI - 0.384, 2.0 * PI + 0.384);
-                let p = zones.entry(zc.to_owned()).or_insert_with(|| Path2d::new().unwrap());
+                let p = zones
+                    .entry(zc.to_owned())
+                    .or_insert_with(|| Path2d::new().unwrap());
                 p.move_to(cx + ZONE_R * a0.cos(), cy + ZONE_R * a0.sin());
                 let _ = p.arc(cx, cy, ZONE_R, a0, a1);
             }
@@ -170,7 +204,16 @@ fn build_sector_dots(sector: &SectorData, more_colors: bool, dotmap: bool, theme
 /// Dot-tier worlds (scale < `WORLD_BASIC_SCALE`): batched discs + zone rings
 /// from the per-sector cache, drawn under one view transform.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn draw_world_dots(canvas: &Canvas2d, view: &ViewState, w: f64, h: f64, dpr: f64, sectors: &[&SectorData], more_colors: bool, theme: &Theme) {
+pub(crate) fn draw_world_dots(
+    canvas: &Canvas2d,
+    view: &ViewState,
+    w: f64,
+    h: f64,
+    dpr: f64,
+    sectors: &[&SectorData],
+    more_colors: bool,
+    theme: &Theme,
+) {
     let s = view.scale;
     let dotmap = s < WORLD_BASIC_SCALE; // bigger discs when no per-world detail
     let mut discs: HashMap<String, Path2d> = HashMap::new();
@@ -178,17 +221,23 @@ pub(crate) fn draw_world_dots(canvas: &Canvas2d, view: &ViewState, w: f64, h: f6
     let mut zones: HashMap<String, Path2d> = HashMap::new();
     let merge = |dst: &mut HashMap<String, Path2d>, src: &[(String, Path2d)]| {
         for (c, p) in src {
-            dst.entry(c.clone()).or_insert_with(|| Path2d::new().unwrap()).add_path(p);
+            dst.entry(c.clone())
+                .or_insert_with(|| Path2d::new().unwrap())
+                .add_path(p);
         }
     };
     SECTOR_DOTS.with(|cache| {
         let mut cache = cache.borrow_mut();
         for sector in sectors {
-            let Some(loc) = sector.info.location else { continue };
+            let Some(loc) = sector.info.location else {
+                continue;
+            };
             if !sector_in_viewport((loc.x, loc.y), view, w, h) {
                 continue;
             }
-            let dots = cache.entry((loc.x, loc.y)).or_insert_with(|| build_sector_dots(sector, more_colors, dotmap, theme));
+            let dots = cache
+                .entry((loc.x, loc.y))
+                .or_insert_with(|| build_sector_dots(sector, more_colors, dotmap, theme));
             if dots.more_colors != more_colors || dots.dotmap != dotmap {
                 *dots = build_sector_dots(sector, more_colors, dotmap, theme); // tier/colors changed
             }
@@ -199,7 +248,10 @@ pub(crate) fn draw_world_dots(canvas: &Canvas2d, view: &ViewState, w: f64, h: f6
     });
     let ctx = &canvas.ctx;
     let a = dpr * s;
-    let (e, f) = (dpr * (w / 2.0 - view.center.0 * s), dpr * (h / 2.0 - view.center.1 * s));
+    let (e, f) = (
+        dpr * (w / 2.0 - view.center.0 * s),
+        dpr * (h / 2.0 - view.center.1 * s),
+    );
     let cs = s * CONTENT_SCALE;
     ctx.save();
     let _ = ctx.set_transform(a, 0.0, 0.0, a, e, f);
@@ -230,7 +282,14 @@ pub(crate) fn draw_world_dots(canvas: &Canvas2d, view: &ViewState, w: f64, h: f6
 /// on-screen worlds — instead of re-setting that state per glyph per world.
 /// Offsets and font sizes are in parsec units (× scale → px); `cs = s ·
 /// CONTENT_SCALE` sizes glyphs to fill the hex while layout offsets use true `s`.
-pub(crate) fn draw_world_glyphs(canvas: &Canvas2d, view: &ViewState, w: f64, h: f64, sectors: &[&SectorData], theme: &Theme) {
+pub(crate) fn draw_world_glyphs(
+    canvas: &Canvas2d,
+    view: &ViewState,
+    w: f64,
+    h: f64,
+    sectors: &[&SectorData],
+    theme: &Theme,
+) {
     let ctx = &canvas.ctx;
     let s = view.scale;
     let poster = s >= WORLD_FULL_SCALE; // poster vs atlas positions
@@ -238,8 +297,16 @@ pub(crate) fn draw_world_glyphs(canvas: &Canvas2d, view: &ViewState, w: f64, h: 
     let cs = s * CONTENT_SCALE;
 
     // Layout offsets (parsec), poster vs atlas (RenderContext / Stylesheet).
-    let (sp_y, uwp_y, name_y) = if poster { (-0.225, 0.225, 0.37) } else { (-0.24, 0.24, 0.40) };
-    let (gg_x, gg_y) = if poster { (0.25, -0.18) } else { (0.225, -0.125) };
+    let (sp_y, uwp_y, name_y) = if poster {
+        (-0.225, 0.225, 0.37)
+    } else {
+        (-0.24, 0.24, 0.40)
+    };
+    let (gg_x, gg_y) = if poster {
+        (0.25, -0.18)
+    } else {
+        (0.225, -0.125)
+    };
     let base_x = if poster { -0.25 } else { -0.225 };
     let zone_r = 0.4 * s; // (only used to size the off-screen cull margin)
 
@@ -256,16 +323,26 @@ pub(crate) fn draw_world_glyphs(canvas: &Canvas2d, view: &ViewState, w: f64, h: 
     let glyph_font = format!("{}px {ff}", glyph_pt.max(7.0) as i32);
     // Base slots (left side); bottom slot rises when the UWP needs the room.
     let base_top_y = if poster { -0.18 } else { -0.125 };
-    let base_bottom_y = if show_uwp { 0.1 } else if poster { 0.18 } else { 0.125 };
+    let base_bottom_y = if show_uwp {
+        0.1
+    } else if poster {
+        0.18
+    } else {
+        0.125
+    };
 
     let pad = zone_r + name_pt * 3.0 + 12.0;
 
     // Collect on-screen worlds once (screen coords), shared by every pass.
     let mut vis: Vec<(&World, f64, f64)> = Vec::new();
     for sector in sectors {
-        let Some(loc) = sector.info.location else { continue };
+        let Some(loc) = sector.info.location else {
+            continue;
+        };
         for world in &sector.worlds {
-            let Some((col, row)) = parse_hex(&world.hex) else { continue };
+            let Some((col, row)) = parse_hex(&world.hex) else {
+                continue;
+            };
             let (wc, wr) = world_hex(loc.x, loc.y, col, row);
             let (x, y) = view.to_screen(w, h, hex_parsec(wc, wr));
             if !on_screen(x, y, w, h, pad) {
@@ -309,7 +386,12 @@ pub(crate) fn draw_world_glyphs(canvas: &Canvas2d, view: &ViewState, w: f64, h: 
         let r = (0.05 * cs).max(1.0);
         let disc = Path2d::new().unwrap();
         let mut any = false;
-        let has_gg = |wld: &World| wld.pbg.as_bytes().get(2).is_some_and(|&b| b > b'0' && b != b'?');
+        let has_gg = |wld: &World| {
+            wld.pbg
+                .as_bytes()
+                .get(2)
+                .is_some_and(|&b| b > b'0' && b != b'?')
+        };
         for (world, x, y) in &vis {
             if has_gg(world) {
                 let (gx, gy) = (*x + gg_x * s, *y + gg_y * s);
@@ -328,7 +410,15 @@ pub(crate) fn draw_world_glyphs(canvas: &Canvas2d, view: &ViewState, w: f64, h: 
                     if has_gg(world) {
                         let (gx, gy) = (*x + gg_x * s, *y + gg_y * s);
                         ctx.begin_path();
-                        let _ = ctx.ellipse(gx, gy, r * 1.75, r * 0.4, -0.5236, 0.0, std::f64::consts::TAU);
+                        let _ = ctx.ellipse(
+                            gx,
+                            gy,
+                            r * 1.75,
+                            r * 0.4,
+                            -std::f64::consts::FRAC_PI_6,
+                            0.0,
+                            std::f64::consts::TAU,
+                        );
                         ctx.stroke();
                     }
                 }
@@ -339,34 +429,48 @@ pub(crate) fn draw_world_glyphs(canvas: &Canvas2d, view: &ViewState, w: f64, h: 
     // ── Bases (left side) as classic glyphs. Font/align set once; fill toggles
     // only between the text color and the highlight (highlight is sparse), so track
     // the last color. `hi` is the highlight color unless this theme drops highlights.
-    let hi = if theme.drop_highlight { theme.text } else { theme.highlight };
+    let hi = if theme.drop_highlight {
+        theme.text
+    } else {
+        theme.highlight
+    };
     if !theme.drop_bases {
-    ctx.set_font(&glyph_font);
-    ctx.set_text_align("center");
-    let mut last = "";
-    let bx = base_x * s;
-    for (world, x, y) in &vis {
-        let mut chars = world.bases.chars();
-        let mut bottom_used = false;
-        if let Some(c0) = chars.next() {
-            if let Some(g) = glyph::base_glyph(&world.allegiance, c0) {
-                bottom_used = g.bias == glyph::Bias::Bottom;
-                let col = if g.highlight { hi } else { theme.text };
-                if col != last { ctx.set_fill_style_str(col); last = col; }
-                let gy = if bottom_used { base_bottom_y } else { base_top_y } * s;
-                let _ = ctx.fill_text(g.chars, *x + bx, *y + gy);
+        ctx.set_font(&glyph_font);
+        ctx.set_text_align("center");
+        let mut last = "";
+        let bx = base_x * s;
+        for (world, x, y) in &vis {
+            let mut chars = world.bases.chars();
+            let mut bottom_used = false;
+            if let Some(c0) = chars.next() {
+                if let Some(g) = glyph::base_glyph(&world.allegiance, c0) {
+                    bottom_used = g.bias == glyph::Bias::Bottom;
+                    let col = if g.highlight { hi } else { theme.text };
+                    if col != last {
+                        ctx.set_fill_style_str(col);
+                        last = col;
+                    }
+                    let gy = if bottom_used {
+                        base_bottom_y
+                    } else {
+                        base_top_y
+                    } * s;
+                    let _ = ctx.fill_text(g.chars, *x + bx, *y + gy);
+                }
+            }
+            if let Some(c1) = chars.next() {
+                if let Some(g) = glyph::base_glyph(&world.allegiance, c1) {
+                    let bottom = !bottom_used;
+                    let col = if g.highlight { hi } else { theme.text };
+                    if col != last {
+                        ctx.set_fill_style_str(col);
+                        last = col;
+                    }
+                    let gy = if bottom { base_bottom_y } else { base_top_y } * s;
+                    let _ = ctx.fill_text(g.chars, *x + bx, *y + gy);
+                }
             }
         }
-        if let Some(c1) = chars.next() {
-            if let Some(g) = glyph::base_glyph(&world.allegiance, c1) {
-                let bottom = !bottom_used;
-                let col = if g.highlight { hi } else { theme.text };
-                if col != last { ctx.set_fill_style_str(col); last = col; }
-                let gy = if bottom { base_bottom_y } else { base_top_y } * s;
-                let _ = ctx.fill_text(g.chars, *x + bx, *y + gy);
-            }
-        }
-    }
     } // end !drop_bases
 
     // ── UWP (above name), only past the UWP scale threshold.
@@ -405,10 +509,25 @@ pub(crate) fn draw_world_glyphs(canvas: &Canvas2d, view: &ViewState, w: f64, h: 
     let mut last = "";
     let name_dy = name_y * s;
     for (world, x, y) in &vis {
-        let hi_pop = world.uwp.as_bytes().get(4).copied().and_then(ehex).is_some_and(|p| p >= 9);
-        let is_capital = world.codes().any(|c| matches!(c, "Cp" | "Cs" | "Cx" | "Capital"));
-        let col = if is_capital && !theme.drop_highlight { theme.capital } else { theme.text };
-        if col != last { ctx.set_fill_style_str(col); last = col; }
+        let hi_pop = world
+            .uwp
+            .as_bytes()
+            .get(4)
+            .copied()
+            .and_then(ehex)
+            .is_some_and(|p| p >= 9);
+        let is_capital = world
+            .codes()
+            .any(|c| matches!(c, "Cp" | "Cs" | "Cx" | "Capital"));
+        let col = if is_capital && !theme.drop_highlight {
+            theme.capital
+        } else {
+            theme.text
+        };
+        if col != last {
+            ctx.set_fill_style_str(col);
+            last = col;
+        }
         if hi_pop || theme.uppercase_worlds {
             let _ = ctx.fill_text(&world.name.to_uppercase(), *x, *y + name_dy);
         } else {
@@ -428,7 +547,11 @@ fn ehex(c: u8) -> Option<i32> {
 
 /// World disc (fill, optional outline), porting `Stylesheet.WorldColors`
 /// detail-color mode (color by trade classification).
-fn world_colors(world: &World, more_colors: bool, theme: &Theme) -> (&'static str, Option<&'static str>) {
+fn world_colors(
+    world: &World,
+    more_colors: bool,
+    theme: &Theme,
+) -> (&'static str, Option<&'static str>) {
     let has = |code: &str| world.codes().any(|c| c == code);
     let atmo = world.uwp.as_bytes().get(2).copied().and_then(ehex);
     let hydro = world.uwp.as_bytes().get(3).copied().and_then(ehex);

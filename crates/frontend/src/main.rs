@@ -131,8 +131,12 @@ fn open_print_html(html: &str) {
     parts.push(&wasm_bindgen::JsValue::from_str(html));
     let bag = web_sys::BlobPropertyBag::new();
     bag.set_type("text/html");
-    let Ok(blob) = web_sys::Blob::new_with_str_sequence_and_options(&parts, &bag) else { return };
-    let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob) else { return };
+    let Ok(blob) = web_sys::Blob::new_with_str_sequence_and_options(&parts, &bag) else {
+        return;
+    };
+    let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob) else {
+        return;
+    };
     let _ = win().open_with_url_and_target(&url, "_blank");
 }
 
@@ -166,9 +170,18 @@ enum ImgView {
     /// world/moon renders that body's surface map. `sector`/`hex` are the system's
     /// seed identity, threaded through so a per-body `/api/world` request can be
     /// built from the body's data-attributes.
-    System { svg: String, title: String, sector: String, hex: String },
+    System {
+        svg: String,
+        title: String,
+        sector: String,
+        hex: String,
+    },
     /// Render arrived — zoom/pan viewer over the PNG (world-surface map).
-    Ready { obj: String, svc: String, title: String },
+    Ready {
+        obj: String,
+        svc: String,
+        title: String,
+    },
     /// Render failed (unreachable service, or a 422 from a partial/placeholder UWP).
     Error { title: String, msg: String },
 }
@@ -198,7 +211,9 @@ fn blob_url_from_png(bytes: &[u8]) -> Option<String> {
 #[cfg(feature = "callisto")]
 fn download_url(url: &str, filename: &str) {
     let Some(doc) = win().document() else { return };
-    let Ok(a) = doc.create_element("a") else { return };
+    let Ok(a) = doc.create_element("a") else {
+        return;
+    };
     let _ = a.set_attribute("href", url);
     let _ = a.set_attribute("download", filename);
     if let Ok(a) = a.dyn_into::<web_sys::HtmlElement>() {
@@ -266,7 +281,9 @@ fn launch_render(
     sys_pan.set((0.0, 0.0));
     let gen = sys_gen.get_untracked().wrapping_add(1);
     sys_gen.set(gen);
-    system_view.set(Some(ImgView::Loading { title: title.clone() }));
+    system_view.set(Some(ImgView::Loading {
+        title: title.clone(),
+    }));
     sys_timer.set(Some(start_elapsed_timer(sys_elapsed)));
 
     spawn_local(async move {
@@ -282,13 +299,20 @@ fn launch_render(
         let state = match result {
             Ok(resp) if resp.ok() => match resp.binary().await {
                 Ok(bytes) => match blob_url_from_png(&bytes) {
-                    Some(obj) => ImgView::Ready { obj, svc: url, title },
+                    Some(obj) => ImgView::Ready {
+                        obj,
+                        svc: url,
+                        title,
+                    },
                     None => ImgView::Error {
                         title,
                         msg: "The service returned data that wasn't a PNG image.".into(),
                     },
                 },
-                Err(_) => ImgView::Error { title, msg: "Couldn't read the image data.".into() },
+                Err(_) => ImgView::Error {
+                    title,
+                    msg: "Couldn't read the image data.".into(),
+                },
             },
             // Non-2xx: surface the service's plain-text reason (422 = bad/partial UWP).
             Ok(resp) => {
@@ -301,7 +325,10 @@ fn launch_render(
                 };
                 ImgView::Error { title, msg }
             }
-            Err(_) => ImgView::Error { title, msg: "Couldn't reach the map service.".into() },
+            Err(_) => ImgView::Error {
+                title,
+                msg: "Couldn't reach the map service.".into(),
+            },
         };
         // Re-check generation after the await on the body, then apply.
         if sys_gen.get_untracked() == gen {
@@ -339,7 +366,9 @@ fn launch_svg(
     sys_pan.set((0.0, 0.0));
     let gen = sys_gen.get_untracked().wrapping_add(1);
     sys_gen.set(gen);
-    system_view.set(Some(ImgView::Loading { title: title.clone() }));
+    system_view.set(Some(ImgView::Loading {
+        title: title.clone(),
+    }));
     sys_timer.set(Some(start_elapsed_timer(sys_elapsed)));
 
     spawn_local(async move {
@@ -353,12 +382,20 @@ fn launch_svg(
         }
         let state = match result {
             Ok(resp) if resp.ok() => match resp.text().await {
-                Ok(svg) if svg.contains("<svg") => ImgView::System { svg, title, sector, hex },
+                Ok(svg) if svg.contains("<svg") => ImgView::System {
+                    svg,
+                    title,
+                    sector,
+                    hex,
+                },
                 Ok(_) => ImgView::Error {
                     title,
                     msg: "The service returned data that wasn't an SVG.".into(),
                 },
-                Err(_) => ImgView::Error { title, msg: "Couldn't read the system map.".into() },
+                Err(_) => ImgView::Error {
+                    title,
+                    msg: "Couldn't read the system map.".into(),
+                },
             },
             // Non-2xx: surface the service's plain-text reason (422 = bad/partial UWP).
             Ok(resp) => {
@@ -371,7 +408,10 @@ fn launch_svg(
                 };
                 ImgView::Error { title, msg }
             }
-            Err(_) => ImgView::Error { title, msg: "Couldn't reach the map service.".into() },
+            Err(_) => ImgView::Error {
+                title,
+                msg: "Couldn't reach the map service.".into(),
+            },
         };
         if sys_gen.get_untracked() == gen {
             system_view.set(Some(state));
@@ -386,7 +426,12 @@ fn system_svg_url(sector: &str, w: &World) -> String {
     let enc = |s: &str| String::from(js_sys::encode_uri_component(s));
     let mut url = format!(
         "{SYSTEM_SVG_SERVICE}?sector={}&hex={}&name={}&uwp={}&pbg={}&stellar={}",
-        enc(sector), enc(&w.hex), enc(&w.name), enc(&w.uwp), enc(&w.pbg), enc(&w.stellar),
+        enc(sector),
+        enc(&w.hex),
+        enc(&w.name),
+        enc(&w.uwp),
+        enc(&w.pbg),
+        enc(&w.stellar),
     );
     if let Some(n) = w.worlds {
         url.push_str(&format!("&worlds={n}"));
@@ -403,7 +448,10 @@ fn system_svg_url(sector: &str, w: &World) -> String {
 /// default), so a slow/old/unavailable service degrades gracefully.
 #[cfg(feature = "callisto")]
 async fn discover_main_orbit(sector: &str, w: &World) -> Option<String> {
-    let resp = gloo_net::http::Request::get(&system_svg_url(sector, w)).send().await.ok()?;
+    let resp = gloo_net::http::Request::get(&system_svg_url(sector, w))
+        .send()
+        .await
+        .ok()?;
     if !resp.ok() {
         return None;
     }
@@ -411,7 +459,9 @@ async fn discover_main_orbit(sector: &str, w: &World) -> Option<String> {
     // UWP has no XML metacharacters, so a raw substring match is exact.
     let needle = format!("data-uwp=\"{}\"", w.uwp);
     let group = svg.split("<g ").find(|g| {
-        g.split('>').next().is_some_and(|head| head.contains(&needle))
+        g.split('>')
+            .next()
+            .is_some_and(|head| head.contains(&needle))
     })?;
     let head = group.split('>').next()?;
     let after = head.split("data-orbit=\"").nth(1)?;
@@ -449,7 +499,9 @@ fn tooltip_text(g: &web_sys::Element) -> String {
     let detail = g
         .get_attribute("data-uwp")
         .or_else(|| g.get_attribute("data-spectral"))
-        .unwrap_or_else(|| kind_label(&g.get_attribute("data-kind").unwrap_or_default()).to_string());
+        .unwrap_or_else(|| {
+            kind_label(&g.get_attribute("data-kind").unwrap_or_default()).to_string()
+        });
     if name.is_empty() {
         detail
     } else {
@@ -459,9 +511,13 @@ fn tooltip_text(g: &web_sys::Element) -> String {
 
 /// Trigger a browser download of a canvas as a PNG (via a data-URL `<a download>`).
 fn download_canvas_png(canvas: &HtmlCanvasElement, filename: &str) {
-    let Ok(url) = canvas.to_data_url_with_type("image/png") else { return };
+    let Ok(url) = canvas.to_data_url_with_type("image/png") else {
+        return;
+    };
     let Some(doc) = win().document() else { return };
-    let Ok(a) = doc.create_element("a") else { return };
+    let Ok(a) = doc.create_element("a") else {
+        return;
+    };
     let _ = a.set_attribute("href", &url);
     let _ = a.set_attribute("download", filename);
     if let Ok(a) = a.dyn_into::<web_sys::HtmlElement>() {
@@ -471,7 +527,9 @@ fn download_canvas_png(canvas: &HtmlCanvasElement, filename: &str) {
 
 /// Open a print window for a canvas (PNG embedded in a minimal self-printing doc).
 fn print_canvas(canvas: &HtmlCanvasElement, title: &str) {
-    let Ok(url) = canvas.to_data_url_with_type("image/png") else { return };
+    let Ok(url) = canvas.to_data_url_with_type("image/png") else {
+        return;
+    };
     let html = format!(
         "<!DOCTYPE html><html><head><meta charset=utf-8><title>{title}</title>\
          <style>body{{margin:0;padding:24px;text-align:center;font:14px system-ui,sans-serif;color:#000;}}\
@@ -569,11 +627,19 @@ fn size_canvas(canvas: &HtmlCanvasElement) -> (u32, u32) {
     let w = win();
     let dpr = w.device_pixel_ratio();
     let cw = match canvas.client_width() {
-        0 => w.inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(1024.0),
+        0 => w
+            .inner_width()
+            .ok()
+            .and_then(|v| v.as_f64())
+            .unwrap_or(1024.0),
         n => n as f64,
     };
     let ch = match canvas.client_height() {
-        0 => w.inner_height().ok().and_then(|v| v.as_f64()).unwrap_or(768.0),
+        0 => w
+            .inner_height()
+            .ok()
+            .and_then(|v| v.as_f64())
+            .unwrap_or(768.0),
         n => n as f64,
     };
     let bw = ((cw * dpr).round() as u32).max(1);
@@ -770,7 +836,9 @@ fn App() -> impl IntoView {
     // dynamic left text (recomputes as you pan/zoom or sectors stream in).
     let footer_credit = Memo::new(move |_| {
         let _ = version.get();
-        let Some(v) = view.get() else { return String::new() };
+        let Some(v) = view.get() else {
+            return String::new();
+        };
         let wc = (v.center.0 / PARSEC_SCALE_X as f64).round() as i32;
         let wr = v.center.1.round() as i32;
         let cell = ((wc - 1).div_euclid(32), (wr - 1).div_euclid(40));
@@ -810,8 +878,8 @@ fn App() -> impl IntoView {
     let route_start = RwSignal::new(String::new());
     let route_end = RwSignal::new(String::new());
     let route_jump = RwSignal::new(0i32); // 0 = none chosen yet (a J-N pill picks it)
-    // Route-finding option toggles (the reference's `routeOptions` checkboxes);
-    // `/api/route` accepts each as a flag. Off by default.
+                                          // Route-finding option toggles (the reference's `routeOptions` checkboxes);
+                                          // `/api/route` accepts each as a flag. Off by default.
     let route_wild = RwSignal::new(false); // stops must have gas giant or water (wilderness refuel)
     let route_im = RwSignal::new(false); // stops must be Imperial member worlds
     let route_nored = RwSignal::new(false); // avoid TAS Red Zones
@@ -826,8 +894,7 @@ fn App() -> impl IntoView {
     // origin Coord, jump). The identity `(sector_coord, hex)` ties it to a
     // specific world so dismissing / re-selecting clears it; `jump` (1..=6) is
     // the active rating. Rendered into its own overlay canvas (jumpmap_ref).
-    let jumpmap =
-        RwSignal::new(None::<((i32, i32), String, tmap_core::astrometrics::Coord, i32)>);
+    let jumpmap = RwSignal::new(None::<((i32, i32), String, tmap_core::astrometrics::Coord, i32)>);
     let jumpmap_ref = NodeRef::<leptos::html::Canvas>::new();
     // Callisto (dev-only): the solar-system image popup for a double-clicked
     // world — `(object_url, service_url, title)`. The image is generated by the
@@ -889,7 +956,9 @@ fn App() -> impl IntoView {
     // cleared (panel close / empty-space click) or moves to a different world,
     // close a cutout that was pinned to the old one.
     Effect::new(move |_| {
-        let cur = selected.get().map(|s| (s.sector_coord, s.world.hex.clone()));
+        let cur = selected
+            .get()
+            .map(|s| (s.sector_coord, s.world.hex.clone()));
         jumpmap.update(|j| {
             if let Some((coord, hex, _, _)) = j {
                 if cur.as_ref() != Some(&(*coord, hex.clone())) {
@@ -905,9 +974,16 @@ fn App() -> impl IntoView {
     // no compass/dim/perf/sector-watermark, no computed route).
     Effect::new(move |_| {
         let _ = version.get(); // re-render as neighbor sectors stream in
-        let Some((_, _, origin, jump)) = jumpmap.get() else { return };
-        let Some(canvas_el) = jumpmap_ref.get() else { return };
-        let (cw, ch) = (canvas_el.client_width().max(1) as f64, canvas_el.client_height().max(1) as f64);
+        let Some((_, _, origin, jump)) = jumpmap.get() else {
+            return;
+        };
+        let Some(canvas_el) = jumpmap_ref.get() else {
+            return;
+        };
+        let (cw, ch) = (
+            canvas_el.client_width().max(1) as f64,
+            canvas_el.client_height().max(1) as f64,
+        );
         let dpr = win().device_pixel_ratio();
         canvas_el.set_width((cw * dpr).round().max(1.0) as u32);
         canvas_el.set_height((ch * dpr).round().max(1.0) as u32);
@@ -918,7 +994,10 @@ fn App() -> impl IntoView {
             region_names: false, // no subsector watermark / border labels in the cutout
             dim_unofficial: false,
             perf_hud: false,
-            jump_clip: Some(render::JumpClip { center: origin, jump }),
+            jump_clip: Some(render::JumpClip {
+                center: origin,
+                jump,
+            }),
             ..render::RenderOptions::default()
         };
         // The cutout spans a few sectors at most; draw from all loaded sectors
@@ -927,7 +1006,16 @@ fn App() -> impl IntoView {
             let refs: Vec<&SectorData> = loaded.values().collect();
             overlays.with_value(|ov| {
                 index.with_value(|idx| {
-                    render::draw(&canvas_el, &refs, ov.as_ref(), idx, v, opts, &render::Theme::from_name(&style.get()), None);
+                    render::draw(
+                        &canvas_el,
+                        &refs,
+                        ov.as_ref(),
+                        idx,
+                        v,
+                        opts,
+                        &render::Theme::from_name(&style.get()),
+                        None,
+                    );
                 });
             });
         });
@@ -945,7 +1033,9 @@ fn App() -> impl IntoView {
         }
     });
     let cb_ref = resize_cb.as_ref().unchecked_ref();
-    win().add_event_listener_with_callback("resize", cb_ref).ok();
+    win()
+        .add_event_listener_with_callback("resize", cb_ref)
+        .ok();
     // iOS Safari shows/hides its toolbar without reliably firing window "resize";
     // the visual-viewport "resize" does fire, so listen there too to keep the
     // backing buffer matched to the (dynamic) visible area — no stretch/clip.
@@ -957,26 +1047,27 @@ fn App() -> impl IntoView {
     // Esc dismisses the callisto solar-system popup (back to the map view).
     #[cfg(feature = "callisto")]
     {
-        let keydown_cb = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |ev: web_sys::KeyboardEvent| {
-            if ev.key() == "Escape" {
-                if let Some(view) = system_view.get_untracked() {
-                    if let ImgView::Ready { obj, .. } = &view {
-                        let _ = web_sys::Url::revoke_object_url(obj);
+        let keydown_cb =
+            Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |ev: web_sys::KeyboardEvent| {
+                if ev.key() == "Escape" {
+                    if let Some(view) = system_view.get_untracked() {
+                        if let ImgView::Ready { obj, .. } = &view {
+                            let _ = web_sys::Url::revoke_object_url(obj);
+                        }
+                        if let Some(id) = sys_timer.get_untracked() {
+                            win().clear_interval_with_handle(id);
+                            sys_timer.set(None);
+                        }
+                        if let Some(id) = sys_lp.get_untracked() {
+                            clear_timeout(id);
+                            sys_lp.set(None);
+                        }
+                        sys_tip.set(None);
+                        sys_gen.update(|g| *g = g.wrapping_add(1)); // invalidate any in-flight fetch
+                        system_view.set(None);
                     }
-                    if let Some(id) = sys_timer.get_untracked() {
-                        win().clear_interval_with_handle(id);
-                        sys_timer.set(None);
-                    }
-                    if let Some(id) = sys_lp.get_untracked() {
-                        clear_timeout(id);
-                        sys_lp.set(None);
-                    }
-                    sys_tip.set(None);
-                    sys_gen.update(|g| *g = g.wrapping_add(1)); // invalidate any in-flight fetch
-                    system_view.set(None);
                 }
-            }
-        });
+            });
         win()
             .add_event_listener_with_callback("keydown", keydown_cb.as_ref().unchecked_ref())
             .ok();
@@ -1015,11 +1106,19 @@ fn App() -> impl IntoView {
                         .sectors
                         .into_iter()
                         .map(|s| {
-                            let name = s.names.into_iter().next().map(|n| n.text).unwrap_or_default();
+                            let name = s
+                                .names
+                                .into_iter()
+                                .next()
+                                .map(|n| n.text)
+                                .unwrap_or_default();
                             ((s.x, s.y), name)
                         })
                         .collect();
-                    set_status.set(format!("{m} — {} sectors · drag to pan, scroll to zoom", map.len()));
+                    set_status.set(format!(
+                        "{m} — {} sectors · drag to pan, scroll to zoom",
+                        map.len()
+                    ));
                     index.set_value(map);
                     set_index_ready.set(true);
                     set_version.update(|v| *v += 1); // redraw so sector names show
@@ -1166,7 +1265,16 @@ fn App() -> impl IntoView {
             overlays.with_value(|ov| {
                 index.with_value(|idx| {
                     route.with(|r| {
-                        render::draw(&canvas_el, &refs, ov.as_ref(), idx, v, opts, &render::Theme::from_name(&style.get()), r.as_ref());
+                        render::draw(
+                            &canvas_el,
+                            &refs,
+                            ov.as_ref(),
+                            idx,
+                            v,
+                            opts,
+                            &render::Theme::from_name(&style.get()),
+                            r.as_ref(),
+                        );
                     });
                 });
             });
@@ -1186,9 +1294,13 @@ fn App() -> impl IntoView {
     // meaningful once worlds are individually drawn (detail zoom).
     #[cfg(feature = "callisto")]
     let world_under_cursor = move |px: (f64, f64)| -> bool {
-        let Some(cv) = canvas_ref.get_untracked() else { return false };
+        let Some(cv) = canvas_ref.get_untracked() else {
+            return false;
+        };
         let (w, h) = logical_dims(&cv);
-        let Some(v) = view.get_untracked() else { return false };
+        let Some(v) = view.get_untracked() else {
+            return false;
+        };
         if v.scale < render::WORLD_MIN_SCALE {
             return false;
         }
@@ -1202,7 +1314,9 @@ fn App() -> impl IntoView {
                 let Some(s) = loaded.get(&sc) else { continue };
                 let Some(loc) = s.info.location else { continue };
                 for wld in &s.worlds {
-                    let Some((col, row)) = parse_hex(&wld.hex) else { continue };
+                    let Some((col, row)) = parse_hex(&wld.hex) else {
+                        continue;
+                    };
                     let (wx, wy) = render::sector_hex_parsec(loc.x, loc.y, col, row);
                     if (wx - target.0).powi(2) + (wy - target.1).powi(2) <= R2 {
                         over = true;
@@ -1219,35 +1333,44 @@ fn App() -> impl IntoView {
             drag.set(Some((x, y)));
             if let Some(v) = view.get_untracked() {
                 set_view.set(Some(ViewState {
-                    center: (v.center.0 - (x - lx) / v.scale, v.center.1 - (y - ly) / v.scale),
+                    center: (
+                        v.center.0 - (x - lx) / v.scale,
+                        v.center.1 - (y - ly) / v.scale,
+                    ),
                     ..v
                 }));
             }
-            return;
-        }
-        // Not dragging: track whether we're over a world so the cursor can hint
-        // clickability (callisto only — the double-click solar-system feature).
-        #[cfg(feature = "callisto")]
-        {
-            let over = world_under_cursor((x, y));
-            if hover_world.get_untracked() != over {
-                hover_world.set(over);
+        } else {
+            // Not dragging: track whether we're over a world so the cursor can hint
+            // clickability (callisto only — the double-click solar-system feature).
+            #[cfg(feature = "callisto")]
+            {
+                let over = world_under_cursor((x, y));
+                if hover_world.get_untracked() != over {
+                    hover_world.set(over);
+                }
             }
         }
     };
     // Click-to-set: hit-test a canvas click to the nearest loaded world (within
     // ~1 hex) and fill the next empty endpoint field (start, then destination).
     let fill_endpoint = move |px: (f64, f64)| {
-        let Some(cv) = canvas_ref.get_untracked() else { return };
+        let Some(cv) = canvas_ref.get_untracked() else {
+            return;
+        };
         let (w, h) = logical_dims(&cv);
-        let Some(v) = view.get_untracked() else { return };
+        let Some(v) = view.get_untracked() else {
+            return;
+        };
         let target = v.to_parsec(w, h, px);
         let mut best: Option<(f64, String)> = None;
         sectors.with_value(|loaded| {
             for s in loaded.values() {
                 let Some(loc) = s.info.location else { continue };
                 for wld in &s.worlds {
-                    let Some((col, row)) = parse_hex(&wld.hex) else { continue };
+                    let Some((col, row)) = parse_hex(&wld.hex) else {
+                        continue;
+                    };
                     let (wx, wy) = render::sector_hex_parsec(loc.x, loc.y, col, row);
                     let d = (wx - target.0).powi(2) + (wy - target.1).powi(2);
                     if d < best.as_ref().map_or(f64::MAX, |(bd, _)| *bd) {
@@ -1279,42 +1402,65 @@ fn App() -> impl IntoView {
     // the whole `World` (+ sector context), then fetches the sector at `?lod=full`
     // on demand to fill in the stellar/Ix/Ex/Cx/… fields the overview LOD omits.
     let select_world = move |px: (f64, f64)| {
-        let Some(cv) = canvas_ref.get_untracked() else { return };
+        let Some(cv) = canvas_ref.get_untracked() else {
+            return;
+        };
         let (w, h) = logical_dims(&cv);
-        let Some(v) = view.get_untracked() else { return };
+        let Some(v) = view.get_untracked() else {
+            return;
+        };
         let target = v.to_parsec(w, h, px);
-        // (dist², world, sector name, sector coord, subsector name)
-        let mut best: Option<(f64, World, String, (i32, i32), String)> = None;
+        // Nearest loaded world to the click, with the sector context the panel needs.
+        struct WorldHit {
+            dist2: f64,
+            world: World,
+            sector_name: String,
+            sector_coord: (i32, i32),
+            subsector: String,
+        }
+        let mut best: Option<WorldHit> = None;
         sectors.with_value(|loaded| {
             for s in loaded.values() {
                 let Some(loc) = s.info.location else { continue };
                 for wld in &s.worlds {
-                    let Some((col, row)) = parse_hex(&wld.hex) else { continue };
+                    let Some((col, row)) = parse_hex(&wld.hex) else {
+                        continue;
+                    };
                     let (wx, wy) = render::sector_hex_parsec(loc.x, loc.y, col, row);
                     let d = (wx - target.0).powi(2) + (wy - target.1).powi(2);
-                    if d < best.as_ref().map_or(f64::MAX, |b| b.0) {
+                    if d < best.as_ref().map_or(f64::MAX, |b| b.dist2) {
                         let letter = subsector_letter(col, row);
                         let sub = s
                             .info
                             .subsectors
                             .iter()
-                            .find(|ss| ss.index.chars().next() == Some(letter))
+                            .find(|ss| ss.index.starts_with(letter))
                             .map(|ss| ss.name.clone())
                             .unwrap_or_else(|| format!("Subsector {letter}"));
-                        best = Some((d, wld.clone(), s.info.name.clone(), (loc.x, loc.y), sub));
+                        best = Some(WorldHit {
+                            dist2: d,
+                            world: wld.clone(),
+                            sector_name: s.info.name.clone(),
+                            sector_coord: (loc.x, loc.y),
+                            subsector: sub,
+                        });
                     }
                 }
             }
         });
-        let Some((d, world, sector_name, sector_coord, subsector)) = best else { return };
+        let Some(WorldHit { dist2: d, world, sector_name, sector_coord, subsector }) = best else {
+            return;
+        };
         if d > 0.9 * 0.9 {
             selected.set(None); // clicked empty space → dismiss the panel
             return;
         }
         let hex = world.hex.clone();
         // If we already have the full sector cached, upgrade the world up front.
-        let full_world = full_sectors
-            .with_value(|fs| fs.get(&sector_coord).and_then(|s| s.worlds.iter().find(|w| w.hex == hex).cloned()));
+        let full_world = full_sectors.with_value(|fs| {
+            fs.get(&sector_coord)
+                .and_then(|s| s.worlds.iter().find(|w| w.hex == hex).cloned())
+        });
         let already_full = full_world.is_some();
         selected.set(Some(SelectedWorld {
             world: full_world.unwrap_or(world),
@@ -1332,7 +1478,9 @@ fn App() -> impl IntoView {
         let m = milieu.get_untracked();
         spawn_local(async move {
             let url = format!("/api/sector/{m}/{encoded}?lod=full");
-            let Ok(full) = fetch_json::<SectorData>(&url).await else { return };
+            let Ok(full) = fetch_json::<SectorData>(&url).await else {
+                return;
+            };
             if milieu.get_untracked() != m {
                 return; // milieu switched mid-fetch — drop stale full data
             }
@@ -1380,11 +1528,23 @@ fn App() -> impl IntoView {
     #[cfg(feature = "callisto")]
     let launch_system = move |sector_name: &str, w: &World| {
         let url = system_svg_url(sector_name, w);
-        let name = if w.name.is_empty() { w.hex.clone() } else { w.name.clone() };
+        let name = if w.name.is_empty() {
+            w.hex.clone()
+        } else {
+            w.name.clone()
+        };
         let title = format!("{name} — {} {}", sector_name, w.hex);
         launch_svg(
-            system_view, sys_zoom, sys_pan, sys_elapsed, sys_timer, sys_gen,
-            url, title, sector_name.to_string(), w.hex.clone(),
+            system_view,
+            sys_zoom,
+            sys_pan,
+            sys_elapsed,
+            sys_timer,
+            sys_gen,
+            url,
+            title,
+            sector_name.to_string(),
+            w.hex.clone(),
         );
     };
     // Render one body's surface map (`/api/world`) from the data-attributes the
@@ -1398,7 +1558,10 @@ fn App() -> impl IntoView {
             let enc = |s: &str| String::from(js_sys::encode_uri_component(s));
             let mut url = format!(
                 "{WORLD_SERVICE}?sector={}&hex={}&name={}&uwp={}&scale=2.0",
-                enc(sector), enc(hex), enc(name), enc(uwp),
+                enc(sector),
+                enc(hex),
+                enc(name),
+                enc(uwp),
             );
             if let Some(o) = orbit.filter(|o| !o.is_empty()) {
                 url.push_str(&format!("&orbit={}", enc(&o)));
@@ -1410,7 +1573,14 @@ fn App() -> impl IntoView {
                 sys_lp.set(None);
             }
             launch_render(
-                system_view, sys_zoom, sys_pan, sys_elapsed, sys_timer, sys_gen, url, title,
+                system_view,
+                sys_zoom,
+                sys_pan,
+                sys_elapsed,
+                sys_timer,
+                sys_gen,
+                url,
+                title,
             );
         };
     // Double-click a world → solar-system popup (Callisto, dev-only). The
@@ -1421,7 +1591,9 @@ fn App() -> impl IntoView {
         if route_open.get_untracked() {
             return; // route-planning mode owns clicks
         }
-        let Some(sw) = selected.get_untracked() else { return };
+        let Some(sw) = selected.get_untracked() else {
+            return;
+        };
         launch_system(&sw.sector_name, &sw.world);
     };
     #[cfg(not(feature = "callisto"))]
@@ -1436,10 +1608,16 @@ fn App() -> impl IntoView {
     // the spinner covers both it and the (slower) surface render.
     #[cfg(feature = "callisto")]
     let on_world_map = move |()| {
-        let Some(sw) = selected.get_untracked() else { return };
+        let Some(sw) = selected.get_untracked() else {
+            return;
+        };
         let w = sw.world.clone();
         let sector = sw.sector_name.clone();
-        let name = if w.name.is_empty() { w.hex.clone() } else { w.name.clone() };
+        let name = if w.name.is_empty() {
+            w.hex.clone()
+        } else {
+            w.name.clone()
+        };
         let title = format!("{name} — {sector} {} · World Map", w.hex);
         // Spinner immediately (covers the orbit probe), with a fresh generation that a
         // close/supersede can invalidate before we kick the actual world render.
@@ -1448,7 +1626,9 @@ fn App() -> impl IntoView {
         }
         let gen = sys_gen.get_untracked().wrapping_add(1);
         sys_gen.set(gen);
-        system_view.set(Some(ImgView::Loading { title: title.clone() }));
+        system_view.set(Some(ImgView::Loading {
+            title: title.clone(),
+        }));
         sys_timer.set(Some(start_elapsed_timer(sys_elapsed)));
         spawn_local(async move {
             let orbit = discover_main_orbit(&sector, &w).await;
@@ -1458,7 +1638,10 @@ fn App() -> impl IntoView {
             let enc = |s: &str| String::from(js_sys::encode_uri_component(s));
             let mut url = format!(
                 "{WORLD_SERVICE}?sector={}&hex={}&name={}&uwp={}&scale=2.0",
-                enc(&sector), enc(&w.hex), enc(&name), enc(&w.uwp),
+                enc(&sector),
+                enc(&w.hex),
+                enc(&name),
+                enc(&w.uwp),
             );
             if let Some(o) = orbit.filter(|o| !o.is_empty()) {
                 url.push_str(&format!("&orbit={}", enc(&o)));
@@ -1466,7 +1649,14 @@ fn App() -> impl IntoView {
             // launch_render restarts the spinner/timer under a new generation and
             // swaps to the image (or error) when the render lands.
             launch_render(
-                system_view, sys_zoom, sys_pan, sys_elapsed, sys_timer, sys_gen, url, title,
+                system_view,
+                sys_zoom,
+                sys_pan,
+                sys_elapsed,
+                sys_timer,
+                sys_gen,
+                url,
+                title,
             );
         });
     };
@@ -1485,7 +1675,9 @@ fn App() -> impl IntoView {
             return; // route-planning mode owns taps
         }
         select_world(px); // opens the panel + (if needed) starts the full fetch
-        let Some(sw) = selected.get_untracked() else { return };
+        let Some(sw) = selected.get_untracked() else {
+            return;
+        };
         if sw.full {
             launch_system(&sw.sector_name, &sw.world);
             return;
@@ -1500,11 +1692,15 @@ fn App() -> impl IntoView {
         let m = milieu.get_untracked();
         spawn_local(async move {
             let url = format!("/api/sector/{m}/{encoded}?lod=full");
-            let Ok(full) = fetch_json::<SectorData>(&url).await else { return };
+            let Ok(full) = fetch_json::<SectorData>(&url).await else {
+                return;
+            };
             if milieu.get_untracked() != m {
                 return; // milieu switched mid-fetch
             }
-            let Some(fw) = full.worlds.iter().find(|w| w.hex == hex).cloned() else { return };
+            let Some(fw) = full.worlds.iter().find(|w| w.hex == hex).cloned() else {
+                return;
+            };
             full_sectors.update_value(|fs| {
                 fs.insert(sector_coord, full);
             });
@@ -1522,7 +1718,9 @@ fn App() -> impl IntoView {
         let encoded = String::from(js_sys::encode_uri_component(&q));
         let m = milieu.get_untracked();
         spawn_local(async move {
-            if let Ok(r) = fetch_json::<SearchResults>(&format!("/api/search?q={encoded}&milieu={m}")).await {
+            if let Ok(r) =
+                fetch_json::<SearchResults>(&format!("/api/search?q={encoded}&milieu={m}")).await
+            {
                 set_results.set(r.results.items.into_iter().map(Hit::from_item).collect());
             }
         });
@@ -1571,7 +1769,10 @@ fn App() -> impl IntoView {
     // Seed (or re-seed) the gesture from whatever fingers are down. Used on
     // touchstart and after a finger lifts, so a pinch→pan handoff doesn't jump.
     let seed_touch = move |pts: &[(f64, f64)]| match *pts {
-        [a, b, ..] => touch.set(Some(TouchGesture::Two { dist: pt_dist(a, b), mid: pt_mid(a, b) })),
+        [a, b, ..] => touch.set(Some(TouchGesture::Two {
+            dist: pt_dist(a, b),
+            mid: pt_mid(a, b),
+        })),
         [a] => touch.set(Some(TouchGesture::One { last: a })),
         _ => touch.set(None),
     };
@@ -1600,9 +1801,13 @@ fn App() -> impl IntoView {
         seed_touch(&touch_points(&ev));
     };
     let on_touch_move = move |ev: web_sys::TouchEvent| {
-        let Some(canvas_el) = canvas_ref.get_untracked() else { return };
+        let Some(canvas_el) = canvas_ref.get_untracked() else {
+            return;
+        };
         let (w, h) = logical_dims(&canvas_el);
-        let Some(v) = view.get_untracked() else { return };
+        let Some(v) = view.get_untracked() else {
+            return;
+        };
         match *touch_points(&ev).as_slice() {
             // Two fingers: pan + zoom together — the parsec point under the prior
             // midpoint is moved under the current one, scaled by the pinch ratio.
@@ -1610,7 +1815,11 @@ fn App() -> impl IntoView {
                 #[cfg(feature = "callisto")]
                 cancel_long_press(); // a second finger means pinch, not long-press
                 let (cur_d, cur_m) = (pt_dist(a, b), pt_mid(a, b));
-                if let Some(TouchGesture::Two { dist: prev_d, mid: prev_m }) = touch.get_untracked() {
+                if let Some(TouchGesture::Two {
+                    dist: prev_d,
+                    mid: prev_m,
+                }) = touch.get_untracked()
+                {
                     if prev_d > 0.0 {
                         let scale =
                             (v.scale * cur_d / prev_d).clamp(render::MIN_SCALE, render::MAX_SCALE);
@@ -1622,7 +1831,10 @@ fn App() -> impl IntoView {
                         set_view.set(Some(ViewState { scale, center }));
                     }
                 }
-                touch.set(Some(TouchGesture::Two { dist: cur_d, mid: cur_m }));
+                touch.set(Some(TouchGesture::Two {
+                    dist: cur_d,
+                    mid: cur_m,
+                }));
             }
             // One finger: drag-pan (mirrors the mouse `on_move` drag branch).
             [a] => {
@@ -1653,7 +1865,8 @@ fn App() -> impl IntoView {
         route_jump.set(j);
         let (s, e) = (route_start.get_untracked(), route_end.get_untracked());
         if s.trim().is_empty() || e.trim().is_empty() {
-            set_route_status.set("Set start & destination — type a world name or click the map.".into());
+            set_route_status
+                .set("Set start & destination — type a world name or click the map.".into());
             return;
         }
         set_route_status.set("Computing route…".into());
@@ -1749,7 +1962,10 @@ fn App() -> impl IntoView {
     // Print just the route: open a window with a formatted route sheet (mirrors
     // the reference print/route.html) and let it print itself.
     let do_print = move |_: web_sys::MouseEvent| {
-        let html = route.with(|r| r.as_ref().map(|r| route_print::build_route_print_html(r, route_jump.get_untracked())));
+        let html = route.with(|r| {
+            r.as_ref()
+                .map(|r| route_print::build_route_print_html(r, route_jump.get_untracked()))
+        });
         if let Some(html) = html {
             open_print_html(&html);
         }
@@ -1804,7 +2020,10 @@ fn App() -> impl IntoView {
             .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
             .map(|el| {
                 let r = el.get_bounding_client_rect();
-                (ev.client_x() as f64 - (r.x() + r.width() / 2.0), ev.client_y() as f64 - (r.y() + r.height() / 2.0))
+                (
+                    ev.client_x() as f64 - (r.x() + r.width() / 2.0),
+                    ev.client_y() as f64 - (r.y() + r.height() / 2.0),
+                )
             })
             .unwrap_or((0.0, 0.0));
         if nz <= 1.0 + 1e-6 {
@@ -1824,7 +2043,10 @@ fn App() -> impl IntoView {
     #[cfg(feature = "callisto")]
     let on_sys_move = move |ev: web_sys::MouseEvent| {
         if let Some((sx, sy, opx, opy)) = sys_drag.get_untracked() {
-            sys_pan.set((opx + ev.client_x() as f64 - sx, opy + ev.client_y() as f64 - sy));
+            sys_pan.set((
+                opx + ev.client_x() as f64 - sx,
+                opy + ev.client_y() as f64 - sy,
+            ));
         }
     };
     #[cfg(feature = "callisto")]
@@ -1837,12 +2059,13 @@ fn App() -> impl IntoView {
     // no-op for the PNG viewer (it has no tooltip/long-press) and the right thing for the
     // SVG viewer.
     #[cfg(feature = "callisto")]
-    let sys_touch_seed = move |ev: &web_sys::TouchEvent| {
-        match *touch_points(ev).as_slice() {
-            [a, b, ..] => sys_touch.set(Some(TouchGesture::Two { dist: pt_dist(a, b), mid: pt_mid(a, b) })),
-            [a] => sys_touch.set(Some(TouchGesture::One { last: a })),
-            _ => sys_touch.set(None),
-        }
+    let sys_touch_seed = move |ev: &web_sys::TouchEvent| match *touch_points(ev).as_slice() {
+        [a, b, ..] => sys_touch.set(Some(TouchGesture::Two {
+            dist: pt_dist(a, b),
+            mid: pt_mid(a, b),
+        })),
+        [a] => sys_touch.set(Some(TouchGesture::One { last: a })),
+        _ => sys_touch.set(None),
     };
     #[cfg(feature = "callisto")]
     let sys_touch_move = move |ev: web_sys::TouchEvent| {
@@ -1852,7 +2075,10 @@ fn App() -> impl IntoView {
             (Some(TouchGesture::One { last }), [a]) => {
                 let (dx, dy) = (a.0 - last.0, a.1 - last.1);
                 if dx.abs() > 6.0 || dy.abs() > 6.0 {
-                    if let Some(id) = sys_lp.get_untracked() { clear_timeout(id); sys_lp.set(None); }
+                    if let Some(id) = sys_lp.get_untracked() {
+                        clear_timeout(id);
+                        sys_lp.set(None);
+                    }
                     sys_tip.set(None);
                 }
                 let (px, py) = sys_pan.get_untracked();
@@ -1860,11 +2086,18 @@ fn App() -> impl IntoView {
                 sys_touch.set(Some(TouchGesture::One { last: *a }));
             }
             (Some(TouchGesture::Two { dist, mid }), [a, b]) => {
-                if let Some(id) = sys_lp.get_untracked() { clear_timeout(id); sys_lp.set(None); }
+                if let Some(id) = sys_lp.get_untracked() {
+                    clear_timeout(id);
+                    sys_lp.set(None);
+                }
                 sys_tip.set(None);
-                let center = ev.current_target()
+                let center = ev
+                    .current_target()
                     .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-                    .map(|el| { let r = el.get_bounding_client_rect(); (r.x() + r.width() / 2.0, r.y() + r.height() / 2.0) })
+                    .map(|el| {
+                        let r = el.get_bounding_client_rect();
+                        (r.x() + r.width() / 2.0, r.y() + r.height() / 2.0)
+                    })
                     .unwrap_or((0.0, 0.0));
                 let nd = pt_dist(*a, *b);
                 let nm = pt_mid(*a, *b);
@@ -1876,7 +2109,11 @@ fn App() -> impl IntoView {
                 let (px, py) = sys_pan.get_untracked();
                 let npx = mx - nz * (mx - (px + mx - omx)) / z;
                 let npy = my - nz * (my - (py + my - omy)) / z;
-                if nz <= 1.0 + 1e-6 { sys_pan.set((0.0, 0.0)); } else { sys_pan.set((npx, npy)); }
+                if nz <= 1.0 + 1e-6 {
+                    sys_pan.set((0.0, 0.0));
+                } else {
+                    sys_pan.set((npx, npy));
+                }
                 sys_zoom.set(nz);
                 sys_touch.set(Some(TouchGesture::Two { dist: nd, mid: nm }));
             }

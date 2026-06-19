@@ -233,7 +233,11 @@ fn xml_border(o: &mut String, tag: &str, b: &MetaBorder) {
     if let Some(a) = &b.allegiance {
         xml_attr(o, "Allegiance", a);
     }
-    xml_attr(o, "LabelPosition", &label_position(b.label_position.clone(), &b.hexes));
+    xml_attr(
+        o,
+        "LabelPosition",
+        &label_position(b.label_position.clone(), &b.hexes),
+    );
     if b.label_offset_x != 0.0 {
         xml_attr(o, "LabelOffsetX", &b.label_offset_x.to_string());
     }
@@ -392,7 +396,10 @@ impl Serialize for MetaBorder {
         if let Some(a) = &self.allegiance {
             m.serialize_entry("Allegiance", a)?;
         }
-        m.serialize_entry("LabelPosition", &label_position(self.label_position.clone(), &self.hexes))?;
+        m.serialize_entry(
+            "LabelPosition",
+            &label_position(self.label_position.clone(), &self.hexes),
+        )?;
         if self.label_offset_x != 0.0 {
             m.serialize_entry("LabelOffsetX", &self.label_offset_x)?;
         }
@@ -450,7 +457,9 @@ pub struct MetaLabel {
 }
 
 fn attr(node: roxmltree::Node, name: &str) -> Option<String> {
-    node.attribute(name).map(|s| s.trim().to_owned()).filter(|s| !s.is_empty())
+    node.attribute(name)
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
 }
 
 /// `LabelPosition` for a border: the explicit attribute, else the bounding-box
@@ -463,9 +472,17 @@ fn label_position(explicit: Option<String>, hexes: &[String]) -> String {
     if coords.is_empty() {
         return "0000".to_string();
     }
-    let (min_x, max_x) = coords.iter().fold((i32::MAX, i32::MIN), |(a, b), &(x, _)| (a.min(x), b.max(x)));
-    let (min_y, max_y) = coords.iter().fold((i32::MAX, i32::MIN), |(a, b), &(_, y)| (a.min(y), b.max(y)));
-    format!("{:02}{:02}", (min_x + max_x + 1) / 2, (min_y + max_y + 1) / 2)
+    let (min_x, max_x) = coords
+        .iter()
+        .fold((i32::MAX, i32::MIN), |(a, b), &(x, _)| (a.min(x), b.max(x)));
+    let (min_y, max_y) = coords
+        .iter()
+        .fold((i32::MAX, i32::MIN), |(a, b), &(_, y)| (a.min(y), b.max(y)));
+    format!(
+        "{:02}{:02}",
+        (min_x + max_x + 1) / 2,
+        (min_y + max_y + 1) / 2
+    )
 }
 
 fn parse_border(node: roxmltree::Node, seq: usize) -> MetaBorder {
@@ -479,13 +496,20 @@ fn parse_border(node: roxmltree::Node, seq: usize) -> MetaBorder {
         .map(str::to_owned)
         .collect();
     MetaBorder {
-        show_label: node.attribute("ShowLabel").map(|v| v != "False" && v != "false").unwrap_or(true),
+        show_label: node
+            .attribute("ShowLabel")
+            .map(|v| v != "False" && v != "false")
+            .unwrap_or(true),
         wrap_label: matches!(node.attribute("WrapLabel"), Some("True") | Some("true")),
         color: attr(node, "Color"),
         allegiance: attr(node, "Allegiance"),
         label_position: attr(node, "LabelPosition"),
-        label_offset_x: attr(node, "LabelOffsetX").and_then(|s| s.parse().ok()).unwrap_or(0.0),
-        label_offset_y: attr(node, "LabelOffsetY").and_then(|s| s.parse().ok()).unwrap_or(0.0),
+        label_offset_x: attr(node, "LabelOffsetX")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0),
+        label_offset_y: attr(node, "LabelOffsetY")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0),
         label: attr(node, "Label"),
         hexes,
         seq,
@@ -518,7 +542,11 @@ pub fn parse_sector_metadata(xml: &str) -> SectorMetadata {
             // source. Restricted to children of the root so it can't pick up an
             // unrelated nested `Name` element.
             "Name" if n.parent().is_some_and(|p| p.has_tag_name("Sector")) => {
-                if let Some(text) = n.text().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()) {
+                if let Some(text) = n
+                    .text()
+                    .map(|s| s.trim().to_owned())
+                    .filter(|s| !s.is_empty())
+                {
                     meta.names.push(SectorName {
                         text,
                         lang: attr(n, "Lang"),
@@ -527,9 +555,22 @@ pub fn parse_sector_metadata(xml: &str) -> SectorMetadata {
                 }
             }
             "Subsector" => {
-                if let (Some(index), Some(name)) = (attr(n, "Index"), n.text().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty())) {
-                    let index_number = index.chars().next().map(|c| (c.to_ascii_uppercase() as i32) - ('A' as i32)).unwrap_or(0);
-                    meta.subsectors.push(MetaSubsector { name, index, index_number });
+                if let (Some(index), Some(name)) = (
+                    attr(n, "Index"),
+                    n.text()
+                        .map(|s| s.trim().to_owned())
+                        .filter(|s| !s.is_empty()),
+                ) {
+                    let index_number = index
+                        .chars()
+                        .next()
+                        .map(|c| (c.to_ascii_uppercase() as i32) - ('A' as i32))
+                        .unwrap_or(0);
+                    meta.subsectors.push(MetaSubsector {
+                        name,
+                        index,
+                        index_number,
+                    });
                 }
             }
             "Product" => meta.products.push(Product {
@@ -542,7 +583,11 @@ pub fn parse_sector_metadata(xml: &str) -> SectorMetadata {
                 meta.stylesheet = n.text().map(str::to_owned).filter(|s| !s.trim().is_empty());
             }
             "Credits" => {
-                let text: String = n.descendants().filter(|d| d.is_text()).filter_map(|d| d.text()).collect();
+                let text: String = n
+                    .descendants()
+                    .filter(|d| d.is_text())
+                    .filter_map(|d| d.text())
+                    .collect();
                 let trimmed = text.trim();
                 if !trimmed.is_empty() {
                     meta.credits_text = Some(trimmed.to_owned());
@@ -559,10 +604,18 @@ pub fn parse_sector_metadata(xml: &str) -> SectorMetadata {
             "Route" => meta.routes.push(MetaRoute {
                 start: attr(n, "Start").unwrap_or_default(),
                 end: attr(n, "End").unwrap_or_default(),
-                start_offset_x: attr(n, "StartOffsetX").and_then(|s| s.parse().ok()).unwrap_or(0),
-                start_offset_y: attr(n, "StartOffsetY").and_then(|s| s.parse().ok()).unwrap_or(0),
-                end_offset_x: attr(n, "EndOffsetX").and_then(|s| s.parse().ok()).unwrap_or(0),
-                end_offset_y: attr(n, "EndOffsetY").and_then(|s| s.parse().ok()).unwrap_or(0),
+                start_offset_x: attr(n, "StartOffsetX")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0),
+                start_offset_y: attr(n, "StartOffsetY")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0),
+                end_offset_x: attr(n, "EndOffsetX")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0),
+                end_offset_y: attr(n, "EndOffsetY")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0),
                 allegiance: attr(n, "Allegiance"),
                 color: attr(n, "Color"),
                 route_type: attr(n, "Type"),
@@ -573,14 +626,26 @@ pub fn parse_sector_metadata(xml: &str) -> SectorMetadata {
                 color: attr(n, "Color"),
                 size: attr(n, "Size"),
                 wrap: matches!(n.attribute("Wrap"), Some("True") | Some("true")),
-                offset_x: attr(n, "OffsetX").and_then(|s| s.parse().ok()).unwrap_or(0.0),
-                offset_y: attr(n, "OffsetY").and_then(|s| s.parse().ok()).unwrap_or(0.0),
+                offset_x: attr(n, "OffsetX")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0.0),
+                offset_y: attr(n, "OffsetY")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0.0),
                 text: n.text().map(|s| s.trim().to_owned()).unwrap_or_default(),
             }),
             "Allegiance" => {
                 if let Some(code) = attr(n, "Code") {
-                    let name = n.text().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()).unwrap_or_default();
-                    meta.local_allegiances.push(MetaAllegiance { name, code, base: attr(n, "Base") });
+                    let name = n
+                        .text()
+                        .map(|s| s.trim().to_owned())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_default();
+                    meta.local_allegiances.push(MetaAllegiance {
+                        name,
+                        code,
+                        base: attr(n, "Base"),
+                    });
                 }
             }
             _ => {}

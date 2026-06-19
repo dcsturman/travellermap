@@ -269,10 +269,10 @@ mod tests {
         // 0 at (1,1), goal 3 at (1,5). Two intermediates both reachable in the
         // same jump count: 1 at (1,3) (legs 2+2=4pc) vs 2 at (2,2)-ish longer.
         let worlds = vec![
-            w(1, 1),       // 0 start
-            w(1, 3),       // 1 close intermediate (dist 2 then 2)
-            w(3, 2),       // 2 far intermediate (longer legs)
-            w(1, 5),       // 3 goal
+            w(1, 1), // 0 start
+            w(1, 3), // 1 close intermediate (dist 2 then 2)
+            w(3, 2), // 2 far intermediate (longer legs)
+            w(1, 5), // 3 goal
         ];
         let path = find_route(&worlds, 0, 3, 2, RouteOptions::default()).expect("route");
         assert_eq!(path.len() - 1, 2, "2 jumps");
@@ -285,10 +285,13 @@ mod tests {
     fn avoid_red_reroutes() {
         let mut worlds = vec![w(1, 1), w(1, 3), w(1, 5)];
         worlds[1].red = true; // the only jump-2 stepping stone is red
-        // Without avoidance, 0 -> 1 -> 2 works.
+                              // Without avoidance, 0 -> 1 -> 2 works.
         assert!(find_route(&worlds, 0, 2, 2, RouteOptions::default()).is_some());
         // With avoidance and no alternative, no route.
-        let opts = RouteOptions { avoid_red: true, ..Default::default() };
+        let opts = RouteOptions {
+            avoid_red: true,
+            ..Default::default()
+        };
         assert!(find_route(&worlds, 0, 2, 2, opts).is_none());
         // But a red *endpoint* is still reachable.
         let mut worlds2 = vec![w(1, 1), w(1, 2)];

@@ -211,7 +211,11 @@ mod tests {
         assert_eq!(Coord::new(20, 18).hex_distance(Coord::new(20, 20)), 2);
         // The six immediate neighbours of an odd column are all distance 1.
         for n in [(20, 16), (20, 15), (21, 15), (22, 15), (22, 16), (21, 17)] {
-            assert_eq!(Coord::new(21, 16).hex_distance(Coord::new(n.0, n.1)), 1, "{n:?}");
+            assert_eq!(
+                Coord::new(21, 16).hex_distance(Coord::new(n.0, n.1)),
+                1,
+                "{n:?}"
+            );
         }
     }
 }

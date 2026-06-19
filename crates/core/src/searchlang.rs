@@ -25,16 +25,36 @@ pub struct SearchTypes {
 }
 
 impl SearchTypes {
-    pub const NONE: SearchTypes =
-        SearchTypes { sectors: false, subsectors: false, worlds: false, labels: false };
-    pub const DEFAULT: SearchTypes =
-        SearchTypes { sectors: true, subsectors: true, worlds: true, labels: true };
-    pub const WORLDS: SearchTypes =
-        SearchTypes { sectors: false, subsectors: false, worlds: true, labels: false };
-    pub const SECTORS: SearchTypes =
-        SearchTypes { sectors: true, subsectors: false, worlds: false, labels: false };
-    pub const SUBSECTORS: SearchTypes =
-        SearchTypes { sectors: false, subsectors: true, worlds: false, labels: false };
+    pub const NONE: SearchTypes = SearchTypes {
+        sectors: false,
+        subsectors: false,
+        worlds: false,
+        labels: false,
+    };
+    pub const DEFAULT: SearchTypes = SearchTypes {
+        sectors: true,
+        subsectors: true,
+        worlds: true,
+        labels: true,
+    };
+    pub const WORLDS: SearchTypes = SearchTypes {
+        sectors: false,
+        subsectors: false,
+        worlds: true,
+        labels: false,
+    };
+    pub const SECTORS: SearchTypes = SearchTypes {
+        sectors: true,
+        subsectors: false,
+        worlds: false,
+        labels: false,
+    };
+    pub const SUBSECTORS: SearchTypes = SearchTypes {
+        sectors: false,
+        subsectors: true,
+        worlds: false,
+        labels: false,
+    };
 }
 
 /// The fields a single index record exposes to the clause matcher. Mirrors the
@@ -234,12 +254,20 @@ pub fn parse_query(query: &str, start_types: SearchTypes) -> ParsedQuery {
     let mut types = start_types;
     let query = query.trim().to_lowercase();
     if query.is_empty() {
-        return ParsedQuery { types, clauses: Vec::new(), sector_hex: None };
+        return ParsedQuery {
+            types,
+            clauses: Vec::new(),
+            sector_hex: None,
+        };
     }
 
     // Sector+hex shortcut: `^[A-Za-z0-9!' ]{3,} \d{4}$`.
     if let Some(sh) = parse_sector_hex(&query) {
-        return ParsedQuery { types: SearchTypes::WORLDS, clauses: Vec::new(), sector_hex: Some(sh) };
+        return ParsedQuery {
+            types: SearchTypes::WORLDS,
+            clauses: Vec::new(),
+            sector_hex: Some(sh),
+        };
     }
 
     let mut clauses = Vec::new();
@@ -329,7 +357,11 @@ pub fn parse_query(query: &str, start_types: SearchTypes) -> ParsedQuery {
         clauses.push(clause);
     }
 
-    ParsedQuery { types, clauses, sector_hex: None }
+    ParsedQuery {
+        types,
+        clauses,
+        sector_hex: None,
+    }
 }
 
 /// Port of `SECTOR_HEX_REGEX` (`^(?<sector>[A-Za-z0-9!' ]{3,}) (?<hex>\d{4})$`).
@@ -346,11 +378,18 @@ fn parse_sector_hex(query: &str) -> Option<SectorHex> {
     }
     // The sector part may itself contain spaces; every char must be in the class
     // `[A-Za-z0-9!' ]`.
-    if !sector.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'!' | b'\'' | b' ')) {
+    if !sector
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'!' | b'\'' | b' '))
+    {
         return None;
     }
     let hex_num: i32 = hex.parse().ok()?;
-    Some(SectorHex { sector_prefix: sector.to_string(), hex_x: hex_num / 100, hex_y: hex_num % 100 })
+    Some(SectorHex {
+        sector_prefix: sector.to_string(),
+        hex_x: hex_num / 100,
+        hex_y: hex_num % 100,
+    })
 }
 
 /// SQL-Server `LIKE`: `%` = zero-or-more chars, `_` = exactly one char,
@@ -532,7 +571,10 @@ fn translate_class(p: &[char], start: usize) -> Option<(String, usize)> {
 
 /// Escape a literal char for use outside a regex char class.
 fn push_regex_escaped(out: &mut String, c: char) {
-    if matches!(c, '.' | '^' | '$' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\') {
+    if matches!(
+        c,
+        '.' | '^' | '$' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\'
+    ) {
         out.push('\\');
     }
     out.push(c);
@@ -626,14 +668,49 @@ mod tests {
     #[test]
     fn like_to_regex_matches_like_match() {
         let patterns = [
-            "sol", "r%a", "re%in", "re%in%", "%", "a_c", "a__c", "terra%",
-            "%rim", "%a%", "sol[oa]", " z[^aeiou]ne", "a[0-9]", "c.d", "a+b",
-            "(x)", "a*b", "[abc]x", "]lit", "a-b",
+            "sol",
+            "r%a",
+            "re%in",
+            "re%in%",
+            "%",
+            "a_c",
+            "a__c",
+            "terra%",
+            "%rim",
+            "%a%",
+            "sol[oa]",
+            " z[^aeiou]ne",
+            "a[0-9]",
+            "c.d",
+            "a+b",
+            "(x)",
+            "a*b",
+            "[abc]x",
+            "]lit",
+            "a-b",
         ];
         let texts = [
-            "sol", "solomani", "regina", "reskin", "rein", "abc", "a_c", "terra",
-            "solomani rim", "zone", "z9ne", "a5", "c.d", "cxd", "a+b", "a-b",
-            "(x)", "axb", "bx", "]lit", "",
+            "sol",
+            "solomani",
+            "regina",
+            "reskin",
+            "rein",
+            "abc",
+            "a_c",
+            "terra",
+            "solomani rim",
+            "zone",
+            "z9ne",
+            "a5",
+            "c.d",
+            "cxd",
+            "a+b",
+            "a-b",
+            "(x)",
+            "axb",
+            "bx",
+            "]lit",
+            "",
         ];
         for pat in patterns {
             let re = regex::Regex::new(&format!("^(?:{})$", like_to_regex(pat)))
@@ -716,7 +793,10 @@ mod tests {
         let pq = parse_query("t% in:spin", SearchTypes::DEFAULT);
         assert_eq!(
             pq.clauses,
-            vec![Clause::NameLike("t%".into()), Clause::InSector("spin".into())]
+            vec![
+                Clause::NameLike("t%".into()),
+                Clause::InSector("spin".into())
+            ]
         );
         assert_eq!(pq.types, SearchTypes::WORLDS);
     }
@@ -745,7 +825,10 @@ mod tests {
         let pq = parse_query("so ri", SearchTypes::DEFAULT);
         assert_eq!(
             pq.clauses,
-            vec![Clause::NameWordBoundary("so".into()), Clause::NameWordBoundary("ri".into())]
+            vec![
+                Clause::NameWordBoundary("so".into()),
+                Clause::NameWordBoundary("ri".into())
+            ]
         );
     }
 
@@ -762,12 +845,20 @@ mod tests {
         assert_eq!(pq.types, SearchTypes::WORLDS);
         assert_eq!(
             pq.sector_hex,
-            Some(SectorHex { sector_prefix: "spinward marches".into(), hex_x: 19, hex_y: 10 })
+            Some(SectorHex {
+                sector_prefix: "spinward marches".into(),
+                hex_x: 19,
+                hex_y: 10
+            })
         );
         // Too-short sector part is not a shortcut.
-        assert!(parse_query("ab 1910", SearchTypes::DEFAULT).sector_hex.is_none());
+        assert!(parse_query("ab 1910", SearchTypes::DEFAULT)
+            .sector_hex
+            .is_none());
         // Non-4-digit trailing token is not a shortcut.
-        assert!(parse_query("spinward 19", SearchTypes::DEFAULT).sector_hex.is_none());
+        assert!(parse_query("spinward 19", SearchTypes::DEFAULT)
+            .sector_hex
+            .is_none());
     }
 
     #[test]

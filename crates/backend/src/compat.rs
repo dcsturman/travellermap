@@ -228,7 +228,14 @@ fn coordinates_response(
         Err((code, msg)) => return (code, msg).into_response(),
     };
     let (x, y) = astrometrics::location_to_coordinates(sx, sy, hx, hy);
-    let result = CoordinatesResult { sx, sy, hx, hy, x, y };
+    let result = CoordinatesResult {
+        sx,
+        sy,
+        hx,
+        hy,
+        x,
+        y,
+    };
     respond_negotiated(&result, jsonp, accept_xml, || result.to_xml())
 }
 
@@ -313,7 +320,10 @@ fn subsector_index(state: &AppState, milieu: &str, sector: &str, query: &str) ->
         .find(|s| s.name.eq_ignore_ascii_case(query))
         .and_then(|s| {
             // Subsector index from its letter ("A"-"P").
-            s.index.chars().next().map(|c| (c.to_ascii_uppercase() as u8 - b'A') as usize)
+            s.index
+                .chars()
+                .next()
+                .map(|c| (c.to_ascii_uppercase() as u8 - b'A') as usize)
         })
 }
 
@@ -350,10 +360,16 @@ fn canonical_milieux(state: &AppState) -> Vec<String> {
     let text = read_text(state.res_dir.join("Sectors").join("milieu.tab")).unwrap_or_default();
     let mut seen = Vec::new();
     for line in text.lines().skip(1) {
-        let Some(path) = line.split('\t').next() else { continue };
-        let Some(dir) = path.split('/').next() else { continue };
+        let Some(path) = line.split('\t').next() else {
+            continue;
+        };
+        let Some(dir) = path.split('/').next() else {
+            continue;
+        };
         let is_milieu = dir == "IW"
-            || (dir.starts_with('M') && dir.len() > 1 && dir[1..].bytes().all(|b| b.is_ascii_digit()));
+            || (dir.starts_with('M')
+                && dir.len() > 1
+                && dir[1..].bytes().all(|b| b.is_ascii_digit()));
         if is_milieu && !seen.iter().any(|c| c == dir) {
             seen.push(dir.to_string());
         }
@@ -508,22 +524,50 @@ mod tests {
         let state = test_state();
         // sector + hex (the canonical example from the live API).
         assert_eq!(
-            coords(&state, CoordinatesQuery { sector: Some("Spinward Marches".into()), hex: Some("1910".into()), ..q() }),
+            coords(
+                &state,
+                CoordinatesQuery {
+                    sector: Some("Spinward Marches".into()),
+                    hex: Some("1910".into()),
+                    ..q()
+                }
+            ),
             (-4, -1, 19, 10, -110, -70)
         );
         // T5SS abbreviation resolves the same as the full name.
         assert_eq!(
-            coords(&state, CoordinatesQuery { sector: Some("Spin".into()), hex: Some("1910".into()), ..q() }),
+            coords(
+                &state,
+                CoordinatesQuery {
+                    sector: Some("Spin".into()),
+                    hex: Some("1910".into()),
+                    ..q()
+                }
+            ),
             (-4, -1, 19, 10, -110, -70)
         );
         // world-space x,y → location round-trips.
         assert_eq!(
-            coords(&state, CoordinatesQuery { x: Some(-110), y: Some(-70), ..q() }),
+            coords(
+                &state,
+                CoordinatesQuery {
+                    x: Some(-110),
+                    y: Some(-70),
+                    ..q()
+                }
+            ),
             (-4, -1, 19, 10, -110, -70)
         );
         // subsector C (centre) — matches live {sx:-4,sy:-1,hx:20,hy:5}.
         assert_eq!(
-            coords(&state, CoordinatesQuery { sector: Some("Spinward Marches".into()), subsector: Some("C".into()), ..q() }),
+            coords(
+                &state,
+                CoordinatesQuery {
+                    sector: Some("Spinward Marches".into()),
+                    subsector: Some("C".into()),
+                    ..q()
+                }
+            ),
             (-4, -1, 20, 5, -109, -75)
         );
     }
@@ -532,10 +576,19 @@ mod tests {
     fn coordinates_errors_are_clean() {
         let state = test_state();
         // No input → 400.
-        assert_eq!(resolve_location(&state, &q()).unwrap_err().0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            resolve_location(&state, &q()).unwrap_err().0,
+            StatusCode::BAD_REQUEST
+        );
         // Unknown sector → 404.
-        let bad = CoordinatesQuery { sector: Some("Nonesuch".into()), ..q() };
-        assert_eq!(resolve_location(&state, &bad).unwrap_err().0, StatusCode::NOT_FOUND);
+        let bad = CoordinatesQuery {
+            sector: Some("Nonesuch".into()),
+            ..q()
+        };
+        assert_eq!(
+            resolve_location(&state, &bad).unwrap_err().0,
+            StatusCode::NOT_FOUND
+        );
     }
 
     #[test]

@@ -79,7 +79,13 @@ fn item_name(item: &SearchItem) -> &str {
     }
 }
 
-fn push(entries: &mut Vec<SearchEntry>, kind: u8, importance: Option<i32>, fields: WorldFields, item: SearchItem) {
+fn push(
+    entries: &mut Vec<SearchEntry>,
+    kind: u8,
+    importance: Option<i32>,
+    fields: WorldFields,
+    item: SearchItem,
+) {
     entries.push(SearchEntry {
         name_lower: item_name(&item).to_lowercase(),
         kind,
@@ -100,7 +106,9 @@ fn importance_value(raw: Option<&str>) -> Option<i32> {
 /// `StripBrackets`): `"(C53-1)"` → `"c53-1"`, `"[6559]"` → `"6559"`. Lowercased
 /// for case-insensitive `LIKE`.
 fn strip_brackets(raw: Option<&str>) -> String {
-    raw.unwrap_or("").replace(['(', ')', '[', ']', '{', '}'], "").to_lowercase()
+    raw.unwrap_or("")
+        .replace(['(', ')', '[', ']', '{', '}'], "")
+        .to_lowercase()
 }
 
 /// The sector's `SectorTags` — its own review tags plus the milieu metafile tag,
@@ -141,7 +149,8 @@ fn sector_dirs(res_dir: &Path, milieu: &str) -> HashMap<(i32, i32), PathBuf> {
                 continue;
             }
             // First metafile wins (matches `load_universe`'s `TryAdd` dedup).
-            dirs.entry((e.location.x, e.location.y)).or_insert_with(|| base_dir.clone());
+            dirs.entry((e.location.x, e.location.y))
+                .or_insert_with(|| base_dir.clone());
         }
     }
     dirs
@@ -151,7 +160,8 @@ fn sector_dirs(res_dir: &Path, milieu: &str) -> HashMap<(i32, i32), PathBuf> {
 /// sectors (`SearchEngine.PopulateDatabase`). The combined tag string already
 /// folds in the metafile tag (e.g. `Faraway`).
 fn is_searchable(tags: &str) -> bool {
-    tags.split_whitespace().any(|t| t == "OTU" || t == "Faraway")
+    tags.split_whitespace()
+        .any(|t| t == "OTU" || t == "Faraway")
 }
 
 /// Accumulated label points keyed by (label text) — averaged into one hit at the
@@ -188,7 +198,10 @@ fn gather_entries(res_dir: &Path, milieu: &str, universe: &Universe) -> Vec<Sear
         if !is_searchable(&tags) {
             continue;
         }
-        let dir = dirs.get(&(sx, sy)).cloned().unwrap_or_else(|| milieu_dir.clone());
+        let dir = dirs
+            .get(&(sx, sy))
+            .cloned()
+            .unwrap_or_else(|| milieu_dir.clone());
 
         push(
             &mut entries,
@@ -250,7 +263,11 @@ fn gather_entries(res_dir: &Path, milieu: &str, universe: &Universe) -> Vec<Sear
                 // allegiance-derived point skews the reported hex.
                 let text = match b.label.as_deref().filter(|s| !s.is_empty()) {
                     Some(l) => l.to_string(),
-                    None => match b.allegiance.as_deref().and_then(|c| resolve_alleg_name(&meta, c)) {
+                    None => match b
+                        .allegiance
+                        .as_deref()
+                        .and_then(|c| resolve_alleg_name(&meta, c))
+                    {
                         Some(n) => n,
                         None => continue,
                     },
@@ -258,7 +275,11 @@ fn gather_entries(res_dir: &Path, milieu: &str, universe: &Universe) -> Vec<Sear
                 let pos = label_position_of(b);
                 if let Some((col, row)) = parse_hex(&pos) {
                     let (cx, cy) = location_to_coordinates(sx, sy, col, row);
-                    labels.entry(sanify_label(&text)).or_default().points.push((cx, cy));
+                    labels
+                        .entry(sanify_label(&text))
+                        .or_default()
+                        .points
+                        .push((cx, cy));
                 }
             }
             for l in &meta.labels {
@@ -267,7 +288,11 @@ fn gather_entries(res_dir: &Path, milieu: &str, universe: &Universe) -> Vec<Sear
                 }
                 if let Some((col, row)) = parse_hex(&l.hex) {
                     let (cx, cy) = location_to_coordinates(sx, sy, col, row);
-                    labels.entry(sanify_label(&l.text)).or_default().points.push((cx, cy));
+                    labels
+                        .entry(sanify_label(&l.text))
+                        .or_default()
+                        .points
+                        .push((cx, cy));
                 }
             }
         }
@@ -305,7 +330,11 @@ fn gather_entries(res_dir: &Path, milieu: &str, universe: &Universe) -> Vec<Sear
                 uwp: world.uwp.to_lowercase(),
                 pbg: world.pbg.to_lowercase(),
                 // Reference stores "G" when the zone is empty.
-                zone: if world.zone.is_empty() { "g".to_string() } else { world.zone.to_lowercase() },
+                zone: if world.zone.is_empty() {
+                    "g".to_string()
+                } else {
+                    world.zone.to_lowercase()
+                },
                 alleg: world.allegiance.to_lowercase(),
                 stellar: world.stellar.to_lowercase(),
                 remarks: world.remarks.to_lowercase(),
@@ -350,10 +379,18 @@ fn gather_entries(res_dir: &Path, milieu: &str, universe: &Universe) -> Vec<Sear
             continue;
         }
         let n = accum.points.len() as i64;
-        let avg_x = (accum.points.iter().map(|p| p.0 as i64).sum::<i64>() as f64 / n as f64).round() as i32;
-        let avg_y = (accum.points.iter().map(|p| p.1 as i64).sum::<i64>() as f64 / n as f64).round() as i32;
-        let (min_x, max_x) = accum.points.iter().fold((i32::MAX, i32::MIN), |(a, b), p| (a.min(p.0), b.max(p.0)));
-        let (min_y, max_y) = accum.points.iter().fold((i32::MAX, i32::MIN), |(a, b), p| (a.min(p.1), b.max(p.1)));
+        let avg_x =
+            (accum.points.iter().map(|p| p.0 as i64).sum::<i64>() as f64 / n as f64).round() as i32;
+        let avg_y =
+            (accum.points.iter().map(|p| p.1 as i64).sum::<i64>() as f64 / n as f64).round() as i32;
+        let (min_x, max_x) = accum
+            .points
+            .iter()
+            .fold((i32::MAX, i32::MIN), |(a, b), p| (a.min(p.0), b.max(p.0)));
+        let (min_y, max_y) = accum
+            .points
+            .iter()
+            .fold((i32::MAX, i32::MIN), |(a, b), p| (a.min(p.1), b.max(p.1)));
         let radius = (max_x - min_x).max(max_y - min_y);
         let scale = if radius > 80 {
             4
@@ -410,9 +447,17 @@ fn label_position_of(b: &tmap_core::metadata::MetaBorder) -> String {
     if coords.is_empty() {
         return "0000".to_string();
     }
-    let (min_x, max_x) = coords.iter().fold((i32::MAX, i32::MIN), |(a, b), &(x, _)| (a.min(x), b.max(x)));
-    let (min_y, max_y) = coords.iter().fold((i32::MAX, i32::MIN), |(a, b), &(_, y)| (a.min(y), b.max(y)));
-    format!("{:02}{:02}", (min_x + max_x + 1) / 2, (min_y + max_y + 1) / 2)
+    let (min_x, max_x) = coords
+        .iter()
+        .fold((i32::MAX, i32::MIN), |(a, b), &(x, _)| (a.min(x), b.max(x)));
+    let (min_y, max_y) = coords
+        .iter()
+        .fold((i32::MAX, i32::MIN), |(a, b), &(_, y)| (a.min(y), b.max(y)));
+    format!(
+        "{:02}{:02}",
+        (min_x + max_x + 1) / 2,
+        (min_y + max_y + 1) / 2
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -536,7 +581,10 @@ pub fn build_index(res_dir: &Path, milieu: &str, universe: &Universe) -> SearchI
             importance: e.importance,
             item: e.item.clone(),
         };
-        d.add_text(f.blob, serde_json::to_string(&blob).expect("serialize search blob"));
+        d.add_text(
+            f.blob,
+            serde_json::to_string(&blob).expect("serialize search blob"),
+        );
         writer.add_document(d).expect("add search document");
     }
     writer.commit().expect("commit search index");
@@ -608,9 +656,12 @@ fn coord_key(item: &SearchItem) -> (i64, i64, i64, i64) {
             s.index.chars().next().map_or(0, |c| c as i64),
             0,
         ),
-        SearchItem::World(w) => {
-            (w.sector_x as i64, w.sector_y as i64, w.hex_x as i64, w.hex_y as i64)
-        }
+        SearchItem::World(w) => (
+            w.sector_x as i64,
+            w.sector_y as i64,
+            w.hex_x as i64,
+            w.hex_y as i64,
+        ),
         SearchItem::Label(l) => {
             let (x, y) = location_to_coordinates(l.sector_x, l.sector_y, l.hex_x, l.hex_y);
             (x as i64, y as i64, 0, 0)
@@ -628,7 +679,13 @@ fn build_query(f: &SchemaFields, pq: &ParsedQuery) -> Box<dyn Query> {
         musts.push((Occur::Must, term_u64(f.kind, KIND_WORLD as u64)));
         musts.push((Occur::Must, term_i64(f.hex_x, sh.hex_x as i64)));
         musts.push((Occur::Must, term_i64(f.hex_y, sh.hex_y as i64)));
-        musts.push((Occur::Must, regex_query(f.sector_name, &format!("{}.*", like_to_regex(&sh.sector_prefix)))));
+        musts.push((
+            Occur::Must,
+            regex_query(
+                f.sector_name,
+                &format!("{}.*", like_to_regex(&sh.sector_prefix)),
+            ),
+        ));
     } else {
         for c in &pq.clauses {
             musts.push((Occur::Must, clause_query(f, c)));
@@ -696,15 +753,24 @@ fn regex_query(field: Field, pattern: &str) -> Box<dyn Query> {
 }
 
 fn term_text(field: Field, text: &str) -> Box<dyn Query> {
-    Box::new(TermQuery::new(Term::from_field_text(field, text), IndexRecordOption::Basic))
+    Box::new(TermQuery::new(
+        Term::from_field_text(field, text),
+        IndexRecordOption::Basic,
+    ))
 }
 
 fn term_i64(field: Field, v: i64) -> Box<dyn Query> {
-    Box::new(TermQuery::new(Term::from_field_i64(field, v), IndexRecordOption::Basic))
+    Box::new(TermQuery::new(
+        Term::from_field_i64(field, v),
+        IndexRecordOption::Basic,
+    ))
 }
 
 fn term_u64(field: Field, v: u64) -> Box<dyn Query> {
-    Box::new(TermQuery::new(Term::from_field_u64(field, v), IndexRecordOption::Basic))
+    Box::new(TermQuery::new(
+        Term::from_field_u64(field, v),
+        IndexRecordOption::Basic,
+    ))
 }
 
 /// A query that matches no documents (empty intersection).

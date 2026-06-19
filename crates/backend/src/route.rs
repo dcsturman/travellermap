@@ -97,7 +97,10 @@ pub fn resolve_location(index: &WorldIndex, query: &str) -> Option<usize> {
         }
     }
     // 2) Bare world name (exact, case-insensitive) — "Regina", "Mora", …
-    index.worlds.iter().position(|w| w.name.eq_ignore_ascii_case(q))
+    index
+        .worlds
+        .iter()
+        .position(|w| w.name.eq_ignore_ascii_case(q))
 }
 
 /// Format a 1-based (col, row) back into a 4-digit hex label.
@@ -157,7 +160,10 @@ pub fn build_world_index(res_dir: &FsPath, milieu: &str, universe: &Universe) ->
                 imperial: is_default_imperial(&w.allegiance),
                 refuel: has_refuel(&w.uwp, &w.pbg),
             };
-            let allegiance = alleg_names.get(&w.allegiance).cloned().unwrap_or(w.allegiance);
+            let allegiance = alleg_names
+                .get(&w.allegiance)
+                .cloned()
+                .unwrap_or(w.allegiance);
             let subsector = subsector_names
                 .get(&subsector_letter(&w.hex).to_string())
                 .cloned()
@@ -214,19 +220,9 @@ fn is_default_imperial(allegiance: &str) -> bool {
 /// or surface water (UWP hydrographics digit > 0). Mirrors `World.GasGiants`/
 /// `World.WaterPresent` used by `RouteHandler`'s `wild` filter.
 fn has_refuel(uwp: &str, pbg: &str) -> bool {
-    let gas_giants = pbg
-        .chars()
-        .nth(2)
-        .and_then(|c| c.to_digit(16))
-        .unwrap_or(0)
-        > 0;
+    let gas_giants = pbg.chars().nth(2).and_then(|c| c.to_digit(16)).unwrap_or(0) > 0;
     // UWP hydrographics is the 4th character (index 3): C430698-9 → '3'.
-    let water = uwp
-        .chars()
-        .nth(3)
-        .and_then(|c| c.to_digit(16))
-        .unwrap_or(0)
-        > 0;
+    let water = uwp.chars().nth(3).and_then(|c| c.to_digit(16)).unwrap_or(0) > 0;
     gas_giants || water
 }
 

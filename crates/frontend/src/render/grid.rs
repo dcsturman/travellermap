@@ -16,6 +16,7 @@ use super::common::{
 
 /// Straight sector/subsector boundary lines at every `step` parsecs (boundaries
 /// sit half a hex outside the edge cells).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_grid_lines(
     c: &impl Canvas,
     view: &ViewState,
@@ -119,11 +120,14 @@ pub(crate) fn draw_hex_grid(
     let ctx = &canvas.ctx;
     // World(parsec) → device: device = dpr · (w/2 + (p − center)·s), uniform.
     let a = dpr * s;
-    let (e, f) = (dpr * (w / 2.0 - view.center.0 * s), dpr * (h / 2.0 - view.center.1 * s));
+    let (e, f) = (
+        dpr * (w / 2.0 - view.center.0 * s),
+        dpr * (h / 2.0 - view.center.1 * s),
+    );
     ctx.save();
     let _ = ctx.set_transform(a, 0.0, 0.0, a, e, f);
     ctx.set_line_width(1.0 / s); // ~1 css px (the transform scales by s)
-    // Theme override (flat color) or the scale-faded gray `gridColor`.
+                                 // Theme override (flat color) or the scale-faded gray `gridColor`.
     match grid_override {
         Some(c) => ctx.set_stroke_style_str(c),
         None => ctx.set_stroke_style_str(&grid_color(s)),

@@ -19,7 +19,9 @@ const EXCX_BRACE: &str = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3
 
 /// Minimal HTML text escaping for interpolated names/values.
 fn esc(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// One `.wds-decode` table wrapping the given inner `<tr>` rows.
@@ -36,8 +38,15 @@ pub fn build_world_print_html(sel: &SelectedWorld) -> String {
     }
     let d = decode_world(w);
 
-    let name = if w.name.is_empty() { "(Unnamed)".to_string() } else { esc(&w.name) };
-    let doc_title = format!("{} - World Data Sheet", if w.name.is_empty() { "World" } else { &w.name });
+    let name = if w.name.is_empty() {
+        "(Unnamed)".to_string()
+    } else {
+        esc(&w.name)
+    };
+    let doc_title = format!(
+        "{} - World Data Sheet",
+        if w.name.is_empty() { "World" } else { &w.name }
+    );
     let h1 = format!(
         "{name} <small>/ {sub} ({sector} {hex})</small>",
         sub = esc(&sel.subsector),
@@ -49,7 +58,10 @@ pub fn build_world_print_html(sel: &SelectedWorld) -> String {
 
     // Allegiance.
     if !w.allegiance.is_empty() {
-        let full = d.allegiance_name.clone().unwrap_or_else(|| w.allegiance.clone());
+        let full = d
+            .allegiance_name
+            .clone()
+            .unwrap_or_else(|| w.allegiance.clone());
         blocks.push_str(&decode_table(&format!(
             "<tr><td>Allegiance:<td><big>{}</big> ({})",
             esc(&full),
@@ -61,16 +73,34 @@ pub fn build_world_print_html(sel: &SelectedWorld) -> String {
     let stars: String = d
         .stars
         .iter()
-        .map(|s| format!("<span class=wds-star><big>{}</big> <small>{}</small></span> ", esc(&s.code), esc(&s.blurb)))
+        .map(|s| {
+            format!(
+                "<span class=wds-star><big>{}</big> <small>{}</small></span> ",
+                esc(&s.code),
+                esc(&s.blurb)
+            )
+        })
         .collect();
-    let gg = d.pbg.gas_giants.map(|n| n.to_string()).unwrap_or_else(|| "?".into());
-    let belts = d.pbg.belts.map(|n| n.to_string()).unwrap_or_else(|| "?".into());
+    let gg = d
+        .pbg
+        .gas_giants
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "?".into());
+    let belts = d
+        .pbg
+        .belts
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "?".into());
     let other = d
         .other_worlds
         .filter(|n| *n > 0)
         .map(|n| format!(" &mdash; <big>{n}</big> <small>Other Worlds</small>"))
         .unwrap_or_default();
-    let bases: String = d.bases.iter().map(|b| format!("<span class=wds-base>{}</span> ", esc(b))).collect();
+    let bases: String = d
+        .bases
+        .iter()
+        .map(|b| format!("<span class=wds-base>{}</span> ", esc(b)))
+        .collect();
     blocks.push_str(&decode_table(&format!(
         "<tr><td>System:<td>\
            <div class=wds-stars>{stars}</div>\
@@ -132,7 +162,11 @@ pub fn build_world_print_html(sel: &SelectedWorld) -> String {
     // Total Population (PopMult × 10^PopExp = Total).
     if let Some(total) = &d.total_population {
         let pop_exp = from_hex(w.uwp.chars().nth(4).unwrap_or('?'));
-        let pop_mult = if pop_exp > 0 && d.pbg.pop_mult == 0 { 1 } else { d.pbg.pop_mult };
+        let pop_mult = if pop_exp > 0 && d.pbg.pop_mult == 0 {
+            1
+        } else {
+            d.pbg.pop_mult
+        };
         blocks.push_str(&decode_table(&format!(
             "<tr><td style=\"vertical-align:bottom\">Total Population:\
              <td><big>{pop_mult} &times; 10<sup>{pop_exp}</sup> = {total}</big>",
@@ -156,7 +190,13 @@ pub fn build_world_print_html(sel: &SelectedWorld) -> String {
         .remarks
         .iter()
         .filter(|r| !r.blurb.is_empty())
-        .map(|r| format!("<span class=nowrap><big>{}</big> <small>{}</small></span>&#x20;", esc(&r.code), esc(&r.blurb)))
+        .map(|r| {
+            format!(
+                "<span class=nowrap><big>{}</big> <small>{}</small></span>&#x20;",
+                esc(&r.code),
+                esc(&r.blurb)
+            )
+        })
         .collect();
     if !remarks.is_empty() {
         blocks.push_str(&decode_table(&format!(

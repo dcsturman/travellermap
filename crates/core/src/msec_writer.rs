@@ -93,7 +93,9 @@ pub fn write_msec(name: &str, header: &MsecHeader, meta: &SectorMetadata, now: &
                 .iter()
                 .find(|s| s.index.chars().next().map(|c| c.to_ascii_uppercase()) == Some(index));
             match ss {
-                Some(s) if !s.name.is_empty() => push_line(&mut out, &format!("{letter} {}", s.name)),
+                Some(s) if !s.name.is_empty() => {
+                    push_line(&mut out, &format!("{letter} {}", s.name))
+                }
                 _ => push_line(&mut out, &format!("{letter}")),
             }
         }
@@ -224,7 +226,12 @@ fn write_label(out: &mut String, label: &MetaLabel) {
     }
 }
 
-fn write_border(out: &mut String, border: &MetaBorder, local: &[MetaAllegiance], sheet: &Stylesheet) {
+fn write_border(
+    out: &mut String,
+    border: &MetaBorder,
+    local: &[MetaAllegiance],
+    sheet: &Stylesheet,
+) {
     let alleg_name = border
         .allegiance
         .as_deref()
@@ -234,7 +241,13 @@ fn write_border(out: &mut String, border: &MetaBorder, local: &[MetaAllegiance],
         out.push_str("label ");
         out.push_str(&label_position_hex(border));
         out.push(' ');
-        out.push_str(border.label.as_deref().or(alleg_name.as_deref()).unwrap_or(""));
+        out.push_str(
+            border
+                .label
+                .as_deref()
+                .or(alleg_name.as_deref())
+                .unwrap_or(""),
+        );
         out.push_str(NL);
     }
 
@@ -262,9 +275,17 @@ fn label_position_hex(border: &MetaBorder) -> String {
     if coords.is_empty() {
         return "0000".to_string();
     }
-    let (min_x, max_x) = coords.iter().fold((i32::MAX, i32::MIN), |(a, b), &(x, _)| (a.min(x), b.max(x)));
-    let (min_y, max_y) = coords.iter().fold((i32::MAX, i32::MIN), |(a, b), &(_, y)| (a.min(y), b.max(y)));
-    format!("{:02}{:02}", (min_x + max_x + 1) / 2, (min_y + max_y + 1) / 2)
+    let (min_x, max_x) = coords
+        .iter()
+        .fold((i32::MAX, i32::MIN), |(a, b), &(x, _)| (a.min(x), b.max(x)));
+    let (min_y, max_y) = coords
+        .iter()
+        .fold((i32::MAX, i32::MIN), |(a, b), &(_, y)| (a.min(y), b.max(y)));
+    format!(
+        "{:02}{:02}",
+        (min_x + max_x + 1) / 2,
+        (min_y + max_y + 1) / 2
+    )
 }
 
 /// Normalize an out-of-sector hex into `01..SectorWidth` / `01..SectorHeight`,
@@ -296,7 +317,10 @@ fn push_line(out: &mut String, s: &str) {
 }
 
 fn nonempty(s: &Option<String>) -> Option<String> {
-    s.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned)
+    s.as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
 }
 
 // --- Allegiance grouping (item kinds + comparator + .NET introsort) ----------
@@ -431,7 +455,10 @@ fn match_selector(element: &str, code: Option<&str>, sel: &Selector) -> i32 {
 /// `SectorStylesheet.Parser` for the `color` property we read.
 fn parse_stylesheet(src: &str) -> Vec<Rule> {
     let chars: Vec<char> = src.chars().collect();
-    let mut p = Parser { chars: &chars, pos: 0 };
+    let mut p = Parser {
+        chars: &chars,
+        pos: 0,
+    };
     let mut rules = Vec::new();
     p.ws();
     while p.peek().is_some() {
@@ -469,7 +496,8 @@ impl Parser<'_> {
                 '/' if self.chars.get(self.pos + 1) == Some(&'*') => {
                     self.pos += 2;
                     while self.pos < self.chars.len() {
-                        if self.chars[self.pos] == '*' && self.chars.get(self.pos + 1) == Some(&'/') {
+                        if self.chars[self.pos] == '*' && self.chars.get(self.pos + 1) == Some(&'/')
+                        {
                             self.pos += 2;
                             break;
                         }
@@ -495,14 +523,19 @@ impl Parser<'_> {
         if self.peek() == Some('}') {
             self.bump();
         }
-        Some(Rule { selectors, declarations })
+        Some(Rule {
+            selectors,
+            declarations,
+        })
     }
 
     fn parse_selector_list(&mut self) -> Vec<Selector> {
         let mut list = Vec::new();
         loop {
             self.ws();
-            let Some(sel) = self.parse_selector() else { break };
+            let Some(sel) = self.parse_selector() else {
+                break;
+            };
             list.push(sel);
             self.ws();
             if self.peek() == Some(',') {
@@ -626,11 +659,23 @@ mod tests {
         let sheet = Stylesheet::cascade(Some(
             "border.DaCf { color: lightblue; }\nroute.DaCf { color: lightgreen; }",
         ));
-        assert_eq!(sheet.color("border", Some("DaCf")).as_deref(), Some("lightblue"));
-        assert_eq!(sheet.color("route", Some("DaCf")).as_deref(), Some("lightgreen"));
+        assert_eq!(
+            sheet.color("border", Some("DaCf")).as_deref(),
+            Some("lightblue")
+        );
+        assert_eq!(
+            sheet.color("route", Some("DaCf")).as_deref(),
+            Some("lightgreen")
+        );
         // otu.css default still resolves.
-        assert_eq!(sheet.color("border", Some("ImDd")).as_deref(), Some("#E32736"));
-        assert_eq!(sheet.color("route", Some("ZhCo")).as_deref(), Some("lightblue"));
+        assert_eq!(
+            sheet.color("border", Some("ImDd")).as_deref(),
+            Some("#E32736")
+        );
+        assert_eq!(
+            sheet.color("route", Some("ZhCo")).as_deref(),
+            Some("lightblue")
+        );
         // No bare-route rule -> None for an unstyled "Other" route.
         assert_eq!(sheet.color("route", None), None);
     }

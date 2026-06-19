@@ -19,7 +19,9 @@ const DOT_ONLY: &str = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy
 
 /// Minimal HTML text escaping for interpolated world/sector/allegiance names.
 fn esc(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// Render a full printable HTML document for `route` at jump rating `jump`.
@@ -33,11 +35,18 @@ pub fn build_route_print_html(route: &RouteResult, jump: i32) -> String {
     let doc_title = esc(&format!("{} to {}", from.name, to.name));
     let h1 = format!(
         "{} <small>({} {})</small> to {} <small>({} {})</small>",
-        esc(&from.name), esc(&from.sector), from.hex,
-        esc(&to.name), esc(&to.sector), to.hex,
+        esc(&from.name),
+        esc(&from.sector),
+        from.hex,
+        esc(&to.name),
+        esc(&to.sector),
+        to.hex,
     );
     // Inline the starburst markup (drop the XML/DOCTYPE prolog before <svg>).
-    let star = STARBURST_SVG.find("<svg").map(|i| &STARBURST_SVG[i..]).unwrap_or("");
+    let star = STARBURST_SVG
+        .find("<svg")
+        .map(|i| &STARBURST_SVG[i..])
+        .unwrap_or("");
 
     let mut rows = String::new();
     for (i, w) in wps.iter().enumerate() {
@@ -45,7 +54,10 @@ pub fn build_route_print_html(route: &RouteResult, jump: i32) -> String {
         let leg = if last {
             String::new()
         } else {
-            format!("<div class=item-distance>{}</div>", w.coord.hex_distance(wps[i + 1].coord))
+            format!(
+                "<div class=item-distance>{}</div>",
+                w.coord.hex_distance(wps[i + 1].coord)
+            )
         };
         let starport = w
             .uwp
@@ -54,7 +66,11 @@ pub fn build_route_print_html(route: &RouteResult, jump: i32) -> String {
             .filter(|c| *c != '?')
             .map(|c| format!("Class {c}"))
             .unwrap_or_default();
-        let gas_giant = w.pbg.as_bytes().get(2).is_some_and(|&b| b > b'0' && b != b'?');
+        let gas_giant = w
+            .pbg
+            .as_bytes()
+            .get(2)
+            .is_some_and(|&b| b > b'0' && b != b'?');
         let zone_txt = match w.zone.as_str() {
             "A" => "Amber Zone",
             "R" => "Red Zone",

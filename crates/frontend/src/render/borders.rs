@@ -10,8 +10,7 @@ use tmap_core::dto::SectorData;
 use web_sys::Path2d;
 
 use super::common::{
-    allegiance_border_color, hex_neighbors, hex_sector, hex_vertex, hex_vertex_r, ViewState,
-    HEX_VR,
+    allegiance_border_color, hex_neighbors, hex_sector, hex_vertex, hex_vertex_r, ViewState, HEX_VR,
 };
 use super::now;
 use crate::canvas::Canvas2d;
@@ -115,25 +114,34 @@ pub(crate) fn clear_border_caches() {
 /// Build (once) per-sector border geometry: each group's fill `Path2d`, its
 /// region hexes, the cached **interior** boundary stroke (same-sector edges),
 /// and the list of hexes that touch an adjacent sector (for seam recompute).
+/// Accumulator while grouping a sector's borders by polity: the resolved stroke/
+/// fill color plus the union of every region hex for that group.
+struct GroupAccum {
+    color: String,
+    region: Vec<(i32, i32)>,
+}
+
 fn build_sector_geom(sector: &SectorData) -> SectorGeom {
     use std::collections::HashSet;
-    let mut groups: HashMap<&str, (String, Vec<(i32, i32)>)> = HashMap::new();
+    let mut groups: HashMap<&str, GroupAccum> = HashMap::new();
     for border in &sector.borders {
         if border.region.is_empty() {
             continue;
         }
-        let entry = groups.entry(border_group_key(&border.allegiance)).or_insert_with(|| {
-            let color = border
-                .color
-                .clone()
-                .unwrap_or_else(|| allegiance_border_color(&border.allegiance).to_owned());
-            (color, Vec::new())
-        });
-        entry.1.extend(border.region.iter().copied());
+        let entry = groups
+            .entry(border_group_key(&border.allegiance))
+            .or_insert_with(|| GroupAccum {
+                color: border
+                    .color
+                    .clone()
+                    .unwrap_or_else(|| allegiance_border_color(&border.allegiance).to_owned()),
+                region: Vec::new(),
+            });
+        entry.region.extend(border.region.iter().copied());
     }
     let groups = groups
         .into_iter()
-        .filter_map(|(key, (color, region))| {
+        .filter_map(|(key, GroupAccum { color, region })| {
             let rset: HashSet<(i32, i32)> = region.iter().copied().collect();
             let fill = Path2d::new().ok()?;
             let interior_stroke = Path2d::new().ok()?;
@@ -179,7 +187,14 @@ fn build_sector_geom(sector: &SectorData) -> SectorGeom {
                     }
                 }
             }
-            Some(SectorGroup { key: key.to_owned(), color, fill, interior_stroke, rset, seams })
+            Some(SectorGroup {
+                key: key.to_owned(),
+                color,
+                fill,
+                interior_stroke,
+                rset,
+                seams,
+            })
         })
         .collect();
     SectorGeom { groups }
@@ -196,7 +211,9 @@ fn build_border_geometry(sectors: &[&SectorData]) -> Vec<(String, Path2d, Path2d
             let mut cache = cell.borrow_mut();
             for sector in sectors {
                 if let Some(loc) = sector.info.location {
-                    cache.entry((loc.x, loc.y)).or_insert_with(|| build_sector_geom(sector));
+                    cache
+                        .entry((loc.x, loc.y))
+                        .or_insert_with(|| build_sector_geom(sector));
                 }
             }
         }
@@ -217,22 +234,33 @@ fn build_border_geometry(sectors: &[&SectorData]) -> Vec<(String, Path2d, Path2d
         let neighbor_strokes = |key: &str, co: (i32, i32), hex: (i32, i32)| -> bool {
             match cache.get(&co) {
                 None => true, // neighbor not built → close the border at this edge
-                Some(geom) => !geom.groups.iter().any(|g| g.key == key && g.rset.contains(&hex)),
+                Some(geom) => !geom
+                    .groups
+                    .iter()
+                    .any(|g| g.key == key && g.rset.contains(&hex)),
             }
         };
         let mut acc: HashMap<&str, (String, Path2d, Path2d)> = HashMap::new();
         for sector in sectors {
-            let Some(loc) = sector.info.location else { continue };
-            let Some(geom) = cache.get(&(loc.x, loc.y)) else { continue };
+            let Some(loc) = sector.info.location else {
+                continue;
+            };
+            let Some(geom) = cache.get(&(loc.x, loc.y)) else {
+                continue;
+            };
             for g in &geom.groups {
-                let entry = acc
-                    .entry(g.key.as_str())
-                    .or_insert_with(|| (g.color.clone(), Path2d::new().unwrap(), Path2d::new().unwrap()));
+                let entry = acc.entry(g.key.as_str()).or_insert_with(|| {
+                    (
+                        g.color.clone(),
+                        Path2d::new().unwrap(),
+                        Path2d::new().unwrap(),
+                    )
+                });
                 entry.1.add_path(&g.fill);
                 entry.2.add_path(&g.interior_stroke); // cached same-sector edges
-                // Seam edges: stroke only where the neighbor sector is built AND
-                // the neighbor hex isn't in this group's region (border ends at
-                // the seam). An unbuilt neighbor is left un-stroked, not bordered.
+                                                      // Seam edges: stroke only where the neighbor sector is built AND
+                                                      // the neighbor hex isn't in this group's region (border ends at
+                                                      // the seam). An unbuilt neighbor is left un-stroked, not bordered.
                 for seam in &g.seams {
                     if neighbor_strokes(&g.key, seam.nb_cell, seam.nb) {
                         entry.2.move_to(seam.a.0, seam.a.1);
@@ -250,7 +278,16 @@ fn build_border_geometry(sectors: &[&SectorData]) -> Vec<(String, Path2d, Path2d
 /// cross-sector polity grouping). `dpr` composes into the world→device transform
 /// so strokes stay crisp on retina.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn draw_micro_borders(canvas: &Canvas2d, view: &ViewState, w: f64, h: f64, dpr: f64, sectors: &[&SectorData], filled: bool, micro_override: Option<&str>) {
+pub(crate) fn draw_micro_borders(
+    canvas: &Canvas2d,
+    view: &ViewState,
+    w: f64,
+    h: f64,
+    dpr: f64,
+    sectors: &[&SectorData],
+    filled: bool,
+    micro_override: Option<&str>,
+) {
     let key = border_cache_key(sectors, filled);
     BORDER_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -258,8 +295,19 @@ pub(crate) fn draw_micro_borders(canvas: &Canvas2d, view: &ViewState, w: f64, h:
             let t = now();
             let groups = build_border_geometry(sectors);
             let build_ms = now() - t;
-            let hexes: usize = sectors.iter().flat_map(|s| &s.borders).map(|b| b.region.len()).sum();
-            BORDER_STATS.with(|s| s.set(BorderStats { rebuilt: true, build_ms, groups: groups.len(), hexes }));
+            let hexes: usize = sectors
+                .iter()
+                .flat_map(|s| &s.borders)
+                .map(|b| b.region.len())
+                .sum();
+            BORDER_STATS.with(|s| {
+                s.set(BorderStats {
+                    rebuilt: true,
+                    build_ms,
+                    groups: groups.len(),
+                    hexes,
+                })
+            });
             *cache = Some(BorderCache { key, groups });
         } else {
             BORDER_STATS.with(|s| {
@@ -276,7 +324,10 @@ pub(crate) fn draw_micro_borders(canvas: &Canvas2d, view: &ViewState, w: f64, h:
         let s = view.scale;
         // World(parsec) → device: device = dpr · (w/2 + (p − center)·s).
         let a = dpr * s;
-        let (e, f) = (dpr * (w / 2.0 - view.center.0 * s), dpr * (h / 2.0 - view.center.1 * s));
+        let (e, f) = (
+            dpr * (w / 2.0 - view.center.0 * s),
+            dpr * (h / 2.0 - view.center.1 * s),
+        );
         let stroke_w = (0.10 * s).max(2.4) / s; // css width ÷ s (transform scales by s)
         ctx.save();
         let _ = ctx.set_transform(a, 0.0, 0.0, a, e, f);

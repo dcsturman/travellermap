@@ -26,8 +26,8 @@ use http_body_util::BodyExt;
 use serde_json::Value;
 use tower::ServiceExt;
 
-use crate::tests::test_state;
 use crate::build_router;
+use crate::tests::test_state;
 
 // --- harness -------------------------------------------------------------
 
@@ -124,7 +124,12 @@ fn assert_json_matches(body: &str, golden_name: &str) {
 fn assert_json_set_matches(body: &str, golden_name: &str, key: &str) {
     let sort_by_key = |v: Value| -> Vec<Value> {
         let mut a = v.as_array().expect("array").clone();
-        a.sort_by(|x, y| x[key].as_str().unwrap_or("").cmp(y[key].as_str().unwrap_or("")));
+        a.sort_by(|x, y| {
+            x[key]
+                .as_str()
+                .unwrap_or("")
+                .cmp(y[key].as_str().unwrap_or(""))
+        });
         a
     };
     assert_eq!(
@@ -150,7 +155,8 @@ fn assert_json_set_matches(body: &str, golden_name: &str, key: &str) {
 const REFERENCE_BASE: &str = "https://travellermap.com";
 
 fn parity_enabled() -> bool {
-    !std::env::var("TMAP_SKIP_PARITY").is_ok_and(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+    !std::env::var("TMAP_SKIP_PARITY")
+        .is_ok_and(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
 }
 
 /// GET `path` from the live reference. travellermap.com resets the connection
@@ -162,7 +168,11 @@ async fn fetch_live(path: &str) -> (StatusCode, String) {
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .expect("reqwest client");
-    let resp = client.get(&url).send().await.unwrap_or_else(|e| panic!("live GET {url}: {e}"));
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .unwrap_or_else(|e| panic!("live GET {url}: {e}"));
     let status = StatusCode::from_u16(resp.status().as_u16()).unwrap();
     let body = resp.text().await.unwrap_or_default();
     (status, body)
@@ -183,7 +193,11 @@ async fn parity_json_with(path: &str, norm: impl Fn(&str) -> Value) {
         "status vs live for {path}\n  ours={ours_body}\n  live={live_body}"
     );
     if ours_status.is_success() {
-        assert_eq!(norm(&ours_body), norm(&live_body), "live JSON parity for {path}");
+        assert_eq!(
+            norm(&ours_body),
+            norm(&live_body),
+            "live JSON parity for {path}"
+        );
     }
 }
 
@@ -198,7 +212,12 @@ async fn parity_json(path: &str) {
 fn jv_sorted(s: &str, key: &str) -> Value {
     let mut v = jv(s);
     if let Some(a) = v.as_array_mut() {
-        a.sort_by(|x, y| x[key].as_str().unwrap_or("").cmp(y[key].as_str().unwrap_or("")));
+        a.sort_by(|x, y| {
+            x[key]
+                .as_str()
+                .unwrap_or("")
+                .cmp(y[key].as_str().unwrap_or(""))
+        });
     }
     v
 }
@@ -210,9 +229,17 @@ async fn parity_text(path: &str) {
     }
     let (ours_status, _, ours_body) = get(path).await;
     let (live_status, live_body) = fetch_live(path).await;
-    assert_eq!(ours_status.as_u16(), live_status.as_u16(), "status vs live for {path}");
+    assert_eq!(
+        ours_status.as_u16(),
+        live_status.as_u16(),
+        "status vs live for {path}"
+    );
     if ours_status.is_success() {
-        assert_eq!(strip_timestamp(&ours_body), strip_timestamp(&live_body), "live text parity for {path}");
+        assert_eq!(
+            strip_timestamp(&ours_body),
+            strip_timestamp(&live_body),
+            "live text parity for {path}"
+        );
     }
 }
 
@@ -239,7 +266,9 @@ async fn parity_search(query: &str) {
         return;
     }
     for (who, body) in [("ours", &ours_body), ("live", &live_body)] {
-        let n = jv(body)["Results"]["Items"].as_array().map_or(0, |a| a.len());
+        let n = jv(body)["Results"]["Items"]
+            .as_array()
+            .map_or(0, |a| a.len());
         assert!(
             n < crate::NUM_RESULTS,
             "query {query:?} hit the {}-result cap on {who} ({n} items); ranking decides \
@@ -247,7 +276,11 @@ async fn parity_search(query: &str) {
             crate::NUM_RESULTS
         );
     }
-    assert_eq!(jv(&ours_body), jv(&live_body), "search ordered parity for {query:?}");
+    assert_eq!(
+        jv(&ours_body),
+        jv(&live_body),
+        "search ordered parity for {query:?}"
+    );
 }
 
 // ========================================================================
@@ -356,7 +389,10 @@ async fn universe_envelope_and_known_sectors_match() {
     assert_eq!(status, StatusCode::OK);
     assert!(ct.contains("application/json"), "ct={ct}");
     let ours = jv(&body);
-    assert!(ours.get("Sectors").is_some(), "public envelope {{\"Sectors\":[…]}}");
+    assert!(
+        ours.get("Sectors").is_some(),
+        "public envelope {{\"Sectors\":[…]}}"
+    );
 
     // Well-known sectors must be byte-identical to the reference (full shape:
     // X/Y/Milieu/Abbreviation/Tags/Names incl. localized entries).
@@ -364,8 +400,12 @@ async fn universe_envelope_and_known_sectors_match() {
     let ours_map = sectors_by_xy(&ours);
     let theirs_map = sectors_by_xy(&theirs);
     for xy in [(-4, -1), (0, -21)] {
-        let o = ours_map.get(&xy).unwrap_or_else(|| panic!("we omit sector at {xy:?}"));
-        let t = theirs_map.get(&xy).unwrap_or_else(|| panic!("ref omits sector at {xy:?}"));
+        let o = ours_map
+            .get(&xy)
+            .unwrap_or_else(|| panic!("we omit sector at {xy:?}"));
+        let t = theirs_map
+            .get(&xy)
+            .unwrap_or_else(|| panic!("ref omits sector at {xy:?}"));
         assert_eq!(o, t, "sector at {xy:?} differs from reference");
     }
     // Live parity: the FULL sector set must match live exactly — same (X,Y) keys,
@@ -378,9 +418,15 @@ async fn universe_envelope_and_known_sectors_match() {
         let theirs_live = sectors_by_xy(&live_v);
         let our_keys: std::collections::HashSet<_> = ours_map.keys().copied().collect();
         let their_keys: std::collections::HashSet<_> = theirs_live.keys().copied().collect();
-        assert_eq!(our_keys, their_keys, "universe sector set differs from live");
+        assert_eq!(
+            our_keys, their_keys,
+            "universe sector set differs from live"
+        );
         for (xy, o) in &ours_map {
-            assert_eq!(o, &theirs_live[xy], "universe sector {xy:?} differs from live");
+            assert_eq!(
+                o, &theirs_live[xy],
+                "universe sector {xy:?} differs from live"
+            );
         }
     }
 }
@@ -392,7 +438,10 @@ async fn jsonp_wraps_payload() {
     let (status, ct, body) = get("/api/milieux?jsonp=cb").await;
     assert_eq!(status, StatusCode::OK);
     assert!(ct.contains("javascript"), "ct={ct}");
-    assert!(body.starts_with("cb(") && body.ends_with(");"), "not wrapped: {body}");
+    assert!(
+        body.starts_with("cb(") && body.ends_with(");"),
+        "not wrapped: {body}"
+    );
     // The wrapped payload is exactly the JSON body.
     let inner = &body[3..body.len() - 2];
     assert_eq!(jv(inner), jv(&golden("milieux.json")));
@@ -462,8 +511,14 @@ async fn universe_all_returned_sectors_match() {
         hard_diffs.len(),
         hard_diffs.join("\n  ")
     );
-    assert!(missing <= 5, "{missing} sectors are absent from the reference (drift budget 5)");
-    assert!(abbr_drift <= 60, "{abbr_drift} abbreviation-only drifts (budget 60)");
+    assert!(
+        missing <= 5,
+        "{missing} sectors are absent from the reference (drift budget 5)"
+    );
+    assert!(
+        abbr_drift <= 60,
+        "{abbr_drift} abbreviation-only drifts (budget 60)"
+    );
 }
 
 // --- Search: documented Results.Items envelope ---------------------------
@@ -511,17 +566,26 @@ fn has_world(items: &[(String, String)], name: &str) -> bool {
 async fn search_wildcard_r_star_a_matches_regina() {
     // `r*a` (→ `r%a`) word-boundary off (wildcard) → full LIKE; matches Regina.
     let items = search_items("r*a").await;
-    assert!(has_world(&items, "Regina"), "r*a should match Regina: {items:?}");
+    assert!(
+        has_world(&items, "Regina"),
+        "r*a should match Regina: {items:?}"
+    );
 }
 
 #[tokio::test]
 async fn search_re_star_in_excludes_regina_but_re_star_in_star_includes_it() {
     // `re*in` (→ `re%in`): anchored full-string LIKE, no trailing % → NOT Regina.
     let items = search_items("re*in").await;
-    assert!(!has_world(&items, "Regina"), "re*in must NOT match Regina: {items:?}");
+    assert!(
+        !has_world(&items, "Regina"),
+        "re*in must NOT match Regina: {items:?}"
+    );
     // `re*in*` (→ `re%in%`): trailing % → matches Regina.
     let items = search_items("re*in*").await;
-    assert!(has_world(&items, "Regina"), "re*in* should match Regina: {items:?}");
+    assert!(
+        has_world(&items, "Regina"),
+        "re*in* should match Regina: {items:?}"
+    );
 }
 
 #[tokio::test]
@@ -544,7 +608,10 @@ async fn search_exact_sol_excludes_solomani_rim() {
 async fn search_like_tear_finds_terra_via_soundex() {
     // `like:tear` → SOUNDEX(name) == SOUNDEX('tear') == T600 → Terra (T600).
     let items = search_items("like:tear").await;
-    assert!(has_world(&items, "Terra"), "like:tear should find Terra via soundex: {items:?}");
+    assert!(
+        has_world(&items, "Terra"),
+        "like:tear should find Terra via soundex: {items:?}"
+    );
 }
 
 #[tokio::test]
@@ -552,7 +619,9 @@ async fn search_multi_word_and_solomani_rim() {
     // `so ri` → two word-boundary clauses ANDed → "Solomani Rim" sector.
     let items = search_items("so%20ri").await;
     assert!(
-        items.iter().any(|(k, n)| k == "Sector" && n == "Solomani Rim"),
+        items
+            .iter()
+            .any(|(k, n)| k == "Sector" && n == "Solomani Rim"),
         "so ri should match the Solomani Rim sector: {items:?}"
     );
 }
@@ -561,8 +630,14 @@ async fn search_multi_word_and_solomani_rim() {
 async fn search_uwp_scope_restricts_to_worlds() {
     // `uwp:A788899-C` is Regina's UWP → exactly Regina (worlds only).
     let items = search_items("uwp:A788899-C").await;
-    assert!(has_world(&items, "Regina"), "uwp:A788899-C should match Regina: {items:?}");
-    assert!(items.iter().all(|(k, _)| k == "World"), "uwp: restricts to worlds: {items:?}");
+    assert!(
+        has_world(&items, "Regina"),
+        "uwp:A788899-C should match Regina: {items:?}"
+    );
+    assert!(
+        items.iter().all(|(k, _)| k == "World"),
+        "uwp: restricts to worlds: {items:?}"
+    );
 }
 
 #[tokio::test]
@@ -571,8 +646,14 @@ async fn search_in_scope_filters_by_sector() {
     // "spin" (Spinward Marches). Every hit is a world; Trin is one of them.
     let items = search_items("t*%20in:spin").await;
     assert!(!items.is_empty(), "t* in:spin should find worlds");
-    assert!(items.iter().all(|(k, _)| k == "World"), "in: restricts to worlds: {items:?}");
-    assert!(has_world(&items, "Trin"), "t* in:spin should include Trin: {items:?}");
+    assert!(
+        items.iter().all(|(k, _)| k == "World"),
+        "in: restricts to worlds: {items:?}"
+    );
+    assert!(
+        has_world(&items, "Trin"),
+        "t* in:spin should include Trin: {items:?}"
+    );
 }
 
 #[tokio::test]
@@ -580,8 +661,14 @@ async fn search_uwp_shortcut_prefixes_uwp() {
     // A bare `XXXXXXX-X` is rewritten to `uwp:XXXXXXX-X`. Regina's UWP returns
     // Regina and only worlds.
     let items = search_items("A788899-C").await;
-    assert!(has_world(&items, "Regina"), "UWP shortcut should match Regina: {items:?}");
-    assert!(items.iter().all(|(k, _)| k == "World"), "UWP shortcut → worlds only: {items:?}");
+    assert!(
+        has_world(&items, "Regina"),
+        "UWP shortcut should match Regina: {items:?}"
+    );
+    assert!(
+        items.iter().all(|(k, _)| k == "World"),
+        "UWP shortcut → worlds only: {items:?}"
+    );
 }
 
 #[tokio::test]
@@ -603,8 +690,14 @@ async fn search_default_word_boundary_rules() {
 async fn search_sector_hex_shortcut() {
     // `Spinward Marches 1910` → the world at Spinward Marches 1910 = Regina.
     let items = search_items("Spinward%20Marches%201910").await;
-    assert!(has_world(&items, "Regina"), "sector+hex should match Regina: {items:?}");
-    assert!(items.iter().all(|(k, _)| k == "World"), "sector+hex → worlds only: {items:?}");
+    assert!(
+        has_world(&items, "Regina"),
+        "sector+hex should match Regina: {items:?}"
+    );
+    assert!(
+        items.iter().all(|(k, _)| k == "World"),
+        "sector+hex → worlds only: {items:?}"
+    );
 }
 
 #[tokio::test]
@@ -612,7 +705,10 @@ async fn search_types_param_restricts_kinds() {
     // `types=sectors` over "spinward" → only Sector items.
     let items = search_items("spinward&types=sectors").await;
     assert!(!items.is_empty(), "expected sector hits for spinward");
-    assert!(items.iter().all(|(k, _)| k == "Sector"), "types=sectors → sectors only: {items:?}");
+    assert!(
+        items.iter().all(|(k, _)| k == "Sector"),
+        "types=sectors → sectors only: {items:?}"
+    );
 }
 
 // --- Search: per-query live parity vs the reference ----------------------
@@ -712,7 +808,8 @@ async fn data_world_by_hex() {
 
 #[tokio::test]
 async fn sec_tab_delimited() {
-    let (status, ct, body) = get("/api/sec?sector=Spinward%20Marches&subsector=A&type=TabDelimited").await;
+    let (status, ct, body) =
+        get("/api/sec?sector=Spinward%20Marches&subsector=A&type=TabDelimited").await;
     assert_eq!(status, StatusCode::OK);
     assert!(ct.contains("text/plain"), "ct={ct}");
     // TabDelimited carries no metadata block (hence no timestamp) — byte-exact.
@@ -722,10 +819,14 @@ async fn sec_tab_delimited() {
 
 #[tokio::test]
 async fn sec_second_survey() {
-    let (status, _, body) = get("/api/sec?sector=Spinward%20Marches&subsector=A&type=SecondSurvey").await;
+    let (status, _, body) =
+        get("/api/sec?sector=Spinward%20Marches&subsector=A&type=SecondSurvey").await;
     assert_eq!(status, StatusCode::OK);
     // The metadata block carries a generation timestamp; normalize it away.
-    assert_eq!(strip_timestamp(&body), strip_timestamp(&golden("sec_sm_subsectorA.sec")));
+    assert_eq!(
+        strip_timestamp(&body),
+        strip_timestamp(&golden("sec_sm_subsectorA.sec"))
+    );
     parity_text("/api/sec?sector=Spinward%20Marches&subsector=A&type=SecondSurvey").await;
 }
 
@@ -736,7 +837,10 @@ async fn sec_default_is_second_survey() {
     let (status, ct, body) = get("/api/sec?sector=Spinward%20Marches&subsector=A").await;
     assert_eq!(status, StatusCode::OK);
     assert!(ct.contains("text/plain"), "ct={ct}");
-    assert_eq!(strip_timestamp(&body), strip_timestamp(&golden("sec_sm_subsectorA.sec")));
+    assert_eq!(
+        strip_timestamp(&body),
+        strip_timestamp(&golden("sec_sm_subsectorA.sec"))
+    );
     parity_text("/api/sec?sector=Spinward%20Marches&subsector=A").await;
 }
 
@@ -748,7 +852,10 @@ async fn sec_legacy() {
     assert_eq!(status, StatusCode::OK);
     assert!(ct.contains("text/plain"), "ct={ct}");
     // The metadata block carries a generation timestamp; normalize it away.
-    assert_eq!(strip_timestamp(&body), strip_timestamp(&golden("sec_sm_subsectorA_legacy.sec")));
+    assert_eq!(
+        strip_timestamp(&body),
+        strip_timestamp(&golden("sec_sm_subsectorA_legacy.sec"))
+    );
     parity_text("/api/sec?sector=Spinward%20Marches&subsector=A&type=SEC").await;
 }
 
@@ -757,7 +864,11 @@ async fn sec_legacy() {
 fn strip_timestamp(s: &str) -> String {
     s.lines()
         .map(|l| {
-            if l.starts_with("# ") && l.len() > 4 && l.as_bytes()[2].is_ascii_digit() && l.contains('T') {
+            if l.starts_with("# ")
+                && l.len() > 4
+                && l.as_bytes()[2].is_ascii_digit()
+                && l.contains('T')
+            {
                 "# <TIMESTAMP>"
             } else {
                 l
@@ -774,7 +885,10 @@ async fn metadata_json() {
     let (status, ct, body) = get("/api/metadata?sector=Spinward%20Marches").await;
     assert_eq!(status, StatusCode::OK);
     assert!(ct.contains("application/json"), "ct={ct}");
-    assert_eq!(norm_metadata(&body), norm_metadata(&golden("metadata_sm.json")));
+    assert_eq!(
+        norm_metadata(&body),
+        norm_metadata(&golden("metadata_sm.json"))
+    );
     parity_json_with("/api/metadata?sector=Spinward%20Marches", norm_metadata).await;
 }
 
@@ -804,13 +918,23 @@ fn norm_metadata(s: &str) -> Value {
     v
 }
 
-fn route_abs(o: &serde_json::Map<String, Value>, hk: &str, oxk: &str, oyk: &str, sx: i64, sy: i64) -> Value {
+fn route_abs(
+    o: &serde_json::Map<String, Value>,
+    hk: &str,
+    oxk: &str,
+    oyk: &str,
+    sx: i64,
+    sy: i64,
+) -> Value {
     let hex = o.get(hk).and_then(|h| h.as_str()).unwrap_or("0000");
     let col: i64 = hex.get(0..2).and_then(|s| s.parse().ok()).unwrap_or(0);
     let row: i64 = hex.get(2..4).and_then(|s| s.parse().ok()).unwrap_or(0);
     let ox = o.get(oxk).and_then(|v| v.as_i64()).unwrap_or(0);
     let oy = o.get(oyk).and_then(|v| v.as_i64()).unwrap_or(0);
-    Value::Array(vec![Value::from((sx + ox) * 32 + col), Value::from((sy + oy) * 40 + row)])
+    Value::Array(vec![
+        Value::from((sx + ox) * 32 + col),
+        Value::from((sy + oy) * 40 + row),
+    ])
 }
 
 // --- MSEC ----------------------------------------------------------------
@@ -858,9 +982,17 @@ async fn parity_msec(path: &str) {
     }
     let (ours_status, _, ours_body) = get(path).await;
     let (live_status, live_body) = fetch_live(path).await;
-    assert_eq!(ours_status.as_u16(), live_status.as_u16(), "status vs live for {path}");
+    assert_eq!(
+        ours_status.as_u16(),
+        live_status.as_u16(),
+        "status vs live for {path}"
+    );
     if ours_status.is_success() {
-        assert_eq!(norm_msec(&ours_body), norm_msec(&live_body), "live MSEC parity for {path}");
+        assert_eq!(
+            norm_msec(&ours_body),
+            norm_msec(&live_body),
+            "live MSEC parity for {path}"
+        );
     }
 }
 
@@ -900,15 +1032,33 @@ async fn route_public_shape() {
     assert_eq!(stops.first().unwrap()["Name"], "Regina");
     assert_eq!(stops.last().unwrap()["Name"], "Inthe");
     // Public per-stop keys — including `Subsector` (the subsector NAME).
-    for k in
-        ["Sector", "SectorX", "SectorY", "Subsector", "Name", "Hex", "HexX", "HexY", "UWP", "PBG", "Zone", "AllegianceName"]
-    {
+    for k in [
+        "Sector",
+        "SectorX",
+        "SectorY",
+        "Subsector",
+        "Name",
+        "Hex",
+        "HexX",
+        "HexY",
+        "UWP",
+        "PBG",
+        "Zone",
+        "AllegianceName",
+    ] {
         assert!(stops[0].get(k).is_some(), "stop missing {k}");
     }
     // Subsector is the world's subsector display name (reference RouteStop.Subsector):
     // Regina/Yori/Inthe sit in the Regina subsector; Treece (2311) in Lanth.
-    assert_eq!(stops[0]["Subsector"], "Regina", "Regina is in the Regina subsector");
-    assert_eq!(stops.last().unwrap()["Subsector"], "Regina", "Inthe is in the Regina subsector");
+    assert_eq!(
+        stops[0]["Subsector"], "Regina",
+        "Regina is in the Regina subsector"
+    );
+    assert_eq!(
+        stops.last().unwrap()["Subsector"],
+        "Regina",
+        "Inthe is in the Regina subsector"
+    );
     assert!(
         stops.iter().any(|s| s["Subsector"] == "Lanth"),
         "Treece (2311) is in the Lanth subsector: {stops:?}"
@@ -947,7 +1097,11 @@ async fn data_alias_quadrant() {
     let (status, _, body) = get("/data/Spinward%20Marches/Alpha").await;
     assert_eq!(status, StatusCode::OK);
     // SecondSurvey columnar, no `#` metadata block (metadata=0).
-    assert!(body.starts_with("Hex"), "expected SecondSurvey header: {}", &body[..body.len().min(80)]);
+    assert!(
+        body.starts_with("Hex"),
+        "expected SecondSurvey header: {}",
+        &body[..body.len().min(80)]
+    );
     parity_text("/data/Spinward%20Marches/Alpha").await;
 }
 
@@ -976,7 +1130,11 @@ async fn data_alias_quadrant_tab() {
 async fn data_alias_subsector_letter() {
     let (status, _, body) = get("/data/Spinward%20Marches/A").await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.starts_with("Hex"), "expected SecondSurvey header: {}", &body[..body.len().min(80)]);
+    assert!(
+        body.starts_with("Hex"),
+        "expected SecondSurvey header: {}",
+        &body[..body.len().min(80)]
+    );
     parity_text("/data/Spinward%20Marches/A").await;
 }
 
@@ -1024,7 +1182,11 @@ async fn post_sec_tab_roundtrip() {
     assert!(ct.contains("text/plain"), "ct={ct}");
     // TabDelimited: header row + one row per world, no `#` metadata block.
     let lines: Vec<&str> = body.lines().collect();
-    assert!(lines[0].starts_with("Sector\tSS\tHex\tName\tUWP"), "header: {}", lines[0]);
+    assert!(
+        lines[0].starts_with("Sector\tSS\tHex\tName\tUWP"),
+        "header: {}",
+        lines[0]
+    );
     assert_eq!(lines.len(), 3, "header + 2 worlds: {body}");
     assert!(lines[1].contains("\t0101\tZeycude\t"), "row1: {}", lines[1]);
     assert!(lines[2].contains("\t0102\tReno\t"), "row2: {}", lines[2]);
@@ -1032,7 +1194,11 @@ async fn post_sec_tab_roundtrip() {
     if parity_enabled() {
         let (ls, lb) = post_live("/api/sec?type=TabDelimited", POST_SNIPPET).await;
         assert_eq!(ls, StatusCode::OK, "live: {lb}");
-        assert_eq!(strip_timestamp(&body), strip_timestamp(&lb), "live POST tab parity");
+        assert_eq!(
+            strip_timestamp(&body),
+            strip_timestamp(&lb),
+            "live POST tab parity"
+        );
     }
 }
 
@@ -1041,12 +1207,22 @@ async fn post_sec_default_is_secondsurvey() {
     // Missing `type` reformats to SecondSurvey columnar (matching live).
     let (status, _, body) = post("/api/sec", POST_SNIPPET).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert!(body.starts_with("Hex"), "expected SecondSurvey header: {body}");
-    assert!(body.contains("Zeycude") && body.contains("Reno"), "missing worlds: {body}");
+    assert!(
+        body.starts_with("Hex"),
+        "expected SecondSurvey header: {body}"
+    );
+    assert!(
+        body.contains("Zeycude") && body.contains("Reno"),
+        "missing worlds: {body}"
+    );
     if parity_enabled() {
         let (ls, lb) = post_live("/api/sec", POST_SNIPPET).await;
         assert_eq!(ls, StatusCode::OK, "live: {lb}");
-        assert_eq!(strip_timestamp(&body), strip_timestamp(&lb), "live POST default parity");
+        assert_eq!(
+            strip_timestamp(&body),
+            strip_timestamp(&lb),
+            "live POST default parity"
+        );
     }
 }
 
@@ -1054,11 +1230,18 @@ async fn post_sec_default_is_secondsurvey() {
 async fn post_sec_legacy_roundtrip() {
     let (status, _, body) = post("/api/sec?type=SEC", POST_SNIPPET).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert!(body.contains("Zeycude") && body.contains("Reno"), "missing worlds: {body}");
+    assert!(
+        body.contains("Zeycude") && body.contains("Reno"),
+        "missing worlds: {body}"
+    );
     if parity_enabled() {
         let (ls, lb) = post_live("/api/sec?type=SEC", POST_SNIPPET).await;
         assert_eq!(ls, StatusCode::OK, "live: {lb}");
-        assert_eq!(strip_timestamp(&body), strip_timestamp(&lb), "live POST SEC parity");
+        assert_eq!(
+            strip_timestamp(&body),
+            strip_timestamp(&lb),
+            "live POST SEC parity"
+        );
     }
 }
 
@@ -1067,7 +1250,10 @@ async fn post_sec_quadrant_filter() {
     // All snippet worlds are in quadrant Alpha; Beta filters them all out.
     let (status, _, alpha) = post("/api/sec?type=TabDelimited&quadrant=alpha", POST_SNIPPET).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(alpha.contains("Zeycude"), "alpha should keep worlds: {alpha}");
+    assert!(
+        alpha.contains("Zeycude"),
+        "alpha should keep worlds: {alpha}"
+    );
     let (status, _, beta) = post("/api/sec?type=TabDelimited&quadrant=beta", POST_SNIPPET).await;
     assert_eq!(status, StatusCode::OK);
     assert!(!beta.contains("Zeycude"), "beta should drop worlds: {beta}");
@@ -1089,8 +1275,14 @@ async fn post_metadata_xml_to_json() {
     assert!(ct.contains("json"), "ct={ct}");
     let v = jv(&body);
     assert_eq!(v["Abbreviation"], "Test", "abbreviation round-trip: {body}");
-    assert_eq!(v["Names"][0]["Text"], "Test Sector", "name round-trip: {body}");
-    assert_eq!(v["Subsectors"][0]["Name"], "Alpha SS", "subsector round-trip: {body}");
+    assert_eq!(
+        v["Names"][0]["Text"], "Test Sector",
+        "name round-trip: {body}"
+    );
+    assert_eq!(
+        v["Subsectors"][0]["Name"], "Alpha SS",
+        "subsector round-trip: {body}"
+    );
 }
 
 #[tokio::test]
@@ -1133,7 +1325,10 @@ async fn fetch_live_with(path: &str, headers: &[(&str, &str)]) -> (StatusCode, S
     for (k, v) in headers {
         req = req.header(*k, *v);
     }
-    let resp = req.send().await.unwrap_or_else(|e| panic!("live GET {url}: {e}"));
+    let resp = req
+        .send()
+        .await
+        .unwrap_or_else(|e| panic!("live GET {url}: {e}"));
     let status = StatusCode::from_u16(resp.status().as_u16()).unwrap();
     (status, resp.text().await.unwrap_or_default())
 }
@@ -1145,7 +1340,10 @@ async fn assert_jsonp(path: &str) {
     let (status, ct, body) = get(&format!("{path}{sep}jsonp=foo")).await;
     assert_eq!(status, StatusCode::OK, "jsonp {path}: {body}");
     assert!(ct.contains("javascript"), "jsonp {path} ct={ct}");
-    assert!(body.starts_with("foo(") && body.ends_with(");"), "jsonp not wrapped: {body}");
+    assert!(
+        body.starts_with("foo(") && body.ends_with(");"),
+        "jsonp not wrapped: {body}"
+    );
     // Inner payload parses as JSON.
     let inner = &body[4..body.len() - 2];
     let _ = jv(inner);
@@ -1162,19 +1360,37 @@ async fn universe_xml() {
         get_with("/api/universe?milieu=M1105", &[("accept", "text/xml")]).await;
     assert_eq!(status, StatusCode::OK);
     assert!(ct.contains("xml"), "ct={ct}");
-    assert!(body.contains("<Universe>"), "missing <Universe> root: {}", &body[..body.len().min(200)]);
+    assert!(
+        body.contains("<Universe>"),
+        "missing <Universe> root: {}",
+        &body[..body.len().min(200)]
+    );
     assert!(body.contains("<Sector "), "missing <Sector> elements");
-    assert!(body.contains("<Milieu>M1105</Milieu>"), "missing <Milieu> element");
+    assert!(
+        body.contains("<Milieu>M1105</Milieu>"),
+        "missing <Milieu> element"
+    );
     // Live parity: the reference serves XML for this endpoint. Compare a known
     // sector's (X,Y) presence rather than byte-exact (live wraps with xmlns +
     // pretty-prints), so we don't over-pin cosmetic differences.
     if parity_enabled() {
-        let (ls, lb) = fetch_live_with("/api/universe?milieu=M1105", &[("accept", "text/xml")]).await;
+        let (ls, lb) =
+            fetch_live_with("/api/universe?milieu=M1105", &[("accept", "text/xml")]).await;
         assert_eq!(ls, StatusCode::OK);
-        assert!(lb.contains("<Universe"), "live XML lacks <Universe>: {}", &lb[..lb.len().min(120)]);
+        assert!(
+            lb.contains("<Universe"),
+            "live XML lacks <Universe>: {}",
+            &lb[..lb.len().min(120)]
+        );
         // Both must carry the Spinward Marches abbreviation attribute.
-        assert!(body.contains("Abbreviation=\"Spin\""), "ours lacks Spin abbreviation");
-        assert!(lb.contains("Abbreviation=\"Spin\""), "live lacks Spin abbreviation");
+        assert!(
+            body.contains("Abbreviation=\"Spin\""),
+            "ours lacks Spin abbreviation"
+        );
+        assert!(
+            lb.contains("Abbreviation=\"Spin\""),
+            "live lacks Spin abbreviation"
+        );
     }
 }
 
@@ -1188,9 +1404,16 @@ async fn search_xml() {
     let (status, ct, body) = get_with("/api/search?q=Regina", &[("accept", "text/xml")]).await;
     assert_eq!(status, StatusCode::OK);
     assert!(ct.contains("xml"), "ct={ct}");
-    assert!(body.contains("<results Count="), "missing <results Count=>: {}", &body[..body.len().min(200)]);
+    assert!(
+        body.contains("<results Count="),
+        "missing <results Count=>: {}",
+        &body[..body.len().min(200)]
+    );
     assert!(body.contains("name=\"Regina\""), "missing Regina world hit");
-    assert!(body.contains("uwp=\"A788899-C\""), "missing Regina uwp attr");
+    assert!(
+        body.contains("uwp=\"A788899-C\""),
+        "missing Regina uwp attr"
+    );
     if parity_enabled() {
         let (ls, lb) = fetch_live_with("/api/search?q=Regina", &[("accept", "text/xml")]).await;
         assert_eq!(ls, StatusCode::OK);
@@ -1209,18 +1432,37 @@ async fn credits_jsonp() {
 
 #[tokio::test]
 async fn credits_xml() {
-    let (status, ct, body) =
-        get_with("/api/credits?sector=Spinward%20Marches&hex=1910", &[("accept", "text/xml")]).await;
+    let (status, ct, body) = get_with(
+        "/api/credits?sector=Spinward%20Marches&hex=1910",
+        &[("accept", "text/xml")],
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert!(ct.contains("xml"), "ct={ct}");
-    assert!(body.contains("<Data>"), "missing <Data> root: {}", &body[..body.len().min(200)]);
-    assert!(body.contains("<WorldName>Regina</WorldName>"), "missing <WorldName>Regina");
-    assert!(body.contains("<SubsectorIndex>C</SubsectorIndex>"), "missing <SubsectorIndex>C");
+    assert!(
+        body.contains("<Data>"),
+        "missing <Data> root: {}",
+        &body[..body.len().min(200)]
+    );
+    assert!(
+        body.contains("<WorldName>Regina</WorldName>"),
+        "missing <WorldName>Regina"
+    );
+    assert!(
+        body.contains("<SubsectorIndex>C</SubsectorIndex>"),
+        "missing <SubsectorIndex>C"
+    );
     if parity_enabled() {
-        let (ls, lb) =
-            fetch_live_with("/api/credits?sector=Spinward%20Marches&hex=1910", &[("accept", "text/xml")]).await;
+        let (ls, lb) = fetch_live_with(
+            "/api/credits?sector=Spinward%20Marches&hex=1910",
+            &[("accept", "text/xml")],
+        )
+        .await;
         assert_eq!(ls, StatusCode::OK);
-        assert!(lb.contains("<WorldName>Regina</WorldName>"), "live lacks <WorldName>Regina");
+        assert!(
+            lb.contains("<WorldName>Regina</WorldName>"),
+            "live lacks <WorldName>Regina"
+        );
     }
 }
 
@@ -1238,11 +1480,18 @@ async fn jumpworlds_xml() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert!(ct.contains("xml"), "ct={ct}");
-    assert!(body.contains("<JumpWorlds>"), "missing <JumpWorlds> root: {}", &body[..body.len().min(200)]);
+    assert!(
+        body.contains("<JumpWorlds>"),
+        "missing <JumpWorlds> root: {}",
+        &body[..body.len().min(200)]
+    );
     assert!(body.contains("<World>"), "missing <World> elements");
     assert!(body.contains("<Name>Regina</Name>"), "missing Regina world");
     // Empty string members serialize as self-closing (matching the .NET serializer).
-    assert!(body.contains("<Bases />") || body.contains("<Bases>"), "Bases element missing");
+    assert!(
+        body.contains("<Bases />") || body.contains("<Bases>"),
+        "Bases element missing"
+    );
     if parity_enabled() {
         let (ls, lb) = fetch_live_with(
             "/api/jumpworlds?sector=Spinward%20Marches&hex=1910&jump=2",
@@ -1257,7 +1506,8 @@ async fn jumpworlds_xml() {
 
 #[tokio::test]
 async fn route_jsonp() {
-    assert_jsonp("/api/route?start=Spinward%20Marches%201910&end=Spinward%20Marches%202410&jump=2").await;
+    assert_jsonp("/api/route?start=Spinward%20Marches%201910&end=Spinward%20Marches%202410&jump=2")
+        .await;
 }
 
 #[tokio::test]
@@ -1269,7 +1519,11 @@ async fn route_xml() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert!(ct.contains("xml"), "ct={ct}");
-    assert!(body.contains("<ArrayOfRouteStop>"), "missing <ArrayOfRouteStop> root: {}", &body[..body.len().min(200)]);
+    assert!(
+        body.contains("<ArrayOfRouteStop>"),
+        "missing <ArrayOfRouteStop> root: {}",
+        &body[..body.len().min(200)]
+    );
     assert!(body.contains("<RouteStop>"), "missing <RouteStop> elements");
     assert!(body.contains("<Name>Regina</Name>"), "missing Regina start");
     if parity_enabled() {
@@ -1279,7 +1533,10 @@ async fn route_xml() {
         )
         .await;
         assert_eq!(ls, StatusCode::OK);
-        assert!(lb.contains("<ArrayOfRouteStop"), "live XML lacks <ArrayOfRouteStop>");
+        assert!(
+            lb.contains("<ArrayOfRouteStop"),
+            "live XML lacks <ArrayOfRouteStop>"
+        );
         assert!(lb.contains("<Name>Regina</Name>"), "live lacks Regina");
     }
 }
@@ -1292,17 +1549,33 @@ async fn metadata_jsonp() {
 
 #[tokio::test]
 async fn metadata_xml() {
-    let (status, ct, body) =
-        get_with("/api/metadata?sector=Spinward%20Marches", &[("accept", "text/xml")]).await;
+    let (status, ct, body) = get_with(
+        "/api/metadata?sector=Spinward%20Marches",
+        &[("accept", "text/xml")],
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert!(ct.contains("xml"), "ct={ct}");
     // Root + representative data points (the same data `metadata_json` parity-checks
     // deeply; here we prove the XML *rendering* of it is complete & correct).
-    assert!(body.contains("<Sector "), "missing <Sector> root: {}", &body[..body.len().min(200)]);
+    assert!(
+        body.contains("<Sector "),
+        "missing <Sector> root: {}",
+        &body[..body.len().min(200)]
+    );
     assert!(body.contains("Tags=\"Official OTU\""), "missing Tags attr");
-    assert!(body.contains("Abbreviation=\"Spin\""), "missing Abbreviation attr");
-    assert!(body.contains("<Subsector Index=\"C\">Regina</Subsector>"), "missing Regina subsector");
-    assert!(body.contains("<Allegiance Code=\"ImDd\" Base=\"Im\">"), "missing ImDd allegiance");
+    assert!(
+        body.contains("Abbreviation=\"Spin\""),
+        "missing Abbreviation attr"
+    );
+    assert!(
+        body.contains("<Subsector Index=\"C\">Regina</Subsector>"),
+        "missing Regina subsector"
+    );
+    assert!(
+        body.contains("<Allegiance Code=\"ImDd\" Base=\"Im\">"),
+        "missing ImDd allegiance"
+    );
     assert!(body.contains("<![CDATA["), "missing Credits CDATA");
     assert!(body.contains("<Border "), "missing <Border>");
     assert!(body.contains("<Route "), "missing <Route>");
@@ -1313,10 +1586,20 @@ async fn metadata_xml() {
     // (allegiance ordering; the `Route.FixHex` start/end hex notation). Live wraps
     // the root with xmlns + pretty-prints, so we compare counts, not bytes.
     if parity_enabled() {
-        let (ls, lb) =
-            fetch_live_with("/api/metadata?sector=Spinward%20Marches", &[("accept", "text/xml")]).await;
+        let (ls, lb) = fetch_live_with(
+            "/api/metadata?sector=Spinward%20Marches",
+            &[("accept", "text/xml")],
+        )
+        .await;
         assert_eq!(ls, StatusCode::OK);
-        for tag in ["<Subsector ", "<Allegiance ", "<Border ", "<Route ", "<Product ", "<Name>"] {
+        for tag in [
+            "<Subsector ",
+            "<Allegiance ",
+            "<Border ",
+            "<Route ",
+            "<Product ",
+            "<Name>",
+        ] {
             assert_eq!(
                 body.matches(tag).count(),
                 lb.matches(tag).count(),
@@ -1324,6 +1607,9 @@ async fn metadata_xml() {
             );
         }
         // And the actual subsector names match live (data, not just shape).
-        assert!(lb.contains("<Subsector Index=\"C\">Regina</Subsector>"), "live lacks Regina subsector");
+        assert!(
+            lb.contains("<Subsector Index=\"C\">Regina</Subsector>"),
+            "live lacks Regina subsector"
+        );
     }
 }

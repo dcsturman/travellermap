@@ -18,21 +18,39 @@ fn route_color(allegiance: &str) -> &'static str {
         "JuPr" => "#90ee90",                 // lightgreen
         "ZhCo" | "JAOz" | "JAsi" | "JCoK" | "JHhk" | "JLum" | "JMen" | "JPSt" | "JRar" | "JUkh"
         | "JVug" | "JuHl" | "JuRu" => "#add8e6", // lightblue
-        _ => "#048104", // default allegiance "Im" → green
+        _ => "#048104",                      // default allegiance "Im" → green
     }
 }
 
-pub(crate) fn draw_routes(c: &impl Canvas, view: &ViewState, w: f64, h: f64, sector: &SectorData, micro_override: Option<&str>) {
+pub(crate) fn draw_routes(
+    c: &impl Canvas,
+    view: &ViewState,
+    w: f64,
+    h: f64,
+    sector: &SectorData,
+    micro_override: Option<&str>,
+) {
     let Some(loc) = sector.info.location else {
         return;
     };
     let width = (0.08 * view.scale).max(1.5);
     for route in &sector.routes {
-        let (Some((sc, sr)), Some((ec, er))) = (parse_hex(&route.start), parse_hex(&route.end)) else {
+        let (Some((sc, sr)), Some((ec, er))) = (parse_hex(&route.start), parse_hex(&route.end))
+        else {
             continue;
         };
-        let (swc, swr) = world_hex(loc.x + route.start_offset.0, loc.y + route.start_offset.1, sc, sr);
-        let (ewc, ewr) = world_hex(loc.x + route.end_offset.0, loc.y + route.end_offset.1, ec, er);
+        let (swc, swr) = world_hex(
+            loc.x + route.start_offset.0,
+            loc.y + route.start_offset.1,
+            sc,
+            sr,
+        );
+        let (ewc, ewr) = world_hex(
+            loc.x + route.end_offset.0,
+            loc.y + route.end_offset.1,
+            ec,
+            er,
+        );
         let p0 = view.to_screen(w, h, hex_parsec(swc, swr));
         let p1 = view.to_screen(w, h, hex_parsec(ewc, ewr));
         // A theme that forces a single micro-route color (Atlas/Print/Draft/FASA/
@@ -50,7 +68,13 @@ pub(crate) fn draw_routes(c: &impl Canvas, view: &ViewState, w: f64, h: f64, sec
 /// Draw a computed jump route (from `/api/route`) as a bright highlighted
 /// polyline through its waypoints, with a marker dot at each stop. Drawn on top
 /// of the map so it stands out from the per-sector trade routes.
-pub(crate) fn draw_jump_route(c: &impl Canvas, view: &ViewState, w: f64, h: f64, route: &RouteResult) {
+pub(crate) fn draw_jump_route(
+    c: &impl Canvas,
+    view: &ViewState,
+    w: f64,
+    h: f64,
+    route: &RouteResult,
+) {
     if route.waypoints.len() < 2 {
         return;
     }

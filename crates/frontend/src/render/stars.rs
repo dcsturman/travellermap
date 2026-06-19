@@ -33,14 +33,7 @@ pub(crate) fn draw_galaxy(c: &impl Canvas, view: &ViewState, w: f64, h: f64) {
     // Galaxy.png mapped to this absolute parsec rect (top-left .. bottom-right).
     let (dx, dy) = view.to_screen(w, h, (-18257.0, -26234.0));
     let (bx, by) = view.to_screen(w, h, (18294.0, 6228.0));
-    c.draw_image(
-        "/api/res/Candy/Galaxy.png",
-        dx,
-        dy,
-        bx - dx,
-        by - dy,
-        alpha,
-    );
+    c.draw_image("/api/res/Candy/Galaxy.png", dx, dy, bx - dx, by - dy, alpha);
 }
 
 /// Cheap deterministic 2D hash for star placement (stable under pan).
@@ -64,7 +57,7 @@ pub(crate) fn draw_stars(c: &impl Canvas, view: &ViewState, w: f64, h: f64, them
     for wc in wc0..=wc1 {
         for wr in wr0..=wr1 {
             let hsh = hash2(wc, wr);
-            if hsh % 7 != 0 {
+            if !hsh.is_multiple_of(7) {
                 continue; // ~14% of cells host a star
             }
             let ox = ((hsh >> 3) & 0xff) as f64 / 255.0 - 0.5;

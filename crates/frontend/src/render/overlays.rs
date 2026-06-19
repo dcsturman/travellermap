@@ -10,7 +10,15 @@ use crate::canvas::{Canvas, TextAlign};
 use super::common::{hex_parsec, on_screen, RenderOptions, ViewState, DEFAULT_FONT};
 use super::Theme;
 
-pub(crate) fn draw_overlays(c: &impl Canvas, view: &ViewState, w: f64, h: f64, ov: &Overlays, opts: RenderOptions, theme: &Theme) {
+pub(crate) fn draw_overlays(
+    c: &impl Canvas,
+    view: &ViewState,
+    w: f64,
+    h: f64,
+    ov: &Overlays,
+    opts: RenderOptions,
+    theme: &Theme,
+) {
     // The reference strokes macro borders red (no fill) at macro zoom; the
     // filled polity look comes from the micro-border layer at scale >= 4.
     if theme.show_rift {
@@ -48,6 +56,7 @@ fn vec_point(view: &ViewState, w: f64, h: f64, v: &VectorObject, px: f32, py: f3
     view.to_screen(w, h, (wx as f64 * PARSEC_SCALE_X as f64, wy as f64))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_vector(
     c: &impl Canvas,
     view: &ViewState,
@@ -82,7 +91,14 @@ fn macro_name_px(major: bool, scale: f64) -> f64 {
 /// **major** polities (`NamesMajor`) → bold ALL-CAPS white (`textColor`);
 /// **minor**/client regions (`NamesMinor`) → regular red (`textHighlightColor`),
 /// original case. Only vectors carrying a `NamesMask` flag are labeled.
-fn draw_region_label(c: &impl Canvas, view: &ViewState, w: f64, h: f64, v: &VectorObject, theme: &Theme) {
+fn draw_region_label(
+    c: &impl Canvas,
+    view: &ViewState,
+    w: f64,
+    h: f64,
+    v: &VectorObject,
+    theme: &Theme,
+) {
     let mo = v.map_options.as_deref().unwrap_or("");
     if v.name.is_empty() || !mo.contains("Names") {
         return;
@@ -95,20 +111,42 @@ fn draw_region_label(c: &impl Canvas, view: &ViewState, w: f64, h: f64, v: &Vect
     let major = mo.contains("NamesMajor");
     let size = macro_name_px(major, view.scale);
     let (font, color, raw) = if major {
-        (format!("700 {}px {DEFAULT_FONT}", size as i32), theme.macro_name, v.name.to_uppercase())
+        (
+            format!("700 {}px {DEFAULT_FONT}", size as i32),
+            theme.macro_name,
+            v.name.to_uppercase(),
+        )
     } else {
-        (format!("{}px {DEFAULT_FONT}", size as i32), theme.highlight, v.name.clone())
+        (
+            format!("{}px {DEFAULT_FONT}", size as i32),
+            theme.highlight,
+            v.name.clone(),
+        )
     };
     let lines: Vec<&str> = raw.split('\n').map(str::trim).collect();
     let top = sy - (lines.len() as f64 - 1.0) * size * 0.5;
     for (i, line) in lines.iter().enumerate() {
-        c.fill_text(line, sx, top + i as f64 * size, color, &font, TextAlign::Center);
+        c.fill_text(
+            line,
+            sx,
+            top + i as f64 * size,
+            color,
+            &font,
+            TextAlign::Center,
+        );
     }
 }
 
 /// Rift name (Great Rift, …), ported from `DrawMacroNames`: same major/minor
 /// font + color as regions, but rotated 35°.
-fn draw_rift_label(c: &impl Canvas, view: &ViewState, w: f64, h: f64, v: &VectorObject, theme: &Theme) {
+fn draw_rift_label(
+    c: &impl Canvas,
+    view: &ViewState,
+    w: f64,
+    h: f64,
+    v: &VectorObject,
+    theme: &Theme,
+) {
     let mo = v.map_options.as_deref().unwrap_or("");
     if v.name.is_empty() || !mo.contains("Names") {
         return;
@@ -121,18 +159,36 @@ fn draw_rift_label(c: &impl Canvas, view: &ViewState, w: f64, h: f64, v: &Vector
     let major = mo.contains("NamesMajor");
     let size = macro_name_px(major, view.scale);
     let (font, color) = if major {
-        (format!("700 {}px {DEFAULT_FONT}", size as i32), theme.macro_name)
+        (
+            format!("700 {}px {DEFAULT_FONT}", size as i32),
+            theme.macro_name,
+        )
     } else {
         (format!("{}px {DEFAULT_FONT}", size as i32), theme.highlight)
     };
-    c.fill_text_rotated(&v.name.replace('\n', " "), sx, sy, color, &font, 35.0_f64.to_radians(), 1.0);
+    c.fill_text_rotated(
+        &v.name.replace('\n', " "),
+        sx,
+        sy,
+        color,
+        &font,
+        35.0_f64.to_radians(),
+        1.0,
+    );
 }
 
 /// Galaxy-scale labels (`Overlays.mega_labels`): "Charted Space", "Core
 /// Sophonts", … shown only at the most zoomed-out view. White; major labels bold,
 /// minor labels smaller italic. Font scales to a roughly constant on-screen size
 /// (reference `megaNameScaleFactor = min(35, 0.75/scale)`).
-pub(crate) fn draw_mega_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f64, ov: &Overlays, theme: &Theme) {
+pub(crate) fn draw_mega_labels(
+    c: &impl Canvas,
+    view: &ViewState,
+    w: f64,
+    h: f64,
+    ov: &Overlays,
+    theme: &Theme,
+) {
     let unit = 0.75_f64.min(35.0 * view.scale); // = scaleFactor · scale
     let major_px = (24.0 * unit).max(8.0) as i32;
     let minor_px = (18.0 * unit).max(7.0) as i32;
@@ -141,7 +197,11 @@ pub(crate) fn draw_mega_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f64
     for label in &ov.mega_labels {
         // X is in raw (un-compressed) parsec units; apply the x-compression
         // (matches the vector/region label convention).
-        let (sx, sy) = view.to_screen(w, h, (label.x as f64 * PARSEC_SCALE_X as f64, label.y as f64));
+        let (sx, sy) = view.to_screen(
+            w,
+            h,
+            (label.x as f64 * PARSEC_SCALE_X as f64, label.y as f64),
+        );
         if !on_screen(sx, sy, w, h, 320.0) {
             continue;
         }
@@ -153,23 +213,41 @@ pub(crate) fn draw_mega_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f64
         let lines: Vec<&str> = label.text.split('\n').collect();
         let top = sy - (lines.len() as f64 - 1.0) * size * 0.6;
         for (i, line) in lines.iter().enumerate() {
-            c.fill_text(line, sx, top + i as f64 * size * 1.15, theme.mega_name, font, TextAlign::Center);
+            c.fill_text(
+                line,
+                sx,
+                top + i as f64 * size * 1.15,
+                theme.mega_name,
+                font,
+                TextAlign::Center,
+            );
         }
     }
 }
 
 /// Minor region labels (`Overlays.minor_labels`, from `minor_labels.tab`), drawn
 /// over the macro view (scale 0.5–4). Ported from `DrawMacroNames`' minor block:
-/// a label's `minor` flag picks `macroNames.SmallFont` (5/1.4 parsec, regular) +
-/// `textColor` (white) when true, else `MediumFont` (6.5/1.4 parsec, **italic**)
-/// + `textHighlightColor` (**red**) — so the common `Minor=False` region names
+/// a label's `minor` flag picks `macroNames.SmallFont` (5/1.4 parsec, regular,
+/// `textColor` white) when true, else `MediumFont` (6.5/1.4 parsec, **italic**,
+/// `textHighlightColor` **red**) — so the common `Minor=False` region names
 /// ("Mixed Client States", "Aslan Colonies", …) read as red italic. `x`/`y` are
 /// in the same x-compressed world space as the mega labels (straight to_screen).
-pub(crate) fn draw_minor_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f64, ov: &Overlays, theme: &Theme) {
+pub(crate) fn draw_minor_labels(
+    c: &impl Canvas,
+    view: &ViewState,
+    w: f64,
+    h: f64,
+    ov: &Overlays,
+    theme: &Theme,
+) {
     for label in &ov.minor_labels {
         // X is in raw (un-compressed) parsec units, like the vector region
         // labels — apply the x-compression to land them on the map.
-        let (sx, sy) = view.to_screen(w, h, (label.x as f64 * PARSEC_SCALE_X as f64, label.y as f64));
+        let (sx, sy) = view.to_screen(
+            w,
+            h,
+            (label.x as f64 * PARSEC_SCALE_X as f64, label.y as f64),
+        );
         if !on_screen(sx, sy, w, h, 220.0) {
             continue;
         }
@@ -185,14 +263,28 @@ pub(crate) fn draw_minor_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f6
         let lines: Vec<&str> = label.text.split('\n').map(str::trim).collect();
         let top = sy - (lines.len() as f64 - 1.0) * size * 0.5;
         for (i, line) in lines.iter().enumerate() {
-            c.fill_text(line, sx, top + i as f64 * size, color, &font, TextAlign::Center);
+            c.fill_text(
+                line,
+                sx,
+                top + i as f64 * size,
+                color,
+                &font,
+                TextAlign::Center,
+            );
         }
     }
 }
 
 /// Capitals + homeworlds (`Overlays.labels`): a Wheat dot at the world hex with
 /// a red name label offset by its `bias` (reference `WorldObject.Paint`).
-pub(crate) fn draw_world_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f64, ov: &Overlays, theme: &Theme) {
+pub(crate) fn draw_world_labels(
+    c: &impl Canvas,
+    view: &ViewState,
+    w: f64,
+    h: f64,
+    ov: &Overlays,
+    theme: &Theme,
+) {
     let font = format!("600 13px {DEFAULT_FONT}");
     let r = (1.5 * view.scale).clamp(2.0, 6.0);
     for label in &ov.labels {
@@ -216,9 +308,25 @@ pub(crate) fn draw_world_labels(c: &impl Canvas, view: &ViewState, w: f64, h: f6
         let n = lines.len() as f64;
         // Anchor the text block on the dot's bias side (above if by<0, below if
         // by>0, centered if 0).
-        let top = ly - (n - 1.0) * line_h * if by < 0.0 { 1.0 } else if by > 0.0 { 0.0 } else { 0.5 };
+        let top = ly
+            - (n - 1.0)
+                * line_h
+                * if by < 0.0 {
+                    1.0
+                } else if by > 0.0 {
+                    0.0
+                } else {
+                    0.5
+                };
         for (i, line) in lines.iter().enumerate() {
-            c.fill_text(line, lx, top + i as f64 * line_h, theme.capital, &font, align);
+            c.fill_text(
+                line,
+                lx,
+                top + i as f64 * line_h,
+                theme.capital,
+                &font,
+                align,
+            );
         }
     }
 }

@@ -201,9 +201,7 @@ impl Canvas for Canvas2d {
                     img.set_onload(Some(onload.as_ref().unchecked_ref()));
                     onload.forget(); // keep the closure alive for the image's lifetime
                     img.set_src(url);
-                    cache
-                        .borrow_mut()
-                        .insert(url.to_string(), img.clone());
+                    cache.borrow_mut().insert(url.to_string(), img.clone());
                     img
                 }
             };

@@ -31,7 +31,13 @@ const DIAMOND: &str = "◆"; // U+2666  Zhodani relay
 /// wildcard `*.code`.
 pub fn base_glyph(allegiance: &str, code: char) -> Option<BaseGlyph> {
     let a = allegiance.get(..2).unwrap_or(allegiance);
-    let g = |chars, bias, highlight| Some(BaseGlyph { chars, bias, highlight });
+    let g = |chars, bias, highlight| {
+        Some(BaseGlyph {
+            chars,
+            bias,
+            highlight,
+        })
+    };
     match (a, code) {
         ("Im", 'D') => g(SQUARE, Bias::Bottom, false), // Imperial Depot
         ("Zh", 'W') => g(DIAMOND, Bias::None, true),   // Zhodani Relay Station

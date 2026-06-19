@@ -258,7 +258,8 @@ impl ColumnSerializer {
 
     fn add_row(&mut self, data: Vec<String>) {
         assert_eq!(data.len(), self.names.len(), "differing column counts");
-        self.rows.push(data.into_iter().map(|c| c.trim().to_string()).collect());
+        self.rows
+            .push(data.into_iter().map(|c| c.trim().to_string()).collect());
     }
 
     fn widths(&self) -> Vec<usize> {
@@ -322,7 +323,14 @@ mod tests {
     #[test]
     fn tab_is_crlf_with_header_and_sector_ss_columns() {
         let worlds = [world("0101", "A"), world("0908", "B")];
-        let out = write_tab(&worlds, "Spin", &WriteOptions { include_header: true, sscoords: false });
+        let out = write_tab(
+            &worlds,
+            "Spin",
+            &WriteOptions {
+                include_header: true,
+                sscoords: false,
+            },
+        );
         let lines: Vec<&str> = out.split("\r\n").collect();
         assert!(lines[0].starts_with("Sector\tSS\tHex\t"));
         // 0101 → subsector A, 0908 → subsector B; both tagged with the abbrev.
@@ -340,9 +348,24 @@ mod tests {
             world("0101", "first-col-row1"),
             world("0901", "subsector-B"),
         ];
-        let out = write_tab(&worlds, "X", &WriteOptions { include_header: false, sscoords: false });
+        let out = write_tab(
+            &worlds,
+            "X",
+            &WriteOptions {
+                include_header: false,
+                sscoords: false,
+            },
+        );
         let names: Vec<&str> = out.lines().map(|l| l.split('\t').nth(3).unwrap()).collect();
-        assert_eq!(names, ["first-col-row1", "first-col-row2", "second-col", "subsector-B"]);
+        assert_eq!(
+            names,
+            [
+                "first-col-row1",
+                "first-col-row2",
+                "second-col",
+                "subsector-B"
+            ]
+        );
     }
 
     #[test]
@@ -359,7 +382,10 @@ mod tests {
         let line = out.split("\r\n").next().unwrap();
         // Exact fixed-column layout, including trailing stellar padding.
         // Legacy allegiance: ZhIN → Zh; empty base/zone render as single spaces.
-        assert_eq!(line, "Zeycude       0101 C430698-9    De Na Ni Po        613 Zh K9 V           ");
+        assert_eq!(
+            line,
+            "Zeycude       0101 C430698-9    De Na Ni Po        613 Zh K9 V           "
+        );
     }
 
     #[test]
@@ -376,19 +402,31 @@ mod tests {
         w.stellar = "M2 V M9 V".into();
         let out = write_legacy_sec(&[w], &WriteOptions::default());
         let line = out.split("\r\n").next().unwrap();
-        assert_eq!(line, "Gesentown     0303 B31169B-C  F Ic Na Ni Da Ht  A  801 Zh M2 V M9 V      ");
+        assert_eq!(
+            line,
+            "Gesentown     0303 B31169B-C  F Ic Na Ni Da Ht  A  801 Zh M2 V M9 V      "
+        );
     }
 
     #[test]
     fn legacy_sec_header_emits_legend() {
-        let out = write_legacy_sec(&[], &WriteOptions { include_header: true, ..Default::default() });
+        let out = write_legacy_sec(
+            &[],
+            &WriteOptions {
+                include_header: true,
+                ..Default::default()
+            },
+        );
         assert!(out.starts_with(" 1-14: Name\r\n"));
         assert!(out.contains("....+....1....+....2"));
     }
 
     #[test]
     fn second_survey_pads_columns_and_floors_name_width() {
-        let opts = WriteOptions { include_header: true, ..Default::default() };
+        let opts = WriteOptions {
+            include_header: true,
+            ..Default::default()
+        };
         let out = write_second_survey(&[world("0101", "Reno")], &opts);
         let mut lines = out.lines();
         assert!(lines.next().unwrap().starts_with("Hex  Name"));

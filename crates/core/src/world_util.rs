@@ -867,7 +867,9 @@ pub fn split_remarks(remarks: &str) -> Vec<String> {
     let re = RE.get_or_init(|| {
         Regex::new(r"(Di)?\([^)]*\)[0-9?]?|\[[^\]]*\][0-9?]?|\{[^}]*\}|\S+").unwrap()
     });
-    re.find_iter(remarks).map(|m| m.as_str().to_string()).collect()
+    re.find_iter(remarks)
+        .map(|m| m.as_str().to_string())
+        .collect()
 }
 
 /// Decode one remark token to its detail string (`REMARKS_TABLE` then
@@ -899,7 +901,9 @@ fn decode_remark(code: &str) -> String {
         .collect()
     });
     for (i, re) in res.iter().enumerate() {
-        let Some(caps) = re.captures(code) else { continue };
+        let Some(caps) = re.captures(code) else {
+            continue;
+        };
         return match i {
             0 => "Research Station".to_string(),
             1 => "Refugee World".to_string(),
@@ -945,7 +949,12 @@ fn number_with_commas(n: u128) -> String {
 /// Parse the `{Ix}` value, stripping the braces (`parseIx`). Returns the integer
 /// importance, or `None` if it isn't a number.
 fn parse_ix(ix: &str) -> Option<i64> {
-    ix.trim().trim_start_matches('{').trim_end_matches('}').trim().parse::<i64>().ok()
+    ix.trim()
+        .trim_start_matches('{')
+        .trim_end_matches('}')
+        .trim()
+        .parse::<i64>()
+        .ok()
 }
 
 /// Decode stellar data into a list of `(code, detail)` stars (`world.Stars`).
@@ -997,7 +1006,10 @@ fn decode_stars(stellar: &str) -> Vec<Decoded> {
                     detail = format!("{name} {detail}");
                 }
             }
-            Decoded { code, blurb: detail }
+            Decoded {
+                code,
+                blurb: detail,
+            }
         })
         .collect()
 }
@@ -1005,8 +1017,16 @@ fn decode_stars(stellar: &str) -> Vec<Decoded> {
 /// Travel-zone decode (`world.Zone`).
 fn decode_zone(zone: &str) -> Zone {
     match zone {
-        "A" => Zone { rule: "Caution", rating: "Amber", class_name: "amber" },
-        "R" => Zone { rule: "Restricted", rating: "Red", class_name: "red" },
+        "A" => Zone {
+            rule: "Caution",
+            rating: "Amber",
+            class_name: "amber",
+        },
+        "R" => Zone {
+            rule: "Restricted",
+            rating: "Red",
+            class_name: "red",
+        },
         "B" => Zone {
             rule: "Technologically Elevated Dictatorship",
             rating: "c/o Coalition Data Services",
@@ -1022,7 +1042,11 @@ fn decode_zone(zone: &str) -> Zone {
             rating: "c/o Consulate Data Services",
             class_name: "unabsorbed",
         },
-        _ => Zone { rule: "No Restrictions", rating: "Green", class_name: "green" },
+        _ => Zone {
+            rule: "No Restrictions",
+            rating: "Green",
+            class_name: "green",
+        },
     }
 }
 
@@ -1034,7 +1058,10 @@ fn decode_bases(bases: &str, allegiance: &str, remarks: &[Decoded]) -> Vec<Strin
     } else if allegiance.starts_with("Zh") && bases == "W" {
         vec!["Zhodani Relay Station".to_string()]
     } else {
-        bases.chars().filter_map(|c| base_blurb(c).map(str::to_string)).collect()
+        bases
+            .chars()
+            .filter_map(|c| base_blurb(c).map(str::to_string))
+            .collect()
     };
     for r in remarks {
         if matches!(r.code.as_str(), "Re" | "Px" | "Ex") || r.code.starts_with("Rs") {
@@ -1053,7 +1080,11 @@ pub fn decode_world(world: &World) -> DecodedWorld {
     // Total population = PopMult · 10^PopExp (with the PopExp>0 & PopMult==0 → 1
     // adjustment), formatted with thousands separators.
     let pop_exp = from_hex(world.uwp.chars().nth(4).unwrap_or('?'));
-    let pop_mult = if pop_exp > 0 && pbg.pop_mult == 0 { 1 } else { pbg.pop_mult };
+    let pop_mult = if pop_exp > 0 && pbg.pop_mult == 0 {
+        1
+    } else {
+        pbg.pop_mult
+    };
     let total_population = if pop_exp >= 0 && pop_mult >= 0 {
         let total = (pop_mult as u128).saturating_mul(10u128.saturating_pow(pop_exp as u32));
         Some(number_with_commas(total))
@@ -1064,11 +1095,18 @@ pub fn decode_world(world: &World) -> DecodedWorld {
     let importance = world.importance.as_deref().and_then(parse_ix).map(|ix| {
         let imp = ix.to_string();
         let blurb = ix_imp_blurb(&imp).map(str::to_string);
-        DecodedIx { imp: imp.replace('-', &UNICODE_MINUS.to_string()), blurb }
+        DecodedIx {
+            imp: imp.replace('-', &UNICODE_MINUS.to_string()),
+            blurb,
+        }
     });
 
     let economics = world.economic.as_deref().map(|ex| {
-        let inner = ex.trim().trim_start_matches('(').trim_end_matches(')').trim();
+        let inner = ex
+            .trim()
+            .trim_start_matches('(')
+            .trim_end_matches(')')
+            .trim();
         let ch = |i: usize| inner.chars().nth(i).unwrap_or('?');
         let eff: String = inner.chars().skip(3).collect();
         DecodedEx {
@@ -1092,7 +1130,11 @@ pub fn decode_world(world: &World) -> DecodedWorld {
     });
 
     let culture = world.cultural.as_deref().map(|cx| {
-        let inner = cx.trim().trim_start_matches('[').trim_end_matches(']').trim();
+        let inner = cx
+            .trim()
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .trim();
         let ch = |i: usize| inner.chars().nth(i).unwrap_or('?');
         DecodedCx {
             heterogeneity: Decoded {
@@ -1119,7 +1161,10 @@ pub fn decode_world(world: &World) -> DecodedWorld {
         .as_deref()
         .map(|n| {
             n.chars()
-                .map(|c| Decoded { code: c.to_string(), blurb: nobility_blurb(c).to_string() })
+                .map(|c| Decoded {
+                    code: c.to_string(),
+                    blurb: nobility_blurb(c).to_string(),
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -1138,9 +1183,7 @@ pub fn decode_world(world: &World) -> DecodedWorld {
 
     let worlds = world.worlds.map(u32::from);
     let other_worlds = match (worlds, pbg.belts, pbg.gas_giants) {
-        (Some(w), Some(b), Some(g)) => {
-            Some((w as i64 - 1 - b as i64 - g as i64).max(0) as u32)
-        }
+        (Some(w), Some(b), Some(g)) => Some((w as i64 - 1 - b as i64 - g as i64).max(0) as u32),
         _ => None,
     };
 
@@ -1229,7 +1272,10 @@ mod tests {
         assert_eq!(u.hydrographics.blurb, "80%");
         assert_eq!(u.population.blurb, "Hundreds of millions");
         assert_eq!(u.government.blurb, "Impersonal Bureaucracy");
-        assert_eq!(u.law.blurb, "Possession of weapons outside the home prohibited");
+        assert_eq!(
+            u.law.blurb,
+            "Possession of weapons outside the home prohibited"
+        );
         assert_eq!(u.tech.code, "C");
         assert_eq!(u.tech.blurb, "Average Imperial");
     }
@@ -1264,13 +1310,22 @@ mod tests {
 
     #[test]
     fn allegiance_full_name() {
-        assert_eq!(allegiance_name("ImDd").as_deref(), Some("Third Imperium, Domain of Deneb"));
-        assert_eq!(allegiance_name("ZhCo").as_deref(), Some("Zhodani Consulate"));
+        assert_eq!(
+            allegiance_name("ImDd").as_deref(),
+            Some("Third Imperium, Domain of Deneb")
+        );
+        assert_eq!(
+            allegiance_name("ZhCo").as_deref(),
+            Some("Zhodani Consulate")
+        );
         assert_eq!(allegiance_name("ZZZZ"), None);
         // Base/legacy codes used by sector borders must resolve too.
         assert_eq!(allegiance_name("As").as_deref(), Some("Aslan Hierate")); // hardcoded stock
         assert_eq!(allegiance_name("Im").as_deref(), Some("Third Imperium"));
-        assert_eq!(allegiance_name("So").as_deref(), Some("Solomani Confederation")); // legacy override
+        assert_eq!(
+            allegiance_name("So").as_deref(),
+            Some("Solomani Confederation")
+        ); // legacy override
         assert_eq!(allegiance_name("Zh").as_deref(), Some("Zhodani Consulate"));
     }
 
@@ -1400,7 +1455,10 @@ mod tests {
     fn synthesizes_abbreviation() {
         assert_eq!(synthesize_abbreviation("Zhdant").as_deref(), Some("Zhda"));
         // Spaces stripped, first capital + rest lowercase.
-        assert_eq!(synthesize_abbreviation("Far Frontiers").as_deref(), Some("Farf"));
+        assert_eq!(
+            synthesize_abbreviation("Far Frontiers").as_deref(),
+            Some("Farf")
+        );
         // Non-letters become 'x'.
         assert_eq!(synthesize_abbreviation("3Worlds").as_deref(), Some("Xwor"));
         assert_eq!(synthesize_abbreviation("   ").as_deref(), None);

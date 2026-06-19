@@ -106,7 +106,11 @@ pub fn parse_column(input: &str) -> Result<ParseOutcome, ParseError> {
             if start >= chars.len() {
                 String::new()
             } else {
-                chars[start..end].iter().collect::<String>().trim().to_owned()
+                chars[start..end]
+                    .iter()
+                    .collect::<String>()
+                    .trim()
+                    .to_owned()
             }
         };
         let row: HashMap<&str, String> = columns
@@ -181,8 +185,8 @@ pub fn parse_sec(input: &str) -> Result<ParseOutcome, ParseError> {
         ))
         .expect("valid SEC world regex")
     });
-    let uwp_re =
-        UWP_RE.get_or_init(|| Regex::new(r"[ABCDEX?][0-9A-Z?]{6}-[0-9A-Z?]").expect("valid UWP regex"));
+    let uwp_re = UWP_RE
+        .get_or_init(|| Regex::new(r"[ABCDEX?][0-9A-Z?]{6}-[0-9A-Z?]").expect("valid UWP regex"));
 
     let mut worlds = Vec::new();
     let mut warnings = Vec::new();
@@ -419,7 +423,10 @@ fn sector_names(sector: roxmltree::Node) -> Vec<SectorName> {
         .children()
         .filter(|n| n.has_tag_name("Name"))
         .filter_map(|n| {
-            let text = n.text().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty())?;
+            let text = n
+                .text()
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())?;
             Some(SectorName {
                 text,
                 lang: n.attribute("Lang").map(str::to_owned),
@@ -503,7 +510,10 @@ pub fn sector_subsectors(xml: &str) -> Vec<Subsector> {
         .filter(|n| n.has_tag_name("Subsector"))
         .filter_map(|n| {
             let index = n.attribute("Index")?.trim().to_owned();
-            let name = n.text().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty())?;
+            let name = n
+                .text()
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())?;
             Some(Subsector { index, name })
         })
         .collect()
@@ -570,12 +580,19 @@ pub fn sector_tags(xml: &str) -> String {
 /// `None` if absent, empty, or the XML doesn't parse.
 pub fn sector_credits(xml: &str) -> Option<String> {
     let doc = roxmltree::Document::parse(xml).ok()?;
-    let credits = doc.root_element().children().find(|n| n.has_tag_name("Credits"))?;
+    let credits = doc
+        .root_element()
+        .children()
+        .find(|n| n.has_tag_name("Credits"))?;
     // Concatenate all descendant *text nodes* so multi-fragment content (e.g.
     // `…<cite>…</cite>…`) isn't truncated — and isn't double-counted (iterating
     // every descendant and calling `.text()` counts an element's text twice:
     // once for the element, once for its text child).
-    let text: String = credits.descendants().filter(|n| n.is_text()).filter_map(|n| n.text()).collect();
+    let text: String = credits
+        .descendants()
+        .filter(|n| n.is_text())
+        .filter_map(|n| n.text())
+        .collect();
     let trimmed = text.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
@@ -589,7 +606,11 @@ pub fn sector_datafile_meta(xml: &str) -> crate::dto::DataFileMeta {
         return meta;
     };
     if let Some(df) = doc.descendants().find(|n| n.has_tag_name("DataFile")) {
-        let attr = |name: &str| df.attribute(name).map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+        let attr = |name: &str| {
+            df.attribute(name)
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+        };
         meta.title = attr("Title");
         meta.author = attr("Author");
         meta.publisher = attr("Publisher");
@@ -613,8 +634,10 @@ pub fn sector_borders(xml: &str) -> Vec<Border> {
         .filter_map(|n| {
             // `Region` may omit `Allegiance`; treat it as empty (no fill color
             // lookup, label-only).
-            let allegiance =
-                n.attribute("Allegiance").map(|s| s.trim().to_owned()).unwrap_or_default();
+            let allegiance = n
+                .attribute("Allegiance")
+                .map(|s| s.trim().to_owned())
+                .unwrap_or_default();
             let hexes: Vec<String> = n
                 .text()
                 .unwrap_or("")
@@ -629,16 +652,25 @@ pub fn sector_borders(xml: &str) -> Vec<Border> {
             // by dropping its position (the backend resolves the text from
             // `label_position`).
             let show_label = !attr_is_false(n, "ShowLabel");
-            let label_position =
-                show_label.then(|| n.attribute("LabelPosition").map(str::to_owned)).flatten();
-            let ox = n.attribute("LabelOffsetX").and_then(|s| s.parse().ok()).unwrap_or(0.0);
-            let oy = n.attribute("LabelOffsetY").and_then(|s| s.parse().ok()).unwrap_or(0.0);
+            let label_position = show_label
+                .then(|| n.attribute("LabelPosition").map(str::to_owned))
+                .flatten();
+            let ox = n
+                .attribute("LabelOffsetX")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0);
+            let oy = n
+                .attribute("LabelOffsetY")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0);
             Some(Border {
                 allegiance,
                 hexes,
                 region: Vec::new(),
                 color: n.attribute("Color").map(str::to_owned),
-                label: show_label.then(|| n.attribute("Label").map(str::to_owned)).flatten(),
+                label: show_label
+                    .then(|| n.attribute("Label").map(str::to_owned))
+                    .flatten(),
                 label_position,
                 wrap_label: attr_is_true(n, "WrapLabel"),
                 label_offset: (ox, oy),
@@ -661,9 +693,19 @@ pub fn sector_labels(xml: &str) -> Vec<SectorLabel> {
             if hex.len() != 4 || !hex.bytes().all(|b| b.is_ascii_digit()) {
                 return None;
             }
-            let text = n.text().map(str::trim).filter(|s| !s.is_empty())?.to_owned();
-            let ox = n.attribute("OffsetX").and_then(|s| s.parse().ok()).unwrap_or(0.0);
-            let oy = n.attribute("OffsetY").and_then(|s| s.parse().ok()).unwrap_or(0.0);
+            let text = n
+                .text()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())?
+                .to_owned();
+            let ox = n
+                .attribute("OffsetX")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0);
+            let oy = n
+                .attribute("OffsetY")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0);
             Some(SectorLabel {
                 text,
                 hex,
@@ -684,9 +726,10 @@ pub fn sector_allegiances(xml: &str) -> HashMap<String, String> {
         return map;
     };
     for n in doc.descendants().filter(|n| n.has_tag_name("Allegiance")) {
-        if let (Some(code), Some(name)) =
-            (n.attribute("Code"), n.text().map(str::trim).filter(|s| !s.is_empty()))
-        {
+        if let (Some(code), Some(name)) = (
+            n.attribute("Code"),
+            n.text().map(str::trim).filter(|s| !s.is_empty()),
+        ) {
             map.insert(code.trim().to_owned(), name.to_owned());
         }
     }
@@ -695,12 +738,14 @@ pub fn sector_allegiances(xml: &str) -> HashMap<String, String> {
 
 /// `attr == "true"` (case-insensitive), default false.
 fn attr_is_true(n: roxmltree::Node, name: &str) -> bool {
-    n.attribute(name).is_some_and(|v| v.eq_ignore_ascii_case("true"))
+    n.attribute(name)
+        .is_some_and(|v| v.eq_ignore_ascii_case("true"))
 }
 
 /// `attr == "false"` (case-insensitive), default false (so absent → not-false).
 fn attr_is_false(n: roxmltree::Node, name: &str) -> bool {
-    n.attribute(name).is_some_and(|v| v.eq_ignore_ascii_case("false"))
+    n.attribute(name)
+        .is_some_and(|v| v.eq_ignore_ascii_case("false"))
 }
 
 /// Per-sector border colors from the embedded `<Stylesheet>` (CSS-like:
@@ -728,7 +773,9 @@ pub fn parse_border_styles_css(text: &str) -> HashMap<String, String> {
         };
         let color = body.split(';').find_map(|decl| {
             let (k, v) = decl.split_once(':')?;
-            k.trim().eq_ignore_ascii_case("color").then(|| v.trim().to_owned())
+            k.trim()
+                .eq_ignore_ascii_case("color")
+                .then(|| v.trim().to_owned())
         });
         let Some(color) = color else { continue };
         for sel in selectors.split(',') {
@@ -796,7 +843,9 @@ pub fn border_region(hexes: &[String], sx: i32, sy: i32) -> Vec<(i32, i32)> {
     let mut region = Vec::new();
     for wc in (sx * W + 1)..=(sx * W + W) {
         for wr in (sy * H + 1)..=(sy * H + H) {
-            if bset.contains(&(wc, wr)) || point_in_poly((wc as f64, wr as f64 + stagger(wc)), &poly) {
+            if bset.contains(&(wc, wr))
+                || point_in_poly((wc as f64, wr as f64 + stagger(wc)), &poly)
+            {
                 region.push((wc, wr));
             }
         }
@@ -818,8 +867,15 @@ pub fn parse_map_labels(text: &str) -> Vec<MapLabel> {
             }
             let x = cols.next()?.trim().parse().ok()?;
             let y = cols.next()?.trim().parse().ok()?;
-            let minor = cols.next().is_some_and(|s| s.trim().eq_ignore_ascii_case("true"));
-            Some(MapLabel { text: raw.replace("\\n", "\n"), x, y, minor })
+            let minor = cols
+                .next()
+                .is_some_and(|s| s.trim().eq_ignore_ascii_case("true"));
+            Some(MapLabel {
+                text: raw.replace("\\n", "\n"),
+                x,
+                y,
+                minor,
+            })
         })
         .collect()
 }
@@ -834,11 +890,14 @@ pub fn parse_map_labels(text: &str) -> Vec<MapLabel> {
 /// several localized names).
 pub fn milieu_sector_block(region_xml: &str, name: &str) -> Option<String> {
     let doc = roxmltree::Document::parse(region_xml).ok()?;
-    let node = doc.descendants().filter(|n| n.has_tag_name("Sector")).find(|s| {
-        s.children()
-            .filter(|n| n.has_tag_name("Name"))
-            .any(|n| n.text().map(|t| t.trim() == name).unwrap_or(false))
-    })?;
+    let node = doc
+        .descendants()
+        .filter(|n| n.has_tag_name("Sector"))
+        .find(|s| {
+            s.children()
+                .filter(|n| n.has_tag_name("Name"))
+                .any(|n| n.text().map(|t| t.trim() == name).unwrap_or(false))
+        })?;
     Some(region_xml[node.range()].to_owned())
 }
 
@@ -848,7 +907,11 @@ pub fn sector_routes(xml: &str) -> Vec<Route> {
     let Ok(doc) = roxmltree::Document::parse(xml) else {
         return Vec::new();
     };
-    let off = |n: &roxmltree::Node, a: &str| n.attribute(a).and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+    let off = |n: &roxmltree::Node, a: &str| {
+        n.attribute(a)
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(0)
+    };
     doc.descendants()
         .filter(|n| n.has_tag_name("Route"))
         .filter_map(|n| {
@@ -965,8 +1028,20 @@ fn name_anchor(
         ty += th;
         th = -th;
     }
-    let cx = tx + tw / 2.0 + if bw != 0.0 { tw * (name_off.0 / bw) } else { 0.0 };
-    let cy = ty + th / 2.0 + if bh != 0.0 { th * (name_off.1 / bh) } else { 0.0 };
+    let cx = tx
+        + tw / 2.0
+        + if bw != 0.0 {
+            tw * (name_off.0 / bw)
+        } else {
+            0.0
+        };
+    let cy = ty
+        + th / 2.0
+        + if bh != 0.0 {
+            th * (name_off.1 / bh)
+        } else {
+            0.0
+        };
     (cx, cy)
 }
 
@@ -993,7 +1068,10 @@ fn split_subpaths(points: Vec<(f32, f32)>, types: &[u8]) -> Vec<SubPath> {
         }
     }
     if !cur.is_empty() {
-        paths.push(SubPath { points: cur, closed });
+        paths.push(SubPath {
+            points: cur,
+            closed,
+        });
     }
     paths
 }
@@ -1030,7 +1108,10 @@ Spin\tA\t0102\tReno\tT BADROW MISSING COLS";
         assert_eq!(regina.nobility.as_deref(), Some("BcCeF"));
         assert_eq!(regina.worlds, Some(9));
         assert_eq!(regina.resource_units, Some(4628));
-        assert_eq!(regina.codes().collect::<Vec<_>>(), ["Ri", "Pa", "Ph", "An", "Cp"]);
+        assert_eq!(
+            regina.codes().collect::<Vec<_>>(),
+            ["Ri", "Pa", "Ph", "An", "Cp"]
+        );
     }
 
     #[test]
@@ -1175,7 +1256,8 @@ Hex  Name                 UWP       Remarks       {Ix}   PBG W  A
     fn splits_disjoint_subpaths_by_type_bytes() {
         // Two separate closed triangles. Type bytes: 0x00 Start, 0x01 Line,
         // 0x81 Line+Close — repeated. Base64 of [0,1,0x81, 0,1,0x81]:
-        let types_b64 = base64::engine::general_purpose::STANDARD.encode([0u8, 1, 0x81, 0, 1, 0x81]);
+        let types_b64 =
+            base64::engine::general_purpose::STANDARD.encode([0u8, 1, 0x81, 0, 1, 0x81]);
         let xml = format!(
             r#"<VectorObject><Name>Two Regions</Name><ScaleX>1</ScaleX><ScaleY>1</ScaleY>
                 <PathDataPoints>

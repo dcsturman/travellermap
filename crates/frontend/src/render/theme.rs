@@ -46,9 +46,9 @@ pub struct Theme {
     pub micro_border_text: &'static str,    // microBorders.textColor (region/border labels)
 
     // ── zones / highlight ──
-    pub amber: &'static str,             // amberZone.pen.color
-    pub red_zone: &'static str,          // redZone.pen.color
-    pub highlight: &'static str,         // highlightColor (anomaly glyph, highlighted names, minor region names)
+    pub amber: &'static str,     // amberZone.pen.color
+    pub red_zone: &'static str,  // redZone.pen.color
+    pub highlight: &'static str, // highlightColor (anomaly glyph, highlighted names, minor region names)
     // Mongoose green-zone perimeter color. Set per `Stylesheet.cs` but not yet drawn
     // (Mongoose's `showZonesAsPerimeters` — perimeter rings for every world — isn't
     // replicated; flagged in the module docs).
@@ -56,11 +56,11 @@ pub struct Theme {
     pub green_zone: Option<&'static str>,
 
     // ── world discs ──
-    pub world_water: &'static str,             // worldWater.fillColor
-    pub world_dry: &'static str,               // worldNoWater.fillColor (also placeholder dot/glyph)
+    pub world_water: &'static str,               // worldWater.fillColor
+    pub world_dry: &'static str, // worldNoWater.fillColor (also placeholder dot/glyph)
     pub world_dry_outline: Option<&'static str>, // worldNoWater.pen.color
-    pub vacuum_fill: &'static str,             // our black-disc vacuum world
-    pub force_plain_worlds: bool,              // showWorldDetailColors == false
+    pub vacuum_fill: &'static str, // our black-disc vacuum world
+    pub force_plain_worlds: bool, // showWorldDetailColors == false
     // trade-class detail tints (fixed in RenderContext.WorldColors — not the cascade)
     pub ag_green: &'static str,
     pub rich_purple: &'static str,
@@ -169,18 +169,18 @@ impl Theme {
         Self {
             name: "Atlas",
             background: "#ffffff",
-            macro_border: "#000000",       // Black
-            route: "#808080",              // Gray
-            micro_border: Some("#000000"), // microBorders Black
-            micro_route: Some("#808080"),  // microRoutes Gray
-            micro_border_text: "#808080",  // microBorders.textColor Gray
-            amber: "#d3d3d3",              // amberZone LightGray
-            red_zone: "#000000",           // redZone Black
-            highlight: "#808080",          // Gray
-            world_water: "#000000",        // worldWater Black (then overridden: noWater white+black pen)
-            world_dry: "#ffffff",          // worldNoWater White
+            macro_border: "#000000",            // Black
+            route: "#808080",                   // Gray
+            micro_border: Some("#000000"),      // microBorders Black
+            micro_route: Some("#808080"),       // microRoutes Gray
+            micro_border_text: "#808080",       // microBorders.textColor Gray
+            amber: "#d3d3d3",                   // amberZone LightGray
+            red_zone: "#000000",                // redZone Black
+            highlight: "#808080",               // Gray
+            world_water: "#000000", // worldWater Black (then overridden: noWater white+black pen)
+            world_dry: "#ffffff",   // worldNoWater White
             world_dry_outline: Some("#000000"), // worldNoWater.pen Black
-            force_plain_worlds: true,      // showWorldDetailColors = false
+            force_plain_worlds: true, // showWorldDetailColors = false
             vacuum_fill: "#000000",
             // cascade text → fg=Black, hex#←light=DarkGray
             text: "#000000",
@@ -188,11 +188,11 @@ impl Theme {
             text_gg: "#000000",
             text_uwp: "#000000",
             text_alleg: "#000000",
-            capital: "#000000",            // capitals.textColor Black
-            capital_fill: "#a9a9a9",       // capitals.fillColor DarkGray
+            capital: "#000000",      // capitals.textColor Black
+            capital_fill: "#a9a9a9", // capitals.fillColor DarkGray
             macro_name: "#000000",
             mega_name: "#000000",
-            name_full: "#000000",          // fade: fg=Black / dark=DarkGray / dim=LightGray
+            name_full: "#000000", // fade: fg=Black / dark=DarkGray / dim=LightGray
             name_dark: "#a9a9a9",
             name_dim: "#d3d3d3",
             stars: ["#000000", "#000000", "#000000", "#000000"], // ← foreground
@@ -207,19 +207,19 @@ impl Theme {
         Self {
             name: "Print",
             background: "#ffffff",
-            micro_route: Some("#808080"),  // microRoutes Gray
-            micro_border_text: "#a52a2a",  // microBorders.textColor Brown
+            micro_route: Some("#808080"), // microRoutes Gray
+            micro_border_text: "#a52a2a", // microBorders.textColor Brown
             world_dry: "#ffffff",
             world_dry_outline: Some("#000000"), // worldNoWater.pen Black
-            amber: C_AMBER,                // amberZone TravellerColors.Amber (explicit)
+            amber: C_AMBER,                     // amberZone TravellerColors.Amber (explicit)
             // Print does NOT set highlightColor/redZone/macroBorders → stay default Red.
             text: "#000000",
-            text_hex: "#a9a9a9",           // ← light=DarkGray
+            text_hex: "#a9a9a9", // ← light=DarkGray
             text_gg: "#000000",
             text_uwp: "#000000",
             text_alleg: "#000000",
-            capital_fill: "#f5deb3",       // unchanged (Wheat)
-            macro_name: "#000000",         // ← foreground
+            capital_fill: "#f5deb3", // unchanged (Wheat)
+            macro_name: "#000000",   // ← foreground
             mega_name: "#000000",
             name_full: "#000000",
             name_dark: "#a9a9a9",
@@ -235,7 +235,7 @@ impl Theme {
     pub fn draft() -> Self {
         Self {
             name: "Draft",
-            background: "#faebd7",         // AntiqueWhite
+            background: "#faebd7", // AntiqueWhite
             font: "'Comic Sans MS', 'Comic Sans', cursive",
             show_galaxy: false,
             highlight: "rgba(227,39,54,0.69)", // red@0xB0
@@ -244,11 +244,11 @@ impl Theme {
             amber: "rgba(0,0,0,0.69)",         // amberZone = foreground
             uppercase_worlds: true,
             drop_allegiance: true,
-            micro_route: Some("#808080"),       // microRoutes Gray
+            micro_route: Some("#808080"), // microRoutes Gray
             micro_border_text: "rgba(165,42,42,0.69)", // microBorders.textColor Brown@B0
             grid: Some("rgba(0,139,139,0.69)"), // parsecGrid = lightColor (DarkCyan@B0)
-            text: "rgba(0,0,0,0.69)",          // fg = black@B0
-            text_hex: "rgba(0,139,139,0.69)",  // ← light = DarkCyan@B0
+            text: "rgba(0,0,0,0.69)",     // fg = black@B0
+            text_hex: "rgba(0,139,139,0.69)", // ← light = DarkCyan@B0
             text_gg: "rgba(0,0,0,0.69)",
             text_uwp: "rgba(0,0,0,0.69)",
             text_alleg: "rgba(0,0,0,0.69)",
@@ -257,8 +257,8 @@ impl Theme {
             macro_name: "rgba(0,0,0,0.69)",
             mega_name: "rgba(0,0,0,0.69)",
             name_full: "rgba(0,0,0,0.69)",
-            name_dark: "rgba(0,0,0,0.69)",     // dark = black@B0
-            name_dim: "rgba(0,0,0,0.345)",     // dim = black@B0/2
+            name_dark: "rgba(0,0,0,0.69)", // dark = black@B0
+            name_dim: "rgba(0,0,0,0.345)", // dim = black@B0/2
             stars: ["rgba(0,0,0,0.69)"; 4],
             ..Self::poster()
         }
@@ -273,7 +273,7 @@ impl Theme {
             name: "FASA",
             background: "#ffffff",
             show_galaxy: false,
-            show_rift: false,              // riftOpacity = 0
+            show_rift: false, // riftOpacity = 0
             macro_border: "#5c4033",
             route: "#5c4033",
             micro_border: Some("#5c4033"),
@@ -294,7 +294,7 @@ impl Theme {
             drop_highlight: true,
             grid: Some("rgba(92,64,51,0.5)"), // grids = lightColor (ink@0x80)
             text: "#5c4033",
-            text_hex: "rgba(92,64,51,0.5)",   // ← light = ink@0x80
+            text_hex: "rgba(92,64,51,0.5)", // ← light = ink@0x80
             text_gg: "#5c4033",
             text_uwp: "#5c4033",
             text_alleg: "#5c4033",
@@ -319,16 +319,16 @@ impl Theme {
             background: "#000000",
             font: "'Courier New', 'Courier', monospace",
             show_galaxy: false,
-            highlight: "#ffffff",          // White
-            world_water: "#00ffff",        // empty → pen=fg (Cyan); we fill with fg
-            world_dry: "#00ffff",          // worldNoWater = foreground (Cyan)
-            amber: "#00ffff",              // amberZone = foreground
+            highlight: "#ffffff",   // White
+            world_water: "#00ffff", // empty → pen=fg (Cyan); we fill with fg
+            world_dry: "#00ffff",   // worldNoWater = foreground (Cyan)
+            amber: "#00ffff",       // amberZone = foreground
             uppercase_worlds: true,
-            micro_route: Some("#808080"),  // microRoutes Gray
-            micro_border_text: "#00ffff",  // microBorders.textColor Cyan
-            grid: Some("#00ffff"),         // subsectorGrid Cyan (parsec Plum not separately modeled)
-            text: "#00ffff",               // fg = Cyan
-            text_hex: "#add8e6",           // ← light = LightBlue
+            micro_route: Some("#808080"), // microRoutes Gray
+            micro_border_text: "#00ffff", // microBorders.textColor Cyan
+            grid: Some("#00ffff"),        // subsectorGrid Cyan (parsec Plum not separately modeled)
+            text: "#00ffff",              // fg = Cyan
+            text_hex: "#add8e6",          // ← light = LightBlue
             text_gg: "#00ffff",
             text_uwp: "#00ffff",
             text_alleg: "#00ffff",
@@ -336,7 +336,7 @@ impl Theme {
             capital_fill: "#00ffff",
             macro_name: "#00ffff",
             mega_name: "#00ffff",
-            name_full: "#00ffff",          // fadeSectorSubsectorNames=false → flat fg (Cyan)
+            name_full: "#00ffff", // fadeSectorSubsectorNames=false → flat fg (Cyan)
             name_dark: "#00ffff",
             name_dim: "#00ffff",
             stars: ["#00ffff"; 4],
@@ -355,19 +355,19 @@ impl Theme {
             background: "#e6e7e8",
             font: "Calibri, Arial, sans-serif",
             show_galaxy: false,
-            highlight: "#ff0000",          // Red (System.Red here, not TravellerColors)
+            highlight: "#ff0000", // Red (System.Red here, not TravellerColors)
             green_zone: Some("#80c676"),
             amber: "#fbb040",
             red_zone: "#ff0000",
-            world_water: "#0000cd",        // MediumBlue
-            world_dry: "#bdb76b",          // DarkKhaki
+            world_water: "#0000cd",             // MediumBlue
+            world_dry: "#bdb76b",               // DarkKhaki
             world_dry_outline: Some("#a9a9a9"), // worldWater/NoWater pen DarkGray
             uppercase_worlds: true,
             drop_allegiance: true,
-            micro_border_text: "#2f4f4f",  // microBorders.textColor DarkSlateGray
-            grid: Some("#000000"),         // all grids = foreground (Black)
-            text: "#000000",               // fg = Black
-            text_hex: "#000000",           // ← light = Black
+            micro_border_text: "#2f4f4f", // microBorders.textColor DarkSlateGray
+            grid: Some("#000000"),        // all grids = foreground (Black)
+            text: "#000000",              // fg = Black
+            text_hex: "#000000",          // ← light = Black
             text_gg: "#000000",
             text_uwp: "#000000",
             text_alleg: "#000000",
@@ -375,7 +375,7 @@ impl Theme {
             capital_fill: "#f5deb3",
             macro_name: "#000000",
             mega_name: "#000000",
-            name_full: "#000000",          // fade: fg=Black / dark=Black / dim=Gray
+            name_full: "#000000", // fade: fg=Black / dark=Black / dim=Gray
             name_dark: "#000000",
             name_dim: "#808080",
             stars: ["#000000"; 4],

@@ -5,8 +5,8 @@
 //! (The per-sector data-source credit is rendered as an HTML footer in
 //! `main.rs`, not on the canvas.)
 
-use crate::canvas::Canvas;
 use super::common::{hex_parsec, on_screen, ViewState, SECTOR_H, SECTOR_W};
+use crate::canvas::Canvas;
 use tmap_core::dto::SectorData;
 
 /// Tags that mark a sector as "official enough" to draw at full brightness.
@@ -15,9 +15,17 @@ const OFFICIAL_TAGS: [&str; 3] = ["Official", "Preserve", "InReview"];
 /// Dim every sector that isn't tagged official/reviewed (empty tags count as
 /// unofficial) with a translucent dark quad over its bounding box.
 #[allow(dead_code)]
-pub(crate) fn draw_dim_overlay(c: &impl Canvas, view: &ViewState, w: f64, h: f64, sectors: &[&SectorData]) {
+pub(crate) fn draw_dim_overlay(
+    c: &impl Canvas,
+    view: &ViewState,
+    w: f64,
+    h: f64,
+    sectors: &[&SectorData],
+) {
     for sd in sectors {
-        let Some(loc) = sd.info.location else { continue };
+        let Some(loc) = sd.info.location else {
+            continue;
+        };
         if OFFICIAL_TAGS.iter().any(|t| sd.info.tags.contains(t)) {
             continue; // official / reviewed → full brightness
         }

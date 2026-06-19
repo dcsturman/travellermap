@@ -108,7 +108,11 @@ fn expanded_body(sel: &SelectedWorld) -> impl IntoView {
     let alleg = if w.allegiance.is_empty() {
         None
     } else {
-        Some(d.allegiance_name.clone().unwrap_or_else(|| w.allegiance.clone()))
+        Some(
+            d.allegiance_name
+                .clone()
+                .unwrap_or_else(|| w.allegiance.clone()),
+        )
     };
 
     // System: stellar list + GG/belt counts + other worlds.
@@ -117,8 +121,16 @@ fn expanded_body(sel: &SelectedWorld) -> impl IntoView {
         .iter()
         .map(|s| field_row("Star", &s.code, &s.blurb))
         .collect();
-    let gg = d.pbg.gas_giants.map(|n| n.to_string()).unwrap_or_else(|| "?".into());
-    let belts = d.pbg.belts.map(|n| n.to_string()).unwrap_or_else(|| "?".into());
+    let gg = d
+        .pbg
+        .gas_giants
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "?".into());
+    let belts = d
+        .pbg
+        .belts
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "?".into());
     let system_line = format!("{gg} gas giant(s), {belts} planetoid belt(s)");
     let other_worlds = d.other_worlds.map(|n| format!("{n} other world(s)"));
 
@@ -129,8 +141,13 @@ fn expanded_body(sel: &SelectedWorld) -> impl IntoView {
         .filter(|r| !r.blurb.is_empty())
         .map(|r| field_row("", &r.code, &r.blurb))
         .collect();
-    let nobility = (!d.nobility.is_empty())
-        .then(|| d.nobility.iter().map(|n| n.blurb.clone()).collect::<Vec<_>>().join(", "));
+    let nobility = (!d.nobility.is_empty()).then(|| {
+        d.nobility
+            .iter()
+            .map(|n| n.blurb.clone())
+            .collect::<Vec<_>>()
+            .join(", ")
+    });
 
     let ix = d.importance.clone();
     let ex = d.economics.clone();
@@ -223,7 +240,8 @@ pub fn WorldPanel(
     /// Render the selected world's surface map (Callisto, dev-only). The button
     /// that fires this is only built under the `callisto` feature; in a default
     /// build the callback is unused.
-    #[prop(into)] on_world_map: Callback<()>,
+    #[prop(into)]
+    on_world_map: Callback<()>,
     #[prop(into)] active_jump: Signal<i32>,
 ) -> impl IntoView {
     let expanded = RwSignal::new(true);

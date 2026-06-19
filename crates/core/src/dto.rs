@@ -437,7 +437,11 @@ pub struct UniverseSector {
     pub y: i32,
     #[serde(rename = "Milieu")]
     pub milieu: String,
-    #[serde(rename = "Abbreviation", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "Abbreviation",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub abbreviation: Option<String>,
     #[serde(rename = "Tags", default, skip_serializing_if = "String::is_empty")]
     pub tags: String,
@@ -499,31 +503,75 @@ pub struct CreditsResult {
     pub sector_x: i32,
     #[serde(rename = "SectorY")]
     pub sector_y: i32,
-    #[serde(rename = "SectorName", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "SectorName",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub sector_name: Option<String>,
-    #[serde(rename = "SectorAuthor", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "SectorAuthor",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub sector_author: Option<String>,
-    #[serde(rename = "SectorSource", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "SectorSource",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub sector_source: Option<String>,
-    #[serde(rename = "SectorPublisher", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "SectorPublisher",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub sector_publisher: Option<String>,
-    #[serde(rename = "SectorCopyright", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "SectorCopyright",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub sector_copyright: Option<String>,
     #[serde(rename = "SectorRef", default, skip_serializing_if = "Option::is_none")]
     pub sector_ref: Option<String>,
-    #[serde(rename = "SectorMilieu", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "SectorMilieu",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub sector_milieu: Option<String>,
-    #[serde(rename = "SectorTags", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "SectorTags",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub sector_tags: Option<String>,
 
-    #[serde(rename = "RouteCredits", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "RouteCredits",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub route_credits: Option<String>,
 
-    #[serde(rename = "SubsectorName", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "SubsectorName",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub subsector_name: Option<String>,
-    #[serde(rename = "SubsectorIndex", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "SubsectorIndex",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub subsector_index: Option<String>,
-    #[serde(rename = "SubsectorCredits", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "SubsectorCredits",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub subsector_credits: Option<String>,
 
     #[serde(rename = "WorldName", default, skip_serializing_if = "Option::is_none")]
@@ -532,7 +580,11 @@ pub struct CreditsResult {
     pub world_hex: Option<String>,
     #[serde(rename = "WorldUwp", default, skip_serializing_if = "Option::is_none")]
     pub world_uwp: Option<String>,
-    #[serde(rename = "WorldRemarks", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "WorldRemarks",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub world_remarks: Option<String>,
     #[serde(rename = "WorldIx", default, skip_serializing_if = "Option::is_none")]
     pub world_ix: Option<String>,
@@ -542,18 +594,42 @@ pub struct CreditsResult {
     pub world_cx: Option<String>,
     #[serde(rename = "WorldPbg", default, skip_serializing_if = "Option::is_none")]
     pub world_pbg: Option<String>,
-    #[serde(rename = "WorldAllegiance", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "WorldAllegiance",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub world_allegiance: Option<String>,
-    #[serde(rename = "WorldCredits", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "WorldCredits",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub world_credits: Option<String>,
 
-    #[serde(rename = "ProductPublisher", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "ProductPublisher",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub product_publisher: Option<String>,
-    #[serde(rename = "ProductTitle", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "ProductTitle",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub product_title: Option<String>,
-    #[serde(rename = "ProductAuthor", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "ProductAuthor",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub product_author: Option<String>,
-    #[serde(rename = "ProductRef", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "ProductRef",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub product_ref: Option<String>,
 }
 

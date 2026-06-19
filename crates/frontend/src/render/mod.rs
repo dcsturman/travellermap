@@ -38,10 +38,10 @@ pub use common::{
 pub use theme::Theme;
 
 use common::{
-    hex_vertex_r, jump_hexes, MACRO_LABEL_MAX_SCALE, MACRO_MAX_SCALE, MACRO_WORLDS_MIN,
+    hex_vertex_r, jump_hexes, HEX_VR, MACRO_LABEL_MAX_SCALE, MACRO_MAX_SCALE, MACRO_WORLDS_MIN,
     PARSEC_GRID_MIN_SCALE, ROUTE_MIN_SCALE, SECTOR_GRID_MIN, SECTOR_H, SECTOR_NAME_MAX,
     SECTOR_NAME_MIN, SECTOR_W, SUBSECTOR_GRID_MIN, SUBSECTOR_H, SUBSECTOR_NAME_MAX,
-    SUBSECTOR_NAME_MIN, SUBSECTOR_W, WORLD_BASIC_SCALE, HEX_VR,
+    SUBSECTOR_NAME_MIN, SUBSECTOR_W, WORLD_BASIC_SCALE,
 };
 
 use crate::canvas::Canvas2d;
@@ -60,6 +60,7 @@ pub fn clear_caches() {
 }
 
 /// Draw the map under the current view, choosing layers by LOD.
+#[allow(clippy::too_many_arguments)]
 pub fn draw(
     canvas: &HtmlCanvasElement,
     sectors: &[&SectorData],
@@ -131,7 +132,8 @@ pub fn draw(
         // from the macro view up through the micro-overview (sector-name band),
         // so they persist as you zoom in past 4 — matching the reference, which
         // shows them alongside sector names + micro borders (see MACRO_LABEL_MAX).
-        if opts.important_worlds && (MACRO_WORLDS_MIN..=MACRO_LABEL_MAX_SCALE).contains(&view.scale) {
+        if opts.important_worlds && (MACRO_WORLDS_MIN..=MACRO_LABEL_MAX_SCALE).contains(&view.scale)
+        {
             if let Some(ov) = overlays {
                 overlays::draw_world_labels(&c, &view, w, h, ov, theme);
             }
@@ -155,7 +157,10 @@ pub fn draw(
     // reference's gray, scale-faded `gridColor`.
     // Grid color: the theme can force a flat color (FASA/Draft/Terminal/Mongoose);
     // otherwise the scale-faded gray `gridColor`.
-    let gc = theme.grid.map(str::to_string).unwrap_or_else(|| common::grid_color(view.scale));
+    let gc = theme
+        .grid
+        .map(str::to_string)
+        .unwrap_or_else(|| common::grid_color(view.scale));
     if opts.sector_grid && view.scale >= SUBSECTOR_GRID_MIN {
         grid::draw_grid_lines(&c, &view, w, h, SUBSECTOR_W, SUBSECTOR_H, &gc, 1.4);
     }
@@ -175,7 +180,16 @@ pub fn draw(
     if view.scale >= WORLD_MIN_SCALE {
         // Micro borders (fill behind everything, then stroke).
         if opts.borders {
-            borders::draw_micro_borders(&c, &view, w, h, dpr, sectors, opts.filled_borders, theme.micro_border);
+            borders::draw_micro_borders(
+                &c,
+                &view,
+                w,
+                h,
+                dpr,
+                sectors,
+                opts.filled_borders,
+                theme.micro_border,
+            );
         }
         mark("borders", &mut marks);
         if opts.routes && view.scale >= ROUTE_MIN_SCALE {
@@ -265,5 +279,8 @@ fn build_jump_clip_path(view: &ViewState, w: f64, h: f64, jc: JumpClip) -> Path2
 /// `performance.now()` in milliseconds (monotonic, sub-ms). Returns 0 if
 /// unavailable (e.g. no window) so timing degrades gracefully.
 pub(crate) fn now() -> f64 {
-    web_sys::window().and_then(|w| w.performance()).map(|p| p.now()).unwrap_or(0.0)
+    web_sys::window()
+        .and_then(|w| w.performance())
+        .map(|p| p.now())
+        .unwrap_or(0.0)
 }
