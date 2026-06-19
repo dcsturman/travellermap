@@ -48,11 +48,12 @@ pub struct Theme {
     pub amber: &'static str,     // amberZone.pen.color
     pub red_zone: &'static str,  // redZone.pen.color
     pub highlight: &'static str, // highlightColor (anomaly glyph, highlighted names, minor region names)
-    // Mongoose green-zone perimeter color. Set per `Stylesheet.cs` but not yet drawn
-    // (Mongoose's `showZonesAsPerimeters` — perimeter rings for every world — isn't
-    // replicated; flagged in the module docs).
-    #[allow(dead_code)]
+    // Mongoose green-zone perimeter color (used when `zone_perimeters`).
     pub green_zone: Option<&'static str>,
+    // `showZonesAsPerimeters` (Mongoose): draw each world's travel zone as a
+    // hexagon outline at 0.95× around its hex (green by default, amber/red when
+    // zoned) instead of the open arc behind the disc (`Stylesheet.cs:1027`).
+    pub zone_perimeters: bool,
 
     // ── world discs ──
     pub world_water: &'static str,               // worldWater.fillColor
@@ -134,6 +135,9 @@ pub struct Theme {
     // `worlds.textBackgroundStyle == Shadow` (Candy, `Stylesheet.cs:815`) — draw a
     // drop shadow behind world names for the 3-D "eye-candy" look.
     pub text_shadow: bool,
+    // `uwp.textBackgroundStyle == Filled` (Mongoose, `Stylesheet.cs:1052-1054`) — the
+    // UWP is white text on a solid black box rather than plain text.
+    pub uwp_filled: bool,
 
     // ── star field (4 brightness tiers; ← foreground) ──
     pub stars: [&'static str; 4],
@@ -160,6 +164,7 @@ impl Theme {
             red_zone: C_RED,
             highlight: C_RED,
             green_zone: None,
+            zone_perimeters: false,
             world_water: C_WATER,
             world_dry: C_DRY,
             world_dry_outline: None,
@@ -204,6 +209,7 @@ impl Theme {
             subsector_hex_coords: false,
             taper_lines: false,
             text_shadow: false,
+            uwp_filled: false,
             stars: [
                 "rgba(170,180,205,0.35)",
                 "rgba(205,215,235,0.55)",
@@ -413,6 +419,7 @@ impl Theme {
             show_galaxy: false,
             highlight: "#ff0000", // Red (System.Red here, not TravellerColors)
             green_zone: Some("#80c676"),
+            zone_perimeters: true, // showZonesAsPerimeters (Stylesheet.cs:1027)
             amber: "#fbb040",
             red_zone: "#ff0000",
             world_water: "#0000cd",             // MediumBlue
@@ -420,12 +427,13 @@ impl Theme {
             world_dry_outline: Some("#a9a9a9"), // worldWater/NoWater pen DarkGray
             uppercase_worlds: true,
             drop_allegiance: true,
+            uwp_filled: true, // uwp.textBackgroundStyle=Filled (Stylesheet.cs:1054)
             micro_border_text: "#2f4f4f", // microBorders.textColor DarkSlateGray
-            grid: Some("#000000"),        // all grids = foreground (Black)
-            text: "#000000",              // fg = Black
-            text_hex: "#000000",          // ← light = Black
+            grid: Some("#000000"), // all grids = foreground (Black)
+            text: "#000000",  // fg = Black
+            text_hex: "#000000", // ← light = Black
             text_gg: "#000000",
-            text_uwp: "#000000",
+            text_uwp: "#ffffff", // White on the black Filled box (Stylesheet.cs:1053)
             text_alleg: "#000000",
             capital: "#000000",
             capital_fill: "#f5deb3",

@@ -13,8 +13,9 @@ use crate::canvas::{Canvas, Canvas2d};
 use crate::glyph;
 
 use super::common::{
-    hex_parsec, on_screen, sector_in_viewport, world_hex, ViewState, ALLEGIANCE_MIN_SCALE,
-    CONTENT_SCALE, WORLD_BASIC_SCALE, WORLD_FULL_SCALE, WORLD_UWP_SCALE,
+    hex_parsec, hex_vertex_r, on_screen, sector_in_viewport, world_hex, ViewState,
+    ALLEGIANCE_MIN_SCALE, CONTENT_SCALE, HEX_VR, WORLD_BASIC_SCALE, WORLD_FULL_SCALE,
+    WORLD_UWP_SCALE,
 };
 use super::Theme;
 
@@ -171,19 +172,39 @@ fn build_sector_dots(
             };
             let (wc, wr) = world_hex(loc.x, loc.y, col, row);
             let (cx, cy) = hex_parsec(wc, wr);
-            // Travel zone: a single open-bottom arc behind the disc (amber/red).
-            let zc = match world.zone.as_str() {
-                "A" => Some(theme.amber),
-                "R" => Some(theme.red_zone),
-                _ => None,
-            };
-            if let Some(zc) = zc {
-                let (a0, a1) = (PI - 0.384, 2.0 * PI + 0.384);
+            if theme.zone_perimeters {
+                // Mongoose: a hexagon outline at 0.95× around the hex, in the zone
+                // color — green for every world by default, amber/red when zoned.
+                let zcolor = match world.zone.as_str() {
+                    "A" => theme.amber,
+                    "R" => theme.red_zone,
+                    _ => theme.green_zone.unwrap_or(theme.amber),
+                };
                 let p = zones
-                    .entry(zc.to_owned())
+                    .entry(zcolor.to_owned())
                     .or_insert_with(|| Path2d::new().unwrap());
-                p.move_to(cx + ZONE_R * a0.cos(), cy + ZONE_R * a0.sin());
-                let _ = p.arc(cx, cy, ZONE_R, a0, a1);
+                let v0 = hex_vertex_r(wc, wr, 0, HEX_VR * 0.95);
+                p.move_to(v0.0, v0.1);
+                for k in 1..6 {
+                    let v = hex_vertex_r(wc, wr, k, HEX_VR * 0.95);
+                    p.line_to(v.0, v.1);
+                }
+                p.close_path();
+            } else {
+                // Travel zone: a single open-bottom arc behind the disc (amber/red).
+                let zc = match world.zone.as_str() {
+                    "A" => Some(theme.amber),
+                    "R" => Some(theme.red_zone),
+                    _ => None,
+                };
+                if let Some(zc) = zc {
+                    let (a0, a1) = (PI - 0.384, 2.0 * PI + 0.384);
+                    let p = zones
+                        .entry(zc.to_owned())
+                        .or_insert_with(|| Path2d::new().unwrap());
+                    p.move_to(cx + ZONE_R * a0.cos(), cy + ZONE_R * a0.sin());
+                    let _ = p.arc(cx, cy, ZONE_R, a0, a1);
+                }
             }
             let (fill, outline) = world_colors(world, more_colors, theme);
             add_circle(&mut discs, fill, cx, cy);
@@ -481,12 +502,24 @@ pub(crate) fn draw_world_glyphs(
     if show_uwp && !theme.drop_uwp {
         ctx.set_font(&uwp_font);
         ctx.set_text_align("center");
-        ctx.set_fill_style_str(theme.text_uwp);
+        ctx.set_text_baseline("middle");
+        let pad = (uwp_pt * 0.35).max(1.0);
         for (world, x, y) in &vis {
             if is_placeholder(world) {
                 continue; // no "???????-?" line — the glyph stands in for it
             }
-            let _ = ctx.fill_text(&world.uwp, *x, *y + uwp_y * s);
+            let ty = *y + uwp_y * s;
+            // Mongoose: white UWP on a solid black box (textBackgroundStyle=Filled).
+            // (web-sys `measure_text` isn't in our feature set; the UWP is a fixed
+            // ~9-char string, so estimate the box from the glyph count × font width.)
+            if theme.uwp_filled {
+                let bw = world.uwp.chars().count() as f64 * uwp_pt * 0.62 + pad * 2.0;
+                let bh = uwp_pt + pad;
+                ctx.set_fill_style_str("#000000");
+                ctx.fill_rect(*x - bw / 2.0, ty - bh / 2.0, bw, bh);
+            }
+            ctx.set_fill_style_str(theme.text_uwp);
+            let _ = ctx.fill_text(&world.uwp, *x, ty);
         }
     }
 
