@@ -21,4 +21,5 @@ pub mod parse;
 pub mod route;
 pub mod searchlang;
 pub mod sector_writer;
+pub mod spline;
 pub mod world_util;
