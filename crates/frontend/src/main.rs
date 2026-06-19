@@ -2727,17 +2727,13 @@ fn App() -> impl IntoView {
                             gap:18px; padding:8px 14px 10px;">
                     <div style="flex:1; min-width:0; font-style:italic; line-height:1.45; \
                                 text-shadow:0 1px 2px #000; overflow:hidden; \
-                                display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2;">
+                                display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3;">
+                        // Always credit Mongoose first, then the per-sector data source.
+                        <span>"The "<b><i>"Traveller"</i></b>" game in all forms is owned by \
+                            Mongoose Publishing. Copyright 1977 \u{2013} 2024 Mongoose Publishing."</span>
                         {move || {
                             let c = footer_credit.get();
-                            if c.is_empty() {
-                                view! {
-                                    <span>"The "<b><i>"Traveller"</i></b>" game in all forms is owned by \
-                                        Mongoose Publishing. Copyright 1977 \u{2013} 2024 Mongoose Publishing."</span>
-                                }.into_any()
-                            } else {
-                                view! { <span>{c}</span> }.into_any()
-                            }
+                            (!c.is_empty()).then(|| view! { <span>{" "}{c}</span> })
                         }}
                     </div>
                     <div style="flex:none; width:300px; height:51px; \
@@ -2750,25 +2746,9 @@ fn App() -> impl IntoView {
             <div class="tmap-controls"
                  style="position:fixed; top:calc(10px + env(safe-area-inset-top)); \
                         right:calc(12px + env(safe-area-inset-right)); z-index:7; display:flex; gap:6px;">
+                // Order: Home, Settings, Share, Key, Help (Milieu lives in Settings).
                 <button on:click=on_home title="Home — charted-space overview"
                         style=BTN_STYLE>"⌂"</button>
-                <button title="Milieu — time period" style=BTN_STYLE
-                        on:click=move |_| panel.update(|p| *p = if *p == 3 { 0 } else { 3 })>
-                    <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor"
-                         stroke-width="2" stroke-linecap="round" style="vertical-align:middle;">
-                        <circle cx="12" cy="12" r="9"></circle>
-                        <path d="M12 7 V12 L15.5 14"></path>
-                    </svg>
-                </button>
-                <button title="Map key / legend" style=BTN_STYLE
-                        on:click=move |_| panel.update(|p| *p = if *p == 1 { 0 } else { 1 })>
-                    <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"
-                         style="vertical-align:middle;">
-                        <path d="M21 10h-8.35A5.99 5.99 0 0 0 7 6c-3.31 0-6 2.69-6 6s2.69 6 6 \
-                                 6a5.99 5.99 0 0 0 5.65-4H13l2 2 2-2 2 2 4-4.04L21 10zM7 15c-1.65 \
-                                 0-3-1.35-3-3s1.35-3 3-3 3 1.35 3 3-1.35 3-3 3z" />
-                    </svg>
-                </button>
                 <button title="Settings & layers" style=BTN_STYLE
                         on:click=move |_| panel.update(|p| *p = if *p == 2 { 0 } else { 2 })>"☰"</button>
                 <button title="Share / embed this view" style=BTN_STYLE
@@ -2782,40 +2762,19 @@ fn App() -> impl IntoView {
                         <path d="M8.6 13.5 L15.4 17.5 M15.4 6.5 L8.6 10.5"></path>
                     </svg>
                 </button>
+                <button title="Map key / legend" style=BTN_STYLE
+                        on:click=move |_| panel.update(|p| *p = if *p == 1 { 0 } else { 1 })>
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"
+                         style="vertical-align:middle;">
+                        <path d="M21 10h-8.35A5.99 5.99 0 0 0 7 6c-3.31 0-6 2.69-6 6s2.69 6 6 \
+                                 6a5.99 5.99 0 0 0 5.65-4H13l2 2 2-2 2 2 4-4.04L21 10zM7 15c-1.65 \
+                                 0-3-1.35-3-3s1.35-3 3-3 3 1.35 3 3-1.35 3-3 3z" />
+                    </svg>
+                </button>
                 <button title="Help, about & credits" style=BTN_STYLE
                         on:click=move |_| panel.update(|p| *p = if *p == 5 { 0 } else { 5 })>"?"</button>
             </div>
 
-            // --- milieu / time selector panel ---
-            <Show when=move || panel.get() == 3>
-                <div class="tmap-panel" style=PANEL_STYLE>
-                    <div style="display:flex; justify-content:space-between; align-items:center;">
-                        <span style="font-weight:700; letter-spacing:0.05em;">"MILIEU"</span>
-                        <span on:click=move |_| panel.set(0)
-                              style="cursor:pointer; color:#8a93a8; font-size:18px;">"✕"</span>
-                    </div>
-                    <hr style="border:none; border-top:1px solid #2a3145; margin:8px 0 6px;" />
-                    <div style="color:#8a93a8; font-size:12px; margin-bottom:6px;">
-                        "Era snapshot of charted space. Switching reloads sector data."
-                    </div>
-                    {MILIEUX.iter().map(|(code, label)| {
-                        let code = *code;
-                        let label = *label;
-                        view! {
-                            <div on:click=move |_| { milieu.set(code); panel.set(0); }
-                                 style="display:flex; align-items:baseline; gap:10px; padding:7px 4px; \
-                                        cursor:pointer; border-bottom:1px solid #20283a;"
-                                 style:color=move || if milieu.get() == code { "#e32736" } else { "#dfe5f2" }>
-                                <span style="flex:none; width:14px; text-align:center; font-weight:700;">
-                                    {move || if milieu.get() == code { "●" } else { "" }}
-                                </span>
-                                <span style="flex:none; width:46px; font-weight:700; font-size:12px;">{code}</span>
-                                <span>{label}</span>
-                            </div>
-                        }
-                    }).collect_view()}
-                </div>
-            </Show>
 
             // --- share panel: permalink + embed code for the current view ---
             <Show when=move || panel.get() == 4>
@@ -2917,6 +2876,26 @@ fn App() -> impl IntoView {
                     {toggle_row("Routes", opt_routes)}
                     {toggle_row("Region Names", opt_region_names)}
                     {toggle_row("Important Worlds", opt_important)}
+                    <div style="font-weight:700; color:#aab3c8; margin:12px 0 2px;">"ERA (MILIEU)"</div>
+                    <div style="display:flex; flex-wrap:wrap; gap:6px; margin:4px 0 2px;">
+                        {MILIEUX.iter().map(|(code, label)| {
+                            let code = *code;
+                            let label = *label;
+                            view! {
+                                <button title=label
+                                    on:click=move |_| if milieu.get_untracked() != code { milieu.set(code); }
+                                    style="padding:5px 11px; border-radius:14px; cursor:pointer; \
+                                           border:1px solid #2a3145; font:600 12px system-ui;"
+                                    style:background=move || if milieu.get() == code { "#e32736" } else { "rgba(40,44,58,0.7)" }
+                                    style:color=move || if milieu.get() == code { "#fff" } else { "#cdd5e6" }>
+                                    {code}
+                                </button>
+                            }
+                        }).collect_view()}
+                    </div>
+                    <div style="font-size:11px; color:#7e879c; line-height:1.45; margin-top:3px;">
+                        "Time-period snapshot of charted space. Switching reloads sector data."
+                    </div>
                     <div style="font-weight:700; color:#aab3c8; margin:12px 0 2px;">"STYLE"</div>
                     <div style="display:flex; flex-wrap:wrap; gap:6px; margin:4px 0 2px;">
                         {render::Theme::PRESETS.iter().map(|(name, _)| {
@@ -2941,7 +2920,7 @@ fn App() -> impl IntoView {
                         }).collect_view()}
                     </div>
                     <div style="font-size:11px; color:#7e879c; line-height:1.45; margin-top:3px;">
-                        "Verbatim from the reference Stylesheet. Candy (world-globe images) is not yet supported."
+                        "Verbatim from the reference Stylesheet."
                     </div>
                     <div style="font-weight:700; color:#aab3c8; margin:12px 0 2px;">"APPEARANCE"</div>
                     {toggle_row("More World Colors", opt_world_colors)}
