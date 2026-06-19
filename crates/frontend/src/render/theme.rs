@@ -13,11 +13,11 @@
 //! .NET `Color` names → hex are the standard `KnownColor` ARGB values.
 //! `TravellerColors.Red = #E32736`, `Amber = #FFCC00`.
 //!
-//! **Candy** is fully wired (palette + text transforms + globe/nebula compositing
-//! + hidden hex grid). **Not yet replicated** (flagged per preset): curved micro
-//! borders (FASA/Candy — own Phase-3 track), all-hex numbering + subsector hex
-//! coords (Draft/FASA/Terminal), and the Mongoose glyph re-layout + zone-perimeters
-//! + filled-UWP. See PORT_PLAN.md Phase 3.
+//! **Candy** is fully wired (palette, text transforms, globe/nebula compositing,
+//! hidden hex grid). **Not yet replicated** (flagged per preset): curved micro
+//! borders (FASA/Candy — own Phase-3 track); all-hex numbering and subsector hex
+//! coords (Draft/FASA/Terminal); the Mongoose glyph re-layout, zone-perimeters, and
+//! filled-UWP. See PORT_PLAN.md Phase 3.
 
 use super::common::{C_AMBER, C_BORDER, C_DRY, C_RED, C_RIFT, C_ROUTE, C_WATER};
 
