@@ -24,7 +24,8 @@ file as we go: tick boxes, fold in decisions, keep entries short.
   I/O + serving; frontend consumes JSON. Same parser will feed the future tile-precompute tool.
 - **LOD is in the API contract from day one** (`?lod=`), but the parser is always full-fidelity —
   a low-LOD payload is a *projection*, never a different parse. Full `(lod,x,y)` tiling is deferred
-  (Phase 14) until profiling justifies it.
+  indefinitely — the current scheme (sector-by-name = the high-LOD tile, zoom-out drops to macro
+  overlays) performs well (backend ~21k req/s), so build it only if profiling ever justifies it.
 - Datastore: **none** (`res/` is the system of record, loaded into RAM). See `CLAUDE.md`.
 
 ---
@@ -75,7 +76,7 @@ group borders by 2-char allegiance prefix so multi-domain polities (the Imperium
 
 **Phase 8 — Search (first pass).** In-memory name index per milieu (exact > prefix > contains),
 `GET /api/search`. Frontend search box → live results → click jumps the view. *(Superseded by
-the Tantivy + query-language work in Phase 13.)*
+the Tantivy + query-language work in Phase 12.)*
 
 **Phase 9 — Optimize streaming.** Response cache per `(milieu,name,lod)`; ETag + `If-None-Match`
 → 304, `Cache-Control: no-cache`. LOD projection `?lod=overview` (−44% payload); client requests
@@ -90,9 +91,14 @@ the Tantivy + query-language work in Phase 13.)*
   every M1105 sector serializes (190, 0 failures).
 - **Visual gaps closed:** allegiance code right of each world; border corner gaps / double-stroke;
   hex-fill anti-alias seams (inflate ~3%); intra-Imperium domain seams (2-char prefix grouping);
-  `CONTENT_SCALE 1.3` so glyphs fill the hex. **Home/Key/Hamburger** control cluster + full
-  **Map Legend** parity + **Settings** toggles (`RenderOptions` threaded through `draw`).
-  Backend static route `GET /api/res/{*path}` (legend SVGs, galaxy texture).
+  `CONTENT_SCALE 1.3` so glyphs fill the hex; sector-name fade, dynamic data-source footer, galaxy
+  background image, placeholder/anomaly glyphs (`*`/`⌖`), style-value parity (zone arc, gray micro
+  routes, scale-faded gray grids, log interpolation, dotmap disc radius), far-zoom minor-region red
+  labels. **Home/Key/Hamburger** control cluster + full **Map Legend** parity + **Settings** toggles
+  (`RenderOptions` threaded through `draw`). Backend static route `GET /api/res/{*path}`. *(Note: the
+  reference does **not** fill macro polity borders — `VectorObject.Draw` strokes only; the filled
+  look is the micro layer at s≥4, which we match. Confirmed 2026-06-18; macro↔micro handoff already
+  exact at scale 4.)*
 - **Profiling:** release build + in-app **per-layer frame-timing HUD** (Settings → DEBUG).
   Borders were the hot layer → **cached per-sector world-coord `Path2d` + canvas transform**
   (rebuild ~8 ms → 1–2 ms; same for the hex grid and dot-tier worlds). Cold load test (vegeta):
@@ -121,7 +127,7 @@ Reference features built alongside/after the Phase 10 parity pass.
 - [x] **Share tab — MVP (2026-06-16).** Link + embed (`<iframe>`) panel; live `share_url`. Scheme:
   our own `?cx&cy&scale&milieu` (a single swap-point — `build_share_url`/`parse_share_params` — for
   the future travellermap.com `p=x!y!logScale` compat). Reads params on load; reflects the live view
-  via debounced `history.replaceState`. *TODO (Phase 13):* travellermap URL compat, Save Snapshot/PDF.
+  via debounced `history.replaceState`. *TODO (Phase 12):* travellermap URL compat, Save Snapshot/PDF.
 - [x] **Help / About / Credits (2026-06-18).** `?` tab: controls quick-help + Apache-2.0-compliant
   attribution (derivative-work notice, © 2006–2023 Joshua Bell, license + upstream links) + Mongoose
   trademark/Fair-Use notice.
@@ -163,21 +169,7 @@ small palette+flags struct; all geometry/LOD is shared and already ported.
   Param name matches travellermap.com's (forward-compatible with the reference-URL work).
 - [ ] **Candy** preset, when its prerequisites (world-globe images + nebula background) land.
 
-## Phase 12 — Visual parity finish
-
-The remaining gap vs. travellermap.com after Phase 10. *(Most parity items are done — see below.)*
-
-- [ ] **Macro polity fill at zoomed-out (s ≤ 4).** The reference fills polities via the macro
-  polygons (`res/Vectors/*.xml`) at overview zoom; we only **stroke** them (`draw_vector`). Add a
-  fill pass and make the **macro↔micro handoff** seamless (macro off / micro on both at s = 4).
-  Region/rift/mega/minor **names** are already ported exactly (`DrawMacroNames`: major bold white
-  caps, minor red, rifts 35°, mega ≤ 0.25). The filled look at *worlds-visible* zoom (s > 4)
-  already works via the micro-border layer.
-- [x] Sector-name fade, dynamic data-source footer, galaxy background image, placeholder/anomaly
-  glyphs (`*`/`⌖`), style-value parity (zone arc, gray micro routes, scale-faded gray grids, log
-  interpolation, dotmap disc radius), far-zoom minor-region red labels — all DONE 2026-06-12/13.
-
-## Phase 13 — Public API compatibility
+## Phase 12 — Public API compatibility
 
 Our backend exposes a **private snake_case contract** (`/api/sector`, `/api/universe`, …) that
 diverges from the documented public API (`/api/{verb}`, `/data/{sector}/…`, PascalCase, JSONP/XML).
@@ -198,20 +190,7 @@ Full matrix + decisions in **`PORT_API_COMPAT.md`** (the live tracker — don't 
   `/api/jumpworlds`, `(random world)`/canned search specials, and the `/data/{sector}/…` URL
   family. **Open decision:** reshape to the documented contract vs. a thin compatibility layer.
 
-## Phase 14 — Performance: render profiling + LOD (deferred until justified)
-
-Tooling is in hand (frame-timing HUD, vegeta/samply); the backend is cleared. What's left is
-browser-side render profiling — **don't optimize before the HUD/flamegraph points somewhere.**
-
-- [ ] **Browser DevTools pass** (scripting-vs-paint, redraw frequency on pan) once the HUD flags
-  the next hot layer after borders.
-- [ ] **Galaxy/hex-grid/star-field caching** — apply the per-sector `Path2d` + transform trick if
-  the HUD flags `draw_hex_grid` or `draw_stars`. Consider unloading distant sectors on long sessions.
-- [ ] **Real LOD tiers** — today only `full`/`overview` exist and both run the full parse (overview
-  just strips fields). Build coarser tiers + the `(lod,x,y)` static-tile pyramid only if payloads
-  grow (the `full` detail-panel traffic) or low-zoom needs positions-only dots. Re-measure first.
-
-## Phase 15 — Polish & quality
+## Phase 13 — Polish & quality
 
 - [ ] **World-detail panel tails** — Generate World Map outbound link (`travellerworlds.com`),
   placeholder (`XXXXXXX-X`) styling, surface RU. *(Core panel + print sheet + per-J range view all
@@ -226,7 +205,7 @@ browser-side render profiling — **don't optimize before the HUD/flamegraph poi
   runs `cargo fmt --all -- --check` (target-independent, covers the wasm frontend). CI is now fully
   deny-gated: native = fmt + clippy + tests; wasm = clippy `-D warnings` × (default, callisto).
 
-## Phase 16 — Deploy (mostly done)
+## Phase 14 — Deploy (mostly done)
 
 - [x] **Single-container service (2026-06-15).** One container serves API + WASM frontend from one
   origin (relative `/api`). Multi-stage `Dockerfile` (Trunk `--release --features callisto` → cargo
