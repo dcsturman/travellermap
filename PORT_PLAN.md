@@ -218,7 +218,9 @@ browser-side render profiling — **don't optimize before the HUD/flamegraph poi
   named structs over two complex tuple types; `#[allow(too_many_arguments)]` only on the wide-but-
   flat render entry points). The wasm CI job now runs `cargo clippy … -- -D warnings` for both the
   default and `callisto` feature sets (replacing the bare `cargo check`).
-- [ ] **CI gating tail** — `cargo fmt --check` (the tree isn't yet rustfmt-clean).
+- [x] **`cargo fmt --check` gated — DONE 2026-06-18.** Tree made rustfmt-clean; the native CI job
+  runs `cargo fmt --all -- --check` (target-independent, covers the wasm frontend). CI is now fully
+  deny-gated: native = fmt + clippy + tests; wasm = clippy `-D warnings` × (default, callisto).
 
 ## Phase 16 — Deploy (mostly done)
 
