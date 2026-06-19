@@ -157,11 +157,11 @@ small palette+flags struct; all geometry/LOD is shared and already ported.
   `micro_border_text` overrides (draw-time, no cache rebuild), grid override, `uppercase_worlds`,
   the `worldDetails &= ~…` field drops (FASA/Draft/Mongoose), `show_galaxy`/`show_rift`. Settings →
   **STYLE** selector (red-highlighted, like the milieu picker); switching `render::clear_caches()`
-  then redraws (the world-dot cache bakes colors). **Not yet replicated (flagged in `theme.rs`):**
-  curved micro borders (FASA), all-hex numbering + subsector hex coords (Draft/FASA/Terminal), the
-  Mongoose glyph re-layout + zone-perimeters + filled-UWP, text scale-expansion, and macro-name
-  fonts. **Candy deferred** (needs per-world globe images + nebula background — out of scope) but
-  planned to fully support later (user).
+  then redraws (the world-dot cache bakes colors). **All presets now wired (2026-06-19):** Candy
+  (palette/text/globe/nebula/curved borders), curved micro borders (FASA/Candy), all-hex numbering +
+  subsector hex coords (Draft/FASA/Terminal), and Mongoose (filled-UWP + zone-perimeters + disc-offset
+  glyph layout) + the Candy text scale-expansion. **Minor residuals:** Mongoose's middle base-slot x,
+  and macro-name fonts.
 - [x] **C tail — `&style=` URL round-trip (DONE 2026-06-18).** `build_share_url` appends
   `&style=<preset>` (omitted at the default Poster); `parse_share_params` reads it back
   (case-insensitive, validated against `Theme::PRESETS`) and seeds the `style` signal on load.
