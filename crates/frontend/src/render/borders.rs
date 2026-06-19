@@ -7,6 +7,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use tmap_core::dto::SectorData;
+use tmap_core::spline::cardinal_spline_beziers;
 use web_sys::Path2d;
 
 use super::common::{
@@ -57,7 +58,7 @@ thread_local! {
 /// Hash of the on-screen *bordered* sectors (+ fill flag). The cache rebuilds
 /// only when this set changes (sectors stream in / zoom changes the set), not on
 /// every pan frame — between changes the cached `Path2d`s are just re-transformed.
-fn border_cache_key(sectors: &[&SectorData], filled: bool) -> u64 {
+fn border_cache_key(sectors: &[&SectorData], filled: bool, curved: bool) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut coords: Vec<(i32, i32)> = sectors
         .iter()
@@ -68,6 +69,7 @@ fn border_cache_key(sectors: &[&SectorData], filled: bool) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     coords.hash(&mut h);
     filled.hash(&mut h);
+    curved.hash(&mut h); // hex vs curved geometry are cached separately
     h.finish()
 }
 
@@ -273,6 +275,136 @@ fn build_border_geometry(sectors: &[&SectorData]) -> Vec<(String, Path2d, Path2d
     })
 }
 
+// ── Curved (FASA/Candy) borders ─────────────────────────────────────────────
+
+/// A boundary edge as both endpoints' quantized vertex key + world point.
+type Edge = ((i64, i64), (f64, f64), (i64, i64), (f64, f64));
+
+/// Quantize a world vertex so two hexes' shared corner (geometrically identical,
+/// possibly off by float rounding) dedupes to one graph node.
+fn vkey(p: (f64, f64)) -> (i64, i64) {
+    ((p.0 * 4096.0).round() as i64, (p.1 * 4096.0).round() as i64)
+}
+
+/// A traced boundary loop and whether it closed on itself (a closed polity
+/// outline) or ran into the loaded-sector frontier (open).
+struct BorderLoop {
+    points: Vec<(f64, f64)>,
+    closed: bool,
+}
+
+/// Stitch a bag of boundary edges into ordered loops by following shared vertices.
+/// Degree-2 vertices give clean loops; at rare pinch points (degree 4) we just take
+/// any still-unused edge.
+fn stitch_loops(edges: &[Edge]) -> Vec<BorderLoop> {
+    let mut adj: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    for (i, e) in edges.iter().enumerate() {
+        adj.entry(e.0).or_default().push(i);
+        adj.entry(e.2).or_default().push(i);
+    }
+    let mut used = vec![false; edges.len()];
+    let mut loops = Vec::new();
+    for start in 0..edges.len() {
+        if used[start] {
+            continue;
+        }
+        let start_v = edges[start].0;
+        let mut cur_v = start_v;
+        let mut e_idx = start;
+        let mut points = Vec::new();
+        let closed = loop {
+            used[e_idx] = true;
+            let e = &edges[e_idx];
+            let (this_pt, other_v) = if e.0 == cur_v { (e.1, e.2) } else { (e.3, e.0) };
+            points.push(this_pt);
+            cur_v = other_v;
+            if cur_v == start_v {
+                break true;
+            }
+            match adj
+                .get(&cur_v)
+                .and_then(|es| es.iter().copied().find(|&j| !used[j]))
+            {
+                Some(j) => e_idx = j,
+                None => break false,
+            }
+        };
+        if points.len() >= 2 {
+            loops.push(BorderLoop { points, closed });
+        }
+    }
+    loops
+}
+
+/// Cardinal-spline `lp` into `path` (move + béziers, close if the loop is closed).
+fn spline_into(path: &Path2d, lp: &BorderLoop, tension: f64) {
+    if lp.points.len() < 2 {
+        return;
+    }
+    path.move_to(lp.points[0].0, lp.points[0].1);
+    for [c1, c2, end] in cardinal_spline_beziers(&lp.points, tension, lp.closed) {
+        path.bezier_curve_to(c1.0, c1.1, c2.0, c2.1, end.0, end.1);
+    }
+    if lp.closed {
+        path.close_path();
+    }
+}
+
+/// Curved-border geometry (`microBorderStyle == Curve`): combine each polity
+/// group's region across the visible sectors, trace its boundary edges into loops,
+/// and cardinal-spline them into a fill (tension 0.5) + stroke (0.6) `Path2d`.
+/// Combining across sectors means a seam interior to a polity isn't a boundary
+/// edge, so no per-sector seam resolution is needed (curve styles are rare, so the
+/// hex path's per-frame caching concern doesn't apply — this rebuilds on the same
+/// sector-set change as the hex path).
+fn build_curved_geometry(sectors: &[&SectorData]) -> Vec<(String, Path2d, Path2d)> {
+    use std::collections::HashSet;
+    let mut regions: HashMap<&str, HashSet<(i32, i32)>> = HashMap::new();
+    let mut colors: HashMap<&str, String> = HashMap::new();
+    for sector in sectors {
+        for border in &sector.borders {
+            if border.region.is_empty() {
+                continue;
+            }
+            let key = border_group_key(&border.allegiance);
+            colors.entry(key).or_insert_with(|| {
+                border
+                    .color
+                    .clone()
+                    .unwrap_or_else(|| allegiance_border_color(&border.allegiance).to_owned())
+            });
+            regions
+                .entry(key)
+                .or_default()
+                .extend(border.region.iter().copied());
+        }
+    }
+    regions
+        .into_iter()
+        .filter_map(|(key, rset)| {
+            let mut edges: Vec<Edge> = Vec::new();
+            for &(wc, wr) in &rset {
+                for (nb, (va, vb)) in hex_neighbors(wc, wr) {
+                    if rset.contains(&nb) {
+                        continue; // interior edge (incl. across a sector seam)
+                    }
+                    let a = hex_vertex(wc, wr, va);
+                    let b = hex_vertex(wc, wr, vb);
+                    edges.push((vkey(a), a, vkey(b), b));
+                }
+            }
+            let loops = stitch_loops(&edges);
+            let fill = Path2d::new().ok()?;
+            let stroke = Path2d::new().ok()?;
+            for lp in &loops {
+                spline_into(&fill, lp, 0.5);
+                spline_into(&stroke, lp, 0.6);
+            }
+            Some((colors.get(key).cloned().unwrap_or_default(), fill, stroke))
+        })
+        .collect()
+}
+
 /// Allegiance borders: filled interior + hex-edge outline, drawn from cached
 /// world-space `Path2d`s under a view transform (see `border_group_key` for the
 /// cross-sector polity grouping). `dpr` composes into the world→device transform
@@ -287,13 +419,19 @@ pub(crate) fn draw_micro_borders(
     sectors: &[&SectorData],
     filled: bool,
     micro_override: Option<&str>,
+    curved: bool,
+    taper: bool,
 ) {
-    let key = border_cache_key(sectors, filled);
+    let key = border_cache_key(sectors, filled, curved);
     BORDER_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         if cache.as_ref().map(|c| c.key) != Some(key) {
             let t = now();
-            let groups = build_border_geometry(sectors);
+            let groups = if curved {
+                build_curved_geometry(sectors)
+            } else {
+                build_border_geometry(sectors)
+            };
             let build_ms = now() - t;
             let hexes: usize = sectors
                 .iter()
@@ -328,7 +466,18 @@ pub(crate) fn draw_micro_borders(
             dpr * (w / 2.0 - view.center.0 * s),
             dpr * (h / 2.0 - view.center.1 * s),
         );
-        let stroke_w = (0.10 * s).max(2.4) / s; // css width ÷ s (transform scales by s)
+        // Width is in world (parsec) units — the transform scales it by `s`. Hex:
+        // our 0.10 parsec (min 2.4 px). Curved (FASA/Candy): the reference
+        // `borderPenWidth = 0.16·penScale`, which Candy tapers to ÷4 past scale 32
+        // (`Stylesheet.cs:443-448,846-848`); not region-clipped, so the full width shows.
+        let stroke_w = if curved {
+            let pen_scale = if s <= 64.0 { 1.0 } else { 64.0 / s };
+            let base = 0.16 * pen_scale;
+            let wp = if taper && s >= 32.0 { base / 4.0 } else { base };
+            wp.max(0.6 / s)
+        } else {
+            (0.10 * s).max(2.4) / s
+        };
         ctx.save();
         let _ = ctx.set_transform(a, 0.0, 0.0, a, e, f);
         ctx.set_line_cap("round");
@@ -345,13 +494,20 @@ pub(crate) fn draw_micro_borders(
                 ctx.fill_with_path_2d(fill);
                 ctx.set_global_alpha(1.0);
             }
-            // Clip the outline to its region so only the inner half shows —
-            // adjacent borders abut cleanly instead of double-stroking the seam.
-            ctx.save();
-            ctx.clip_with_path_2d(fill);
             ctx.set_stroke_style_str(color);
-            ctx.stroke_with_path(stroke);
-            ctx.restore();
+            if curved {
+                // The reference curve branch strokes the spline directly, with no
+                // region clip (RenderContext.cs:1856 else) — the smooth outline
+                // already sits on the region edge.
+                ctx.stroke_with_path(stroke);
+            } else {
+                // Hex: clip the outline to its region so only the inner half shows
+                // — adjacent borders abut cleanly instead of double-stroking.
+                ctx.save();
+                ctx.clip_with_path_2d(fill);
+                ctx.stroke_with_path(stroke);
+                ctx.restore();
+            }
         }
         ctx.restore();
     });

@@ -711,7 +711,21 @@ pub(crate) fn draw_world_images(
         ctx.save();
         let _ = ctx.translate(*x + deco * s, *y);
         let _ = ctx.scale(nsx, nsy);
+        // Candy draws names with a drop shadow (`textBackgroundStyle = Shadow`) for
+        // the 3-D "eye-candy" look — a hard offset copy in the background color.
+        if theme.text_shadow {
+            ctx.set_shadow_color(theme.background);
+            ctx.set_shadow_offset_x(2.0);
+            ctx.set_shadow_offset_y(2.0);
+            ctx.set_shadow_blur(1.0);
+        }
         let _ = ctx.fill_text(&name, 0.0, 0.0);
+        if theme.text_shadow {
+            ctx.set_shadow_color("rgba(0,0,0,0)");
+            ctx.set_shadow_offset_x(0.0);
+            ctx.set_shadow_offset_y(0.0);
+            ctx.set_shadow_blur(0.0);
+        }
         ctx.restore();
     }
 }

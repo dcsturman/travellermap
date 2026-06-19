@@ -120,6 +120,15 @@ pub struct Theme {
     // Per-parsec hex grid (`parsecGrid` + `hexStyle`): Candy turns it off
     // (`parsecGrid.visible=false`/`hexStyle=None`, Stylesheet.cs:800,805).
     pub show_hex_grid: bool,
+    // `microBorderStyle == Curve`: smooth (cardinal-spline) micro borders instead
+    // of the hard hex-edge stroke. Set by FASA + Candy (`Stylesheet.cs:629,801`).
+    pub curved_borders: bool,
+    // Candy tapers micro borders (÷4) and routes (÷2) once zoomed past scale 32
+    // (`CandyMax{Border,Route}RelativeScale`, `Stylesheet.cs:846-848`).
+    pub taper_lines: bool,
+    // `worlds.textBackgroundStyle == Shadow` (Candy, `Stylesheet.cs:815`) — draw a
+    // drop shadow behind world names for the 3-D "eye-candy" look.
+    pub text_shadow: bool,
 
     // ── star field (4 brightness tiers; ← foreground) ──
     pub stars: [&'static str; 4],
@@ -185,6 +194,9 @@ impl Theme {
             world_name_scale: (1.0, 1.0),
             grid: None,
             show_hex_grid: true,
+            curved_borders: false,
+            taper_lines: false,
+            text_shadow: false,
             stars: [
                 "rgba(170,180,205,0.35)",
                 "rgba(205,215,235,0.55)",
@@ -305,7 +317,8 @@ impl Theme {
             name: "FASA",
             background: "#ffffff",
             show_galaxy: false,
-            show_rift: false, // riftOpacity = 0
+            show_rift: false,     // riftOpacity = 0
+            curved_borders: true, // microBorderStyle=Curve (Stylesheet.cs:629)
             macro_border: "#5c4033",
             route: "#5c4033",
             micro_border: Some("#5c4033"),
@@ -451,6 +464,9 @@ impl Theme {
             use_world_images: true, // Stylesheet.cs:794 (Phase 2)
             show_nebula: true,      // showNebulaBackground (Stylesheet.cs:798; Phase 2)
             show_hex_grid: false, // parsecGrid.visible=false / hexStyle=None (Stylesheet.cs:800,805)
+            curved_borders: true, // microBorderStyle=Curve (Stylesheet.cs:801)
+            taper_lines: true,    // border ÷4 / route ÷2 past scale 32 (Stylesheet.cs:846-848)
+            text_shadow: true,    // worlds.textBackgroundStyle=Shadow (Stylesheet.cs:815)
             ..Self::poster()
         }
     }

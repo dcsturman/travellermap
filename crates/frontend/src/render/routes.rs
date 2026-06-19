@@ -22,6 +22,23 @@ fn route_color(allegiance: &str) -> &'static str {
     }
 }
 
+/// Shorten a segment by `off` parsec at each end so a route stops short of the
+/// world glyph instead of running into the disc (reference `OffsetSegment` /
+/// `routeEndAdjust = 0.25`). Points are already in geometric (x-compressed) space,
+/// so the offset applies directly.
+fn offset_segment(a: (f64, f64), b: (f64, f64), off: f64) -> ((f64, f64), (f64, f64)) {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 1e-9 {
+        return (a, b);
+    }
+    let (ddx, ddy) = (dx * off / len, dy * off / len);
+    ((a.0 + ddx, a.1 + ddy), (b.0 - ddx, b.1 - ddy))
+}
+
+/// `routeEndAdjust` (parsec) — how far a route stops short of each world.
+const ROUTE_END_ADJUST: f64 = 0.25;
+
 pub(crate) fn draw_routes(
     c: &impl Canvas,
     view: &ViewState,
@@ -29,11 +46,20 @@ pub(crate) fn draw_routes(
     h: f64,
     sector: &SectorData,
     micro_override: Option<&str>,
+    taper: bool,
 ) {
     let Some(loc) = sector.info.location else {
         return;
     };
-    let width = (0.08 * view.scale).max(1.5);
+    // Reference `routePenWidth`: 0.2 parsec at scale ≤ 16, else 0.08·penScale
+    // (penScale = 64/scale past 64); Candy halves it past scale 32.
+    let s = view.scale;
+    let pen_scale = if s <= 64.0 { 1.0 } else { 64.0 / s };
+    let mut wparsec = if s <= 16.0 { 0.2 } else { 0.08 * pen_scale };
+    if taper && s >= 32.0 {
+        wparsec /= 2.0;
+    }
+    let width = (wparsec * s).max(1.0);
     for route in &sector.routes {
         let (Some((sc, sr)), Some((ec, er))) = (parse_hex(&route.start), parse_hex(&route.end))
         else {
@@ -51,8 +77,12 @@ pub(crate) fn draw_routes(
             ec,
             er,
         );
-        let p0 = view.to_screen(w, h, hex_parsec(swc, swr));
-        let p1 = view.to_screen(w, h, hex_parsec(ewc, ewr));
+        // Stop the line short of each world (reference OffsetSegment), in world
+        // space so the gap is a constant 0.25 parsec at any zoom.
+        let (wp0, wp1) =
+            offset_segment(hex_parsec(swc, swr), hex_parsec(ewc, ewr), ROUTE_END_ADJUST);
+        let p0 = view.to_screen(w, h, wp0);
+        let p1 = view.to_screen(w, h, wp1);
         // A theme that forces a single micro-route color (Atlas/Print/Draft/FASA/
         // Terminal) wins; else a route's explicit `Color`; else the `otu.css
         // route.<allegiance>` rule, defaulting to "Im" → green.

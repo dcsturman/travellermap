@@ -193,12 +193,22 @@ pub fn draw(
                 sectors,
                 opts.filled_borders,
                 theme.micro_border,
+                theme.curved_borders,
+                theme.taper_lines,
             );
         }
         mark("borders", &mut marks);
         if opts.routes && view.scale >= ROUTE_MIN_SCALE {
             for sector in sectors {
-                routes::draw_routes(&c, &view, w, h, sector, theme.micro_route);
+                routes::draw_routes(
+                    &c,
+                    &view,
+                    w,
+                    h,
+                    sector,
+                    theme.micro_route,
+                    theme.taper_lines,
+                );
             }
         }
         // Per-parsec hex grid only once hexes are big enough to read (and to

@@ -235,6 +235,12 @@ Full matrix + decisions in **`PORT_API_COMPAT.md`** (the live tracker — don't 
 
 ## Phase 13 — Polish & quality
 
+- [ ] **Top control-bar order + Milieu into Settings (user, 2026-06-19).** Reorder the top-right
+  control cluster to: **Home, Settings, Share, Key, Help**. Move the **Milieu** picker *out* of the top
+  bar and *into* the Settings panel (same pattern as the STYLE selector already there).
+- [ ] **Credits: always-prefix Mongoose ownership (user, 2026-06-19).** The line *"The Traveller game in
+  all forms is owned by Mongoose Publishing. Copyright 1977 – 2024 Mongoose Publishing."* must prefix all
+  other (sector/author) credits in the data-source footer. OK to wrap onto an extra line.
 - [x] **World-detail panel tails — DONE 2026-06-19.** (a) **Generate World Map** link: ported the
   reference `world_util.js` `travellerworlds.com` generator URL (same params + seed) — shown **only in
   the non-`callisto` build**; the Callisto build keeps its in-app worldgen "World Map" button instead.
