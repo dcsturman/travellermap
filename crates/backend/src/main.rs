@@ -1123,7 +1123,11 @@ fn special_search_name(q: &str) -> Option<String> {
 /// `jsonp` (reference `SearchHandler` `SendFile`). `name` is alphanumeric (from
 /// [`special_search_name`]), so it can't escape the directory. Returns `None` if
 /// the file is absent or not valid JSON (→ caller falls through to a real search).
-fn canned_search_response(res_dir: &FsPath, name: &str, jsonp: &Option<String>) -> Option<Response> {
+fn canned_search_response(
+    res_dir: &FsPath,
+    name: &str,
+    jsonp: &Option<String>,
+) -> Option<Response> {
     if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric()) {
         return None;
     }

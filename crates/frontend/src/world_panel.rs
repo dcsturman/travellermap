@@ -100,9 +100,42 @@ fn uwp_rows(d: &DecodedWorld) -> impl IntoView {
 }
 
 /// Render the expanded body for a fully/partially decoded world.
-fn expanded_body(sel: &SelectedWorld) -> impl IntoView {
+fn expanded_body(sel: &SelectedWorld) -> AnyView {
     let d = decode_world(&sel.world);
     let w = &sel.world;
+
+    // Placeholder worlds (`XXXXXXX-X` / `???????-?`) carry no real survey data, so
+    // decoding the UWP into starport/size/atmosphere blurbs would be gibberish
+    // (reference `world.isPlaceholder`). Show the raw UWP + a note, plus the few
+    // fields that are still meaningful (allegiance, travel zone).
+    if is_placeholder_uwp(&w.uwp) {
+        let zone = d.zone.clone();
+        let alleg = (!w.allegiance.is_empty()).then(|| {
+            d.allegiance_name
+                .clone()
+                .unwrap_or_else(|| w.allegiance.clone())
+        });
+        return view! {
+            <div style="margin-top:8px; font-size:13px;">
+                {section("UWP")}
+                <div style="font:600 14px ui-monospace,monospace; color:#fff; padding:0 0 4px;">
+                    {w.uwp.clone()}
+                </div>
+                <div style="color:#7e879c; font-style:italic; padding:2px 0;">
+                    "Unsurveyed — no system data available."
+                </div>
+                {alleg.map(|a| view! {
+                    {section("Allegiance")}
+                    <div style="color:#cfd6e6; padding:2px 0;">{a}</div>
+                })}
+                {section("Travel Zone")}
+                <div style="color:#cfd6e6; padding:2px 0;">
+                    {zone.rating.to_string()}" — "{zone.rule.to_string()}
+                </div>
+            </div>
+        }
+        .into_any();
+    }
 
     // Allegiance line (full name, falling back to the bare code).
     let alleg = if w.allegiance.is_empty() {
@@ -151,6 +184,8 @@ fn expanded_body(sel: &SelectedWorld) -> impl IntoView {
 
     let ix = d.importance.clone();
     let ex = d.economics.clone();
+    // Resource Units: RU column when present, else computed from (Ex) (R×L×I×E).
+    let ru = tmap_core::world_util::resource_units(w);
     let cx = d.culture.clone();
     let pop = d.total_population.clone();
     let zone = d.zone.clone();
@@ -179,6 +214,7 @@ fn expanded_body(sel: &SelectedWorld) -> impl IntoView {
                 {field_row("Labor", &ex.labor.code, &ex.labor.blurb)}
                 {field_row("Infrastructure", &ex.infrastructure.code, &ex.infrastructure.blurb)}
                 {field_row("Efficiency", &ex.efficiency.code, &ex.efficiency.blurb)}
+                {ru.map(|n| field_row("Resource Units", &n.to_string(), "R×L×I×E"))}
             })}
             {cx.map(|cx| view! {
                 {section("Culture [Cx]")}
@@ -223,6 +259,62 @@ fn expanded_body(sel: &SelectedWorld) -> impl IntoView {
             })}
         </div>
     }
+    .into_any()
+}
+
+/// Worlds whose UWP is a deliberate placeholder (unsurveyed) — reference
+/// `world.isPlaceholder`.
+fn is_placeholder_uwp(uwp: &str) -> bool {
+    uwp == "XXXXXXX-X" || uwp == "???????-?"
+}
+
+/// Outbound link to the `travellerworlds.com` surface-map generator, carrying the
+/// full world spec — a verbatim port of the reference `world_util.js` map-generator
+/// link (same param names + seed). Used only in the **non-`callisto`** build; when
+/// the Callisto worldgen is present we render our own in-app "World Map" button
+/// instead, so this external fallback isn't shown.
+#[cfg(not(feature = "callisto"))]
+fn world_generator_url(sel: &SelectedWorld) -> String {
+    let w = &sel.world;
+    let enc = |s: &str| String::from(js_sys::encode_uri_component(s));
+    // {Ix} → bare number (strip braces/spaces), e.g. "{ 4 }" → "4" (reference parseIx).
+    let ix = w
+        .importance
+        .as_deref()
+        .map(|s| {
+            s.trim_matches(|c| c == '{' || c == '}' || c == ' ')
+                .to_string()
+        })
+        .unwrap_or_default();
+    // Ex/Cx pass raw (with their parens/brackets), matching the reference.
+    let pairs = [
+        ("hex", w.hex.clone()),
+        ("sector", sel.sector_name.clone()),
+        ("name", w.name.clone()),
+        ("uwp", w.uwp.clone()),
+        ("tc", w.remarks.clone()),
+        ("iX", ix),
+        ("eX", w.economic.clone().unwrap_or_default()),
+        ("cX", w.cultural.clone().unwrap_or_default()),
+        ("pbg", w.pbg.clone()),
+        (
+            "worlds",
+            w.worlds.map(|n| n.to_string()).unwrap_or_default(),
+        ),
+        ("bases", w.bases.clone()),
+        ("travelZone", w.zone.clone()),
+        ("nobz", w.nobility.clone().unwrap_or_default()),
+        ("allegiance", w.allegiance.clone()),
+        ("stellar", w.stellar.clone()),
+        ("seed", format!("{}{}", w.hex, w.hex)),
+        ("place_nobz", "1".to_string()),
+    ];
+    let qs = pairs
+        .iter()
+        .map(|(k, v)| format!("{k}={}", enc(v)))
+        .collect::<Vec<_>>()
+        .join("&");
+    format!("https://www.travellerworlds.com/?{qs}")
 }
 
 /// The world detail panel. Shown when `selected` is `Some`. `on_close` clears the
@@ -275,8 +367,25 @@ pub fn WorldPanel(
                         </button>
                     </div>
                 }.into_any();
+                // Without Callisto, fall back to the reference's external generator:
+                // a "Generate World Map" link to travellerworlds.com (new tab).
                 #[cfg(not(feature = "callisto"))]
-                let world_map_btn = ().into_any();
+                let world_map_btn = {
+                    let href = world_generator_url(&sel);
+                    view! {
+                        <div style="flex:none; margin-top:8px;">
+                            <a href=href target="_blank" rel="noopener"
+                               title="Generate this world's surface map (travellerworlds.com)"
+                               style="display:block; box-sizing:border-box; width:100%; text-align:center; \
+                                      padding:7px 0; border-radius:15px; text-decoration:none; \
+                                      border:1px solid #2a3145; background:rgba(40,44,58,0.7); \
+                                      color:#cdd5e6; font:600 12px system-ui;">
+                                "🌍  Generate World Map ↗"
+                            </a>
+                        </div>
+                    }
+                    .into_any()
+                };
 
                 view! {
                     <div style="position:fixed; top:56px; right:12px; width:300px; \

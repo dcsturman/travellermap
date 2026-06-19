@@ -195,11 +195,13 @@ Full matrix + decisions in **`PORT_API_COMPAT.md`** (the live tracker — don't 
 
 ## Phase 13 — Polish & quality
 
-- [ ] **World-detail panel tails** — Generate World Map outbound link (`travellerworlds.com`),
-  placeholder (`XXXXXXX-X`) styling, surface RU. *(Core panel + print sheet + per-J range view all
-  shipped — `WORLD_DETAIL_PLAN.md`.)*
-- [ ] **Reference-parity harness** — diff parsed data / rendered frames against travellermap.com
-  (or a local reference build) to catch regressions.
+- [x] **World-detail panel tails — DONE 2026-06-19.** (a) **Generate World Map** link: ported the
+  reference `world_util.js` `travellerworlds.com` generator URL (same params + seed) — shown **only in
+  the non-`callisto` build**; the Callisto build keeps its in-app worldgen "World Map" button instead.
+  (b) **Placeholder UWPs** (`XXXXXXX-X`/`???????-?`) now render an "Unsurveyed — no system data" note
+  (+ allegiance/zone) instead of decoding gibberish (`is_placeholder_uwp`, reference `isPlaceholder`).
+  (c) **Resource Units** surfaced in the Economics section — `tmap_core::world_util::resource_units`
+  (RU column when present, else computed `R×L×I×E`, 0→1, signed efficiency; tested vs Regina = 6370).
 - [x] **Frontend clippy gated — DONE 2026-06-18.** Cleaned the frontend wasm clippy (real fixes +
   named structs over two complex tuple types; `#[allow(too_many_arguments)]` only on the wide-but-
   flat render entry points). The wasm CI job now runs `cargo clippy … -- -D warnings` for both the

@@ -23,6 +23,43 @@ pub fn from_hex(c: char) -> i32 {
         .unwrap_or(-1)
 }
 
+/// Resource Units derived from a raw Economic Extension `(Ex)` string (e.g.
+/// `"(D7E+5)"`). Per `doc/secondsurvey.html` §RU, `RU = R × L × I × E` over the
+/// four Ex values, **treating any `0` as `1`**; efficiency `E` is signed (so RU
+/// can be negative), while R/L/I are eHex digits. Returns `None` if the `(Ex)` is
+/// absent or malformed. (Parses the raw form — ASCII `-` — not the display form.)
+pub fn compute_resource_units(ex: &str) -> Option<i32> {
+    let inner = ex
+        .trim()
+        .trim_start_matches('(')
+        .trim_end_matches(')')
+        .trim();
+    let mut chars = inner.chars();
+    let r = from_hex(chars.next()?);
+    let l = from_hex(chars.next()?);
+    let i = from_hex(chars.next()?);
+    if r < 0 || l < 0 || i < 0 {
+        return None;
+    }
+    // Efficiency is the signed remainder, e.g. `+5` / `-2`; tolerate a `+` sign.
+    let e: i32 = chars
+        .collect::<String>()
+        .trim()
+        .trim_start_matches('+')
+        .parse()
+        .ok()?;
+    let nz = |v: i32| if v == 0 { 1 } else { v };
+    Some(nz(r) * nz(l) * nz(i) * nz(e))
+}
+
+/// A world's Resource Units: the explicit `RU` column when the data carries it
+/// (authoritative), else computed from the `(Ex)` via [`compute_resource_units`].
+pub fn resource_units(world: &World) -> Option<i32> {
+    world
+        .resource_units
+        .or_else(|| world.economic.as_deref().and_then(compute_resource_units))
+}
+
 // ── Single-glyph blurb tables (verbatim from world_util.js) ──────────────────
 
 fn starport_blurb(c: char) -> Option<&'static str> {
@@ -1250,6 +1287,26 @@ mod tests {
             uwp: uwp.into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn resource_units_compute_and_column() {
+        // Regina's Ex `(D7E+5)` → 13×7×14×5 = 6370 (matches its RU column).
+        assert_eq!(compute_resource_units("(D7E+5)"), Some(6370));
+        // Negative efficiency makes RU negative; bare (no parens) tolerated.
+        assert_eq!(compute_resource_units("C53-1"), Some(12 * 5 * 3 * -1));
+        // Any 0 is treated as 1: (0000) → 1×1×1×1 = 1.
+        assert_eq!(compute_resource_units("(0000)"), Some(1));
+        // Malformed / absent.
+        assert_eq!(compute_resource_units("()"), None);
+        assert_eq!(compute_resource_units("(D7E)"), None); // no efficiency term
+
+        // resource_units() prefers the explicit RU column, else computes from Ex.
+        let mut w = world("A788899-C");
+        w.economic = Some("(D7E+5)".into());
+        assert_eq!(resource_units(&w), Some(6370));
+        w.resource_units = Some(1234); // column wins when present
+        assert_eq!(resource_units(&w), Some(1234));
     }
 
     #[test]
