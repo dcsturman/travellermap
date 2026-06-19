@@ -1448,7 +1448,14 @@ fn App() -> impl IntoView {
                 }
             }
         });
-        let Some(WorldHit { dist2: d, world, sector_name, sector_coord, subsector }) = best else {
+        let Some(WorldHit {
+            dist2: d,
+            world,
+            sector_name,
+            sector_coord,
+            subsector,
+        }) = best
+        else {
             return;
         };
         if d > 0.9 * 0.9 {
