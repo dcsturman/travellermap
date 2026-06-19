@@ -214,8 +214,11 @@ browser-side render profiling — **don't optimize before the HUD/flamegraph poi
   shipped — `WORLD_DETAIL_PLAN.md`.)*
 - [ ] **Reference-parity harness** — diff parsed data / rendered frames against travellermap.com
   (or a local reference build) to catch regressions.
-- [ ] **CI gating tails** — frontend (wasm) clippy has pre-existing warnings to clean before it can
-  join the deny-warnings gate; `cargo fmt --check` likewise (tree isn't rustfmt-clean).
+- [x] **Frontend clippy gated — DONE 2026-06-18.** Cleaned the frontend wasm clippy (real fixes +
+  named structs over two complex tuple types; `#[allow(too_many_arguments)]` only on the wide-but-
+  flat render entry points). The wasm CI job now runs `cargo clippy … -- -D warnings` for both the
+  default and `callisto` feature sets (replacing the bare `cargo check`).
+- [ ] **CI gating tail** — `cargo fmt --check` (the tree isn't yet rustfmt-clean).
 
 ## Phase 16 — Deploy (mostly done)
 

@@ -1,8 +1,8 @@
 # CI for the Rust rewrite (the C#/JS reference tree is not built here — see
 # CLAUDE.md). Two parallel jobs:
 #   - native: clippy + tests for the host crates (tmap-core, tmap-backend).
-#   - wasm:   type-check the Leptos frontend for wasm32 (it's wasm-only, so a
-#             bare `cargo test` skips it — `cargo check` is the gate).
+#   - wasm:   clippy (deny-warnings) the Leptos frontend for wasm32 (it's wasm-only,
+#             so a bare `cargo test` skips it — clippy compiles + lints, the gate).
 #
 # Triggered only when Rust code, the manifests, the res/ data (the backend's
 # system of record — the all-sectors test parses it), or this file changes.
@@ -57,17 +57,19 @@ jobs:
           TMAP_SKIP_PARITY: "1"
 
   wasm:
-    name: check frontend (wasm32)
+    name: clippy frontend (wasm32)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
+          components: clippy
       - uses: Swatinem/rust-cache@v2
-      # Build both feature sets: the default (what a contributor builds) and
-      # `callisto` (what ships — the worldgen popups). Neither must rot.
-      - name: Check (default)
-        run: cargo check -p tmap-frontend --target wasm32-unknown-unknown
-      - name: Check (callisto)
-        run: cargo check -p tmap-frontend --target wasm32-unknown-unknown --features callisto
+      # Lint both feature sets: the default (what a contributor builds) and
+      # `callisto` (what ships — the worldgen popups). Neither must rot. clippy
+      # compiles too, so this also serves as the wasm build check.
+      - name: Clippy (default, deny warnings)
+        run: cargo clippy -p tmap-frontend --target wasm32-unknown-unknown -- -D warnings
+      - name: Clippy (callisto, deny warnings)
+        run: cargo clippy -p tmap-frontend --target wasm32-unknown-unknown --features callisto -- -D warnings
