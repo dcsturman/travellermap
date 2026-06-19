@@ -105,7 +105,10 @@ const BTN_STYLE: &str = "width:40px; height:38px; border:none; border-radius:6px
     cursor:pointer; box-shadow:0 1px 4px rgba(0,0,0,0.5);";
 /// Shared style for the floating panels (legend / settings). `z-index:6` keeps the
 /// panel above the tap-to-dismiss backdrop (`z-index:5`); the controls/search sit
-/// above both (`z-index:7`) so they stay tappable while a panel is open.
+/// above both (`z-index:7`) so they stay tappable while a panel is open. Panels
+/// also carry `class="tmap-panel"`, which the mobile media query uses to drop them
+/// below the relocated search bar and raise them above it (so their dropdown text
+/// isn't hidden) — see the `@media (max-width:640px)` block.
 const PANEL_STYLE: &str = "position:fixed; top:56px; right:12px; width:300px; z-index:6; \
     max-height:78dvh; overflow:auto; box-sizing:border-box; padding:14px 18px 18px; \
     background:rgba(12,14,22,0.96); border:1px solid #2a3145; border-radius:10px; \
@@ -2416,10 +2419,19 @@ fn App() -> impl IntoView {
             // On narrow (mobile) viewports the search box (left) and the control cluster
             // (right) collide, so stack them: controls in a row on top, the search box
             // full-width beneath. `!important` overrides the inline base (desktop) styles.
+            // `env(safe-area-inset-*)` keeps the rightmost icons clear of the notch /
+            // rounded corners (the page is `viewport-fit=cover`, so it bleeds edge-to-
+            // edge). The panels drop to `top:96px` — below the relocated search bar —
+            // and rise to `z-index:8` (above the search/controls at 7) so their open
+            // dropdown text is no longer hidden behind the search bar.
             <style>
                 "@media (max-width:640px){\
-                   .tmap-search{top:56px!important;left:8px!important;right:8px!important;width:auto!important;}\
-                   .tmap-controls{top:10px!important;right:8px!important;}\
+                   .tmap-search{top:calc(56px + env(safe-area-inset-top))!important;\
+                     left:calc(8px + env(safe-area-inset-left))!important;\
+                     right:calc(8px + env(safe-area-inset-right))!important;width:auto!important;}\
+                   .tmap-controls{top:calc(10px + env(safe-area-inset-top))!important;\
+                     right:calc(8px + env(safe-area-inset-right))!important;}\
+                   .tmap-panel{top:calc(96px + env(safe-area-inset-top))!important;z-index:8!important;}\
                  }"
             </style>
             // Tap-outside-to-dismiss backdrop: when any top-right panel is open, a
@@ -2431,7 +2443,8 @@ fn App() -> impl IntoView {
                      style="position:fixed; inset:0; z-index:5;"></div>
             </Show>
             <div class="tmap-search"
-                 style="position:fixed; top:10px; left:12px; width:320px; z-index:7; \
+                 style="position:fixed; top:calc(10px + env(safe-area-inset-top)); \
+                        left:calc(12px + env(safe-area-inset-left)); width:320px; z-index:7; \
                         font:14px system-ui,sans-serif; color:#cfd6e6;">
                 <div style="display:flex; gap:6px; align-items:stretch;">
                     <div style="flex:1; min-width:0; position:relative;">
@@ -2496,7 +2509,8 @@ fn App() -> impl IntoView {
             </div>
             // --- jump-route planner panel (toggled by the route button) ---
             <Show when=move || route_open.get()>
-                <div style="position:fixed; top:56px; left:12px; width:300px; \
+                <div class="tmap-panel"
+                     style="position:fixed; top:56px; left:12px; width:300px; \
                             max-width:calc(100vw - 24px); box-sizing:border-box; \
                             max-height:min(350px, calc(100dvh - 70px)); display:flex; flex-direction:column; \
                             padding:10px 14px 12px; border-radius:0; background:#fff; \
@@ -2734,7 +2748,8 @@ fn App() -> impl IntoView {
 
             // --- top-right control cluster: home / clock / key / hamburger ---
             <div class="tmap-controls"
-                 style="position:fixed; top:10px; right:12px; z-index:7; display:flex; gap:6px;">
+                 style="position:fixed; top:calc(10px + env(safe-area-inset-top)); \
+                        right:calc(12px + env(safe-area-inset-right)); z-index:7; display:flex; gap:6px;">
                 <button on:click=on_home title="Home — charted-space overview"
                         style=BTN_STYLE>"⌂"</button>
                 <button title="Milieu — time period" style=BTN_STYLE
@@ -2773,7 +2788,7 @@ fn App() -> impl IntoView {
 
             // --- milieu / time selector panel ---
             <Show when=move || panel.get() == 3>
-                <div style=PANEL_STYLE>
+                <div class="tmap-panel" style=PANEL_STYLE>
                     <div style="display:flex; justify-content:space-between; align-items:center;">
                         <span style="font-weight:700; letter-spacing:0.05em;">"MILIEU"</span>
                         <span on:click=move |_| panel.set(0)
@@ -2804,7 +2819,7 @@ fn App() -> impl IntoView {
 
             // --- share panel: permalink + embed code for the current view ---
             <Show when=move || panel.get() == 4>
-                <div style=PANEL_STYLE>
+                <div class="tmap-panel" style=PANEL_STYLE>
                     <div style="display:flex; justify-content:space-between; align-items:center;">
                         <span style="font-weight:700; letter-spacing:0.05em;">"SHARE"</span>
                         <span on:click=move |_| panel.set(0)
@@ -2822,7 +2837,7 @@ fn App() -> impl IntoView {
 
             // --- legend / key panel (ported from index.html #legendBox) ---
             <Show when=move || panel.get() == 1>
-                <div style=PANEL_STYLE>
+                <div class="tmap-panel" style=PANEL_STYLE>
                     <div style="display:flex; justify-content:space-between; align-items:center;">
                         <span style="font-weight:700; letter-spacing:0.05em;">"MAP LEGEND"</span>
                         <span on:click=move |_| panel.set(0)
@@ -2887,7 +2902,7 @@ fn App() -> impl IntoView {
 
             // --- settings / layers panel ---
             <Show when=move || panel.get() == 2>
-                <div style=PANEL_STYLE>
+                <div class="tmap-panel" style=PANEL_STYLE>
                     <div style="display:flex; justify-content:space-between; align-items:center;">
                         <span style="font-weight:700; letter-spacing:0.05em;">"SETTINGS"</span>
                         <span on:click=move |_| panel.set(0)
@@ -2939,7 +2954,7 @@ fn App() -> impl IntoView {
 
             // --- help / about / credits panel (the "?" tab) ---
             <Show when=move || panel.get() == 5>
-                <div style=PANEL_STYLE>
+                <div class="tmap-panel" style=PANEL_STYLE>
                     <div style="display:flex; justify-content:space-between; align-items:center;">
                         <span style="font-weight:700; letter-spacing:0.05em;">"ABOUT"</span>
                         <span on:click=move |_| panel.set(0)

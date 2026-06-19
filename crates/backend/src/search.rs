@@ -642,6 +642,36 @@ pub fn run_query(idx: &SearchIndex, pq: &ParsedQuery, limit: usize) -> Vec<Searc
     merged.into_iter().take(limit).map(|h| h.item).collect()
 }
 
+/// Pick one random world from the index — the reference `q=(random world)`
+/// special (`SearchEngine.PerformSearch(milieu, null, Worlds, 1, random: true)`).
+/// Selects uniformly among the milieu's world documents; returns `None` only if
+/// the milieu has no worlds (never, in practice).
+pub fn random_world(idx: &SearchIndex) -> Option<SearchItem> {
+    let searcher = idx.reader.searcher();
+    let q = term_u64(idx.f.kind, KIND_WORLD as u64);
+    let docs = searcher.search(&q, &DocSetCollector).ok()?;
+    if docs.is_empty() {
+        return None;
+    }
+    let pick = pseudo_random_usize(docs.len());
+    let addr = docs.into_iter().nth(pick)?;
+    let doc: TantivyDocument = searcher.doc(addr).ok()?;
+    let raw = doc.get_first(idx.f.blob)?.as_str()?;
+    serde_json::from_str::<Blob>(raw).ok().map(|b| b.item)
+}
+
+/// A non-deterministic `0..modulo` index without pulling in an RNG crate: a fresh
+/// `RandomState` is seeded from the process's random pool, so finishing an empty
+/// hasher yields a different value each call. Non-crypto, but a "random world"
+/// pick needs nothing stronger. `modulo` must be non-zero.
+fn pseudo_random_usize(modulo: usize) -> usize {
+    use std::hash::{BuildHasher, Hasher};
+    let seed = std::collections::hash_map::RandomState::new()
+        .build_hasher()
+        .finish();
+    (seed % modulo as u64) as usize
+}
+
 /// The within-importance tie-break key, mirroring the reference `SELECT DISTINCT`
 /// column order per table (`SearchEngine.PerformSearch`): worlds by
 /// `(sector_x, sector_y, hex_x, hex_y)`, sectors by `(x, y)`, subsectors by

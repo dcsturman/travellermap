@@ -85,3 +85,7 @@ echo ">> deployed. Service URL:"
 gcloud run services describe "$SERVICE" \
   --project "$PROJECT_ID" --region "$REGION" \
   --format='value(status.url)'
+
+# New data is now live at the origin; flush the CDN edge so cached sectors don't
+# serve stale until their TTL expires. No-op if CF_* aren't configured yet.
+"$SCRIPT_DIR/purge-cdn.sh"

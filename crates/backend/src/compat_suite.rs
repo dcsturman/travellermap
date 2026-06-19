@@ -711,6 +711,38 @@ async fn search_types_param_restricts_kinds() {
     );
 }
 
+// --- Search specials: canned named tours + (random world) ----------------
+
+#[tokio::test]
+async fn search_canned_named_tour() {
+    // `(Grand Tour)` is a special: served verbatim from res/search/GrandTour.json
+    // (a canned published-route file), bypassing the search engine entirely. Its
+    // first stop is Aramis in the Spinward Marches.
+    let items = search_items("%28Grand%20Tour%29").await;
+    assert!(
+        has_world(&items, "Aramis"),
+        "(Grand Tour) should return the canned tour incl. Aramis: {items:?}"
+    );
+    // A made-up `(Nonexistent)` has no file → falls through to a normal (empty)
+    // search rather than erroring.
+    let (status, _, _) = get("/api/search?q=%28Nonexistent%29").await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn search_random_world() {
+    // `(random world)` → exactly one randomly-chosen world, in the normal envelope.
+    let items = search_items("%28random%20world%29").await;
+    assert_eq!(
+        items.len(),
+        1,
+        "(random world) returns exactly one item: {items:?}"
+    );
+    let (kind, name) = &items[0];
+    assert_eq!(kind, "World", "(random world) result is a World");
+    assert!(!name.is_empty(), "(random world) has a name");
+}
+
 // --- Search: per-query live parity vs the reference ----------------------
 //
 // The behavioral tests above assert our query language against its *spec* using

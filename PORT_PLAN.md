@@ -186,9 +186,12 @@ Full matrix + decisions in **`PORT_API_COMPAT.md`** (the live tracker — don't 
 - [x] Search envelope made API-compatible (`2026-06-16`); JSONP + XML content negotiation across
   universe/search/credits/jumpworlds/route (`29ce0405`); Aslan-interior inline borders from the
   milieu region list (`60dd139d`). Metadata XML, `/data` aliases, POST `/api/sec`+`/api/metadata`.
-- [ ] **Remaining endpoint/shape gaps** per `PORT_API_COMPAT.md` — `/api/coordinates`,
-  `/api/jumpworlds`, `(random world)`/canned search specials, and the `/data/{sector}/…` URL
-  family. **Open decision:** reshape to the documented contract vs. a thin compatibility layer.
+- [x] **All documented data endpoints + shape gaps closed.** `/api/coordinates`, `/api/jumpworlds`,
+  and the full `/data/{sector}/…` URL family are implemented + live-parity-tested; the search
+  specials (`(random world)` + canned `(name)`→`res/search/*.json`) landed `2026-06-18`. **Decision
+  taken:** adopt the public PascalCase shapes + documented URLs as the single contract (not a parallel
+  private one) — see `PORT_API_COMPAT.md`. Only render endpoints (tile/poster/jumpmap) remain N/A by
+  design (client-side rendering).
 
 ## Phase 13 — Polish & quality
 
@@ -213,8 +216,11 @@ Full matrix + decisions in **`PORT_API_COMPAT.md`** (the live tracker — don't 
 - [x] **Cloud Run deploy scripts (2026-06-15).** `scripts/build.sh` (local verify) + `scripts/deploy.sh`
   (`gcloud builds submit` → Artifact Registry → `gcloud run deploy`, scale-to-zero). Custom domain
   `travellermap.callistoflight.com` (`DEPLOY.md`). Admin flush gated behind `TMAP_ENABLE_ADMIN`.
-- [ ] **CDN** — `Cache-Control`/ETag → Cloud CDN via an HTTPS load balancer (optimization).
-- [ ] **`res/` contribute-back hygiene** — keep `res/` edits upstream-compatible.
+- [x] **CDN (Cloudflare) — code + scripts done (2026-06-18).** Data endpoints now send cacheable
+  `public, max-age=300, s-maxage=86400, stale-while-revalidate` (+ETag) instead of `no-cache`, so the
+  hot sectors edge-cache; `scripts/purge-cdn.sh` flushes the edge on every deploy (wired into
+  `deploy.sh`, optional `CF_ZONE_ID`/`CF_API_TOKEN`). Remaining is the one-time Cloudflare dashboard
+  setup (proxy the record, Full-strict SSL, a `/api`+`/data` cache rule) — documented in `DEPLOY.md`.
 
 *Test:* `scripts/build.sh run` → full app on `:8080`; `scripts/deploy.sh` → live on Cloud Run.
 

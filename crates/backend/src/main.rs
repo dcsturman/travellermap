@@ -716,10 +716,15 @@ fn serve_cached(
         },
     };
 
-    // `no-cache` = the browser/CDN may cache but must revalidate via ETag on
-    // each use (cheap 304s), so a backend data/code change is never served
-    // stale. Production can switch to a long max-age with versioned URLs.
-    const CACHE: &str = "no-cache";
+    // Static data (changes only on an upstream pull + redeploy), so it is safe
+    // to edge-cache aggressively. `max-age=300` lets a browser hold it briefly
+    // (ETag makes the revalidation after that a cheap 304); `s-maxage=86400`
+    // lets a shared cache (Cloudflare) serve it from the edge for a day. Freshness
+    // on deploy is handled out-of-band: `scripts/deploy.sh` purges the CDN edge
+    // after every deploy (see DEPLOY.md), so a data change goes live immediately
+    // rather than waiting for the TTL. `stale-while-revalidate` smooths the
+    // refresh so a request never blocks on a re-fetch.
+    const CACHE: &str = "public, max-age=300, s-maxage=86400, stale-while-revalidate=86400";
     let fresh = req
         .get(header::IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok())
@@ -1059,13 +1064,33 @@ async fn get_search(
     headers: HeaderMap,
     State(state): State<AppState>,
 ) -> Response {
+    let want_xml = compat::wants_xml(&headers);
+
+    // Special "(...)" searches (port of `SearchHandler`): a parenthesized query is
+    // either a canned named result file (`res/search/<Name>.json`) or the literal
+    // `(random world)`. Tried before the normal query language. The canned file is
+    // only served when the client accepts JSON/JSONP (an XML request falls through
+    // to a normal search), matching the reference's `Accepts(JSON) || jsonp`.
+    if let Some(name) = special_search_name(&q.q) {
+        if (jp.jsonp.is_some() || !want_xml) && name != "randomworld" {
+            if let Some(resp) = canned_search_response(&state.res_dir, &name, &jp.jsonp) {
+                return resp;
+            }
+        }
+    }
+
     let idx = match state.search_index(&q.milieu) {
         Ok(idx) => idx,
         Err(e) => return e.into_response(),
     };
-    let query = preprocess_query(&q.q);
-    let pq = tmap_core::searchlang::parse_query(&query, parse_types(q.types.as_deref()));
-    let items = search::run_query(&idx, &pq, NUM_RESULTS);
+    let items = if q.q == "(random world)" {
+        // One random world, in the same envelope as a normal search.
+        search::random_world(&idx).into_iter().collect()
+    } else {
+        let query = preprocess_query(&q.q);
+        let pq = tmap_core::searchlang::parse_query(&query, parse_types(q.types.as_deref()));
+        search::run_query(&idx, &pq, NUM_RESULTS)
+    };
     let result = SearchResults {
         results: SearchResultsBody {
             count: items.len(),
@@ -1073,9 +1098,39 @@ async fn get_search(
         },
     };
     // JSON stays the default (our client + tools depend on it); jsonp/xml opt-in.
-    compat::respond_negotiated(&result, &jp.jsonp, compat::wants_xml(&headers), || {
-        result.to_xml()
-    })
+    compat::respond_negotiated(&result, &jp.jsonp, want_xml, || result.to_xml())
+}
+
+/// Extract the first `(...)` group of `[A-Za-z0-9 ]+` from a search query and
+/// return it with spaces removed — port of `SearchHandler.SPECIAL_REGEXP`
+/// (`\(([A-Za-z0-9 ]+)\)`) + `.Replace(" ", "")`. So `(Grand Tour)` → `GrandTour`
+/// and `(random world)` → `randomworld`. Returns `None` if there's no such group.
+fn special_search_name(q: &str) -> Option<String> {
+    let open = q.find('(')?;
+    let mut inner = String::new();
+    for ch in q[open + 1..].chars() {
+        match ch {
+            ')' if inner.is_empty() => return None,
+            ')' => return Some(inner.chars().filter(|c| *c != ' ').collect()),
+            c if c.is_ascii_alphanumeric() || c == ' ' => inner.push(c),
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// Serve a canned search result file (`res/search/<name>.json`) verbatim, honoring
+/// `jsonp` (reference `SearchHandler` `SendFile`). `name` is alphanumeric (from
+/// [`special_search_name`]), so it can't escape the directory. Returns `None` if
+/// the file is absent or not valid JSON (→ caller falls through to a real search).
+fn canned_search_response(res_dir: &FsPath, name: &str, jsonp: &Option<String>) -> Option<Response> {
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    let path = res_dir.join("search").join(format!("{name}.json"));
+    let bytes = std::fs::read(path).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    Some(compat::respond(&value, jsonp))
 }
 
 #[derive(Debug, Deserialize)]

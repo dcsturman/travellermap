@@ -88,9 +88,63 @@ It prints DNS records (a `CNAME`, or `A`/`AAAA`) to add at your DNS provider for
 `travellermap.callistoflight.com`. Add them; Google provisions a managed TLS
 certificate automatically (can take a few minutes to an hour to go live).
 
-*Optional, later:* front it with an external HTTPS load balancer + Cloud CDN to
-cache the WASM bundle and `res/` assets at the edge (matches the "CDN-cacheable
-static" design in CLAUDE.md). Not needed for v1.
+## CDN (Cloudflare)
+
+Front the origin with Cloudflare so the hot sectors (and the WASM bundle + `res/`
+assets) are served from the edge under load instead of cold-starting a container.
+The data API is **static between deploys** (no datastore; data changes only on an
+upstream pull + redeploy), so it edge-caches cleanly — the trade-off is handled by
+purging the edge on every deploy (below) rather than by short TTLs.
+
+**How the caching works.** The data endpoints (`/api/sector/*`, `/api/universe`,
+`/api/overlays`, `/api/metadata`, `/data/*`, …) send
+`Cache-Control: public, max-age=300, s-maxage=86400, stale-while-revalidate=86400`
+plus a content-hash `ETag` (see `serve_cached` in `crates/backend/src/main.rs`).
+A browser holds a copy for 5 min then revalidates with a cheap 304; Cloudflare's
+shared cache (`s-maxage`) serves it from the edge for a day. `/api/res/*` static
+assets send `max-age=86400`. **The catch:** Cloudflare does **not** cache `/api/*`
+JSON by default (its default cache only triggers on static file extensions), so a
+Cache Rule is required (step 3) to make it honour those headers.
+
+DNS for `callistoflight.com` is already on Cloudflare, so this is three dashboard
+steps + the purge token:
+
+1. **Proxy the record.** DNS › the `travellermap` record (the `CNAME` →
+   `ghs.googlehosted.com` from the domain mapping above) → set to **Proxied**
+   (orange cloud). Keep the Cloud Run domain mapping in place — Google keeps a
+   managed cert for `travellermap.callistoflight.com`, which is what makes step 2
+   validate.
+2. **SSL/TLS mode › Full (strict).** Cloudflare terminates TLS at the edge and
+   re-encrypts to the origin, validating Google's managed cert for the custom
+   domain. (Flexible/Off would break or downgrade; Full-without-strict skips
+   validation — use strict.)
+3. **Cache Rule** (Caching › Cache Rules › Create): match
+   `(http.request.uri.path starts_with "/api/" or http.request.uri.path starts_with "/data/")`,
+   action **Eligible for cache**, Edge TTL **"Use cache-control header if present,
+   bypass cache if not."** This makes Cloudflare honour the origin headers above —
+   so `serve_cached` responses cache, while anything that sends `no-cache` (e.g.
+   `/api/search`) is left uncached. (The WASM bundle and `res/` already cache via
+   their extensions/headers, no rule needed.)
+
+**Purge on deploy.** Because the edge holds data for a day, `scripts/deploy.sh`
+flushes it after every deploy via `scripts/purge-cdn.sh` so new data is live
+immediately. Configure two values in `scripts/deploy.env` (gitignored):
+
+- `CF_ZONE_ID` — Cloudflare dashboard › the zone's **Overview** page (right column).
+- `CF_API_TOKEN` — My Profile › API Tokens › Create Token, scoped to
+  **Zone › Cache Purge › Purge** for the `callistoflight.com` zone (nothing more).
+
+With those set the deploy ends with `>> CDN cache purged.`; unset, it prints
+`CDN purge skipped` and the deploy still succeeds. Purge manually any time with
+`scripts/purge-cdn.sh`.
+
+**Verify** a sector is being edge-served after a deploy:
+
+```sh
+curl -sI 'https://travellermap.callistoflight.com/api/sector/M1105/Spinward%20Marches' \
+  | grep -i 'cf-cache-status\|cache-control'
+# First hit: cf-cache-status: MISS (or EXPIRED); a second hit: HIT.
+```
 
 ## Notes
 
