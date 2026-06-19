@@ -156,8 +156,12 @@ small palette+flags struct; all geometry/LOD is shared and already ported.
   Mongoose glyph re-layout + zone-perimeters + filled-UWP, text scale-expansion, and macro-name
   fonts. **Candy deferred** (needs per-world globe images + nebula background — out of scope) but
   planned to fully support later (user).
-- [ ] **C tail — `&style=` URL round-trip** in `build_share_url`/`parse_share_params` (the `name`
-  field is already on `Theme` for this), + Candy when its prerequisites land.
+- [x] **C tail — `&style=` URL round-trip (DONE 2026-06-18).** `build_share_url` appends
+  `&style=<preset>` (omitted at the default Poster); `parse_share_params` reads it back
+  (case-insensitive, validated against `Theme::PRESETS`) and seeds the `style` signal on load.
+  The debounced address-bar reflection includes it, so a shared link / reload restores the style.
+  Param name matches travellermap.com's (forward-compatible with the reference-URL work).
+- [ ] **Candy** preset, when its prerequisites (world-globe images + nebula background) land.
 
 ## Phase 12 — Visual parity finish
 

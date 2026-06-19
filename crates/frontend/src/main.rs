@@ -715,7 +715,7 @@ fn logical_dims(canvas: &HtmlCanvasElement) -> (f64, f64) {
 /// compatible `p=x!y!logScale` format later is a one-function change. Returns the
 /// absolute URL (origin + path + query) so it's directly shareable/embeddable.
 /// Fixed precision keeps the URL short and free of float noise.
-fn build_share_url(view: ViewState, milieu: &str) -> String {
+fn build_share_url(view: ViewState, milieu: &str, style: &str) -> String {
     let loc = win().location();
     let origin = loc.origin().unwrap_or_default();
     let path = loc.pathname().unwrap_or_else(|_| "/".to_string());
@@ -727,17 +727,27 @@ fn build_share_url(view: ViewState, milieu: &str) -> String {
         q.push_str("&milieu=");
         q.push_str(milieu);
     }
+    // `style=` matches travellermap.com's own param name, so it's forward-compatible
+    // with the reference-URL work; omitted at the default (Poster) to keep links short.
+    if style != "Poster" {
+        q.push_str("&style=");
+        q.push_str(style);
+    }
     format!("{origin}{path}{q}")
 }
 
-/// Parse the initial view + milieu from the page URL's query (inverse of
-/// [`build_share_url`]). Either may be absent; an unknown milieu is ignored.
-fn parse_share_params() -> (Option<ViewState>, Option<&'static str>) {
+/// Parse the initial view + milieu + style from the page URL's query (inverse of
+/// [`build_share_url`]). Any may be absent; an unknown milieu/style is ignored.
+fn parse_share_params() -> (
+    Option<ViewState>,
+    Option<&'static str>,
+    Option<&'static str>,
+) {
     let Ok(search) = win().location().search() else {
-        return (None, None);
+        return (None, None, None);
     };
     let Ok(params) = web_sys::UrlSearchParams::new_with_str(&search) else {
-        return (None, None);
+        return (None, None, None);
     };
     let num = |k: &str| params.get(k).and_then(|s| s.parse::<f64>().ok());
     let view = match (num("cx"), num("cy"), num("scale")) {
@@ -751,7 +761,14 @@ fn parse_share_params() -> (Option<ViewState>, Option<&'static str>) {
     let milieu = params
         .get("milieu")
         .and_then(|m| MILIEUX.iter().map(|(c, _)| *c).find(|c| *c == m));
-    (view, milieu)
+    // Map the style back to a known preset name (case-insensitive).
+    let style = params.get("style").and_then(|s| {
+        render::Theme::PRESETS
+            .iter()
+            .map(|(n, _)| *n)
+            .find(|n| n.eq_ignore_ascii_case(&s))
+    });
+    (view, milieu, style)
 }
 
 /// Fetch + decode a JSON value from the backend (proxied via Trunk at /api).
@@ -806,11 +823,13 @@ fn App() -> impl IntoView {
     let (status, set_status) = signal("Loading universe…".to_string());
     // A share/permalink in the URL (?cx&cy&scale&milieu) seeds the initial view
     // and milieu; both fall back to defaults when absent. See `parse_share_params`.
-    let (url_view, url_milieu) = parse_share_params();
+    let (url_view, url_milieu, url_style) = parse_share_params();
     // Active milieu (era snapshot). Changing it tears down and re-streams the
     // universe for that era (see the universe-load effect); per-milieu caches and
     // overlays differ, but the macro overlays are milieu-independent so they stay.
     let milieu = RwSignal::new(url_milieu.unwrap_or(DEFAULT_MILIEU));
+    // Selected style-theme preset (seeded from the URL; reflected back into it).
+    let style = RwSignal::new(url_style.unwrap_or("Poster").to_string());
     let (view, set_view) = signal(None::<ViewState>);
     let (results, set_results) = signal(Vec::<Hit>::new());
     let drag = RwSignal::new(None::<(f64, f64)>);
@@ -858,7 +877,7 @@ fn App() -> impl IntoView {
     let url_timer = RwSignal::new(None::<i32>);
     Effect::new(move |_| {
         let Some(v) = view.get() else { return };
-        let url = build_share_url(v, milieu.get());
+        let url = build_share_url(v, milieu.get(), &style.get());
         share_url.set(url.clone()); // live for the panel
         if let Some(id) = url_timer.get_untracked() {
             clear_timeout(id);
@@ -947,8 +966,7 @@ fn App() -> impl IntoView {
     let opt_world_colors = RwSignal::new(true);
     let opt_dim = RwSignal::new(false);
     let opt_perf = RwSignal::new(false);
-    // Selected style-theme preset name (Stylesheet.cs verbatim presets; see render::Theme).
-    let style = RwSignal::new(String::from("Poster"));
+    // (the `style` signal is declared up top — it's seeded from / reflected into the URL)
     // Which floating panel is open: 0 none, 1 legend (key), 2 settings (menu).
     let panel = RwSignal::new(0u8);
 
