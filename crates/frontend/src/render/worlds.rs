@@ -206,10 +206,17 @@ fn build_sector_dots(
                     let _ = p.arc(cx, cy, ZONE_R, a0, a1);
                 }
             }
+            // Mongoose offsets the disc off hex center (DiscPosition); the zone
+            // hexagon stays centered, the disc + its outline shift down-left.
+            let (dcx, dcy) = if theme.mongoose_layout {
+                (cx - 0.11, cy + 0.16)
+            } else {
+                (cx, cy)
+            };
             let (fill, outline) = world_colors(world, more_colors, theme);
-            add_circle(&mut discs, fill, cx, cy);
+            add_circle(&mut discs, fill, dcx, dcy);
             if let Some(oc) = outline {
-                add_circle(&mut outlines, oc, cx, cy);
+                add_circle(&mut outlines, oc, dcx, dcy);
             }
         }
     }
@@ -318,17 +325,30 @@ pub(crate) fn draw_world_glyphs(
     let cs = s * CONTENT_SCALE;
 
     // Layout offsets (parsec), poster vs atlas (RenderContext / Stylesheet).
-    let (sp_y, uwp_y, name_y) = if poster {
-        (-0.225, 0.225, 0.37)
+    // Mongoose relays everything out around an off-center disc (Stylesheet.cs:1040-1047):
+    // name at center, UWP below, starport upper-right, gas giant on top.
+    let mongoose = theme.mongoose_layout;
+    let (sp_x, sp_y, uwp_y, name_y) = if mongoose {
+        (0.175, 0.17, 0.40, -0.04)
+    } else if poster {
+        (0.0, -0.225, 0.225, 0.37)
     } else {
-        (-0.24, 0.24, 0.40)
+        (0.0, -0.24, 0.24, 0.40)
     };
-    let (gg_x, gg_y) = if poster {
+    let (gg_x, gg_y) = if mongoose {
+        (0.0, -0.23)
+    } else if poster {
         (0.25, -0.18)
     } else {
         (0.225, -0.125)
     };
-    let base_x = if poster { -0.25 } else { -0.225 };
+    let base_x = if mongoose {
+        -0.22
+    } else if poster {
+        -0.25
+    } else {
+        -0.225
+    };
     let zone_r = 0.4 * s; // (only used to size the off-screen cull margin)
 
     // Font sizes (parsec → px), porting Stylesheet's fontScale.
@@ -399,7 +419,8 @@ pub(crate) fn draw_world_glyphs(
         for (world, x, y) in &vis {
             if let Some(sp) = world.uwp.chars().next() {
                 if sp != '?' {
-                    let _ = ctx.fill_text(sp.encode_utf8(&mut [0u8; 4]), *x, *y + sp_y * s);
+                    let _ =
+                        ctx.fill_text(sp.encode_utf8(&mut [0u8; 4]), *x + sp_x * s, *y + sp_y * s);
                 }
             }
         }

@@ -13,10 +13,10 @@
 //! .NET `Color` names → hex are the standard `KnownColor` ARGB values.
 //! `TravellerColors.Red = #E32736`, `Amber = #FFCC00`.
 //!
-//! **Candy** is fully wired (palette, text transforms, globe/nebula compositing,
-//! hidden hex grid, curved borders); **Draft/FASA/Terminal** number every hex
-//! (`number_all_hexes`). **Not yet replicated:** the Mongoose glyph re-layout,
-//! zone-perimeters, and filled-UWP. See PORT_PLAN.md Phase 3.
+//! All presets are wired, including Candy (palette/text/globe/nebula/curved
+//! borders), Draft/FASA/Terminal all-hex numbering, and Mongoose (filled-UWP,
+//! zone-perimeters, disc-offset glyph layout). Minor residuals: Mongoose's third
+//! (middle) base slot uses the top/bottom x. See PORT_PLAN.md Phase 3.
 
 use super::common::{C_AMBER, C_BORDER, C_DRY, C_RED, C_RIFT, C_ROUTE, C_WATER};
 
@@ -138,6 +138,10 @@ pub struct Theme {
     // `uwp.textBackgroundStyle == Filled` (Mongoose, `Stylesheet.cs:1052-1054`) — the
     // UWP is white text on a solid black box rather than plain text.
     pub uwp_filled: bool,
+    // Mongoose world layout (`Stylesheet.cs:1039-1047`): the disc sits *off* hex
+    // center (`DiscPosition`) with the name at center, UWP below, starport upper-
+    // right, gas giant on top — not the default disc-centered stack.
+    pub mongoose_layout: bool,
 
     // ── star field (4 brightness tiers; ← foreground) ──
     pub stars: [&'static str; 4],
@@ -210,6 +214,7 @@ impl Theme {
             taper_lines: false,
             text_shadow: false,
             uwp_filled: false,
+            mongoose_layout: false,
             stars: [
                 "rgba(170,180,205,0.35)",
                 "rgba(205,215,235,0.55)",
@@ -428,6 +433,7 @@ impl Theme {
             uppercase_worlds: true,
             drop_allegiance: true,
             uwp_filled: true, // uwp.textBackgroundStyle=Filled (Stylesheet.cs:1054)
+            mongoose_layout: true, // disc-offset glyph layout (Stylesheet.cs:1039-1047)
             micro_border_text: "#2f4f4f", // microBorders.textColor DarkSlateGray
             grid: Some("#000000"), // all grids = foreground (Black)
             text: "#000000",  // fg = Black
