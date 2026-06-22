@@ -175,6 +175,8 @@ fn draw_rift_label(
         35.0_f64.to_radians(),
         1.0,
         1.0,
+        TextAlign::Center,
+        None,
     );
 }
 

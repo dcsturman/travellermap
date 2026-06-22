@@ -1,20 +1,19 @@
 //! Micro (per-sector) allegiance borders: filled interiors + hex-edge outlines,
 //! grouped by polity across all loaded sectors and cached as world-space
-//! `Path2d`s so a pan re-transforms instead of re-emitting tens of thousands of
-//! path calls per frame.
+//! [`Geometry`] so a pan re-transforms (via `fill_geometry`/`stroke_geometry`)
+//! instead of re-emitting tens of thousands of path calls per frame.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 
 use tmap_core::dto::SectorData;
 use tmap_core::spline::cardinal_spline_beziers;
-use web_sys::Path2d;
 
 use super::common::{
     allegiance_border_color, hex_neighbors, hex_sector, hex_vertex, hex_vertex_r, ViewState, HEX_VR,
 };
 use super::now;
-use crate::canvas::Canvas2d;
+use crate::canvas::{Affine, Canvas, Geometry, PathBuilder, StrokeStyle};
 
 /// Grouping key for borders. The major polities span many sectors under
 /// different sub-codes (Imperium domains `ImDd`/`ImDv`/…, Aslan clans
@@ -35,7 +34,7 @@ fn border_group_key(allegiance: &str) -> &str {
 /// the dominant zoomed-out cost the frame-timing HUD surfaced).
 struct BorderCache {
     key: u64,
-    groups: Vec<(String, Path2d, Path2d)>,
+    groups: Vec<(String, Geometry, Geometry)>,
 }
 thread_local! {
     static BORDER_CACHE: RefCell<Option<BorderCache>> = const { RefCell::new(None) };
@@ -84,10 +83,10 @@ struct SectorGeom {
 struct SectorGroup {
     key: String,
     color: String,
-    fill: Path2d,
+    fill: Geometry,
     /// Boundary edges to **same-sector** non-region neighbors — determined by
     /// this sector's region alone, so cached once (the bulk of the stroke).
-    interior_stroke: Path2d,
+    interior_stroke: Geometry,
     /// This sector's region as a set, for neighbor seam lookups.
     rset: std::collections::HashSet<(i32, i32)>,
     /// Candidate edges to neighbors in an **adjacent sector**, with vertices
@@ -143,10 +142,10 @@ fn build_sector_geom(sector: &SectorData) -> SectorGeom {
     }
     let groups = groups
         .into_iter()
-        .filter_map(|(key, GroupAccum { color, region })| {
+        .map(|(key, GroupAccum { color, region })| {
             let rset: HashSet<(i32, i32)> = region.iter().copied().collect();
-            let fill = Path2d::new().ok()?;
-            let interior_stroke = Path2d::new().ok()?;
+            let fill = PathBuilder::new();
+            let interior_stroke = PathBuilder::new();
             let mut seams = Vec::new();
             for &(wc, wr) in &region {
                 // Inflate fill hexagons ~3% so neighbors overlap (no AA seam).
@@ -156,7 +155,7 @@ fn build_sector_geom(sector: &SectorData) -> SectorGeom {
                     let v = hex_vertex_r(wc, wr, k, HEX_VR * 1.03);
                     fill.line_to(v.0, v.1);
                 }
-                fill.close_path();
+                fill.close();
                 // Same-sector edges resolve against this sector's region now
                 // (cached interior stroke); cross-sector ones become seam
                 // candidates resolved at combine against the neighbor's region.
@@ -189,14 +188,14 @@ fn build_sector_geom(sector: &SectorData) -> SectorGeom {
                     }
                 }
             }
-            Some(SectorGroup {
+            SectorGroup {
                 key: key.to_owned(),
                 color,
-                fill,
-                interior_stroke,
+                fill: fill.finish(),
+                interior_stroke: interior_stroke.finish(),
                 rset,
                 seams,
-            })
+            }
         })
         .collect();
     SectorGeom { groups }
@@ -206,7 +205,7 @@ fn build_sector_geom(sector: &SectorData) -> SectorGeom {
 /// fill + stroke `Path2d` per polity group. Cheap: `add_path` for fills, and a
 /// per-group combine: cached fills + interior strokes, with cross-sector seam
 /// edges resolved against each neighbor sector's own region (no merged set).
-fn build_border_geometry(sectors: &[&SectorData]) -> Vec<(String, Path2d, Path2d)> {
+fn build_border_geometry(sectors: &[&SectorData]) -> Vec<(String, Geometry, Geometry)> {
     SECTOR_GEOM.with(|cell| {
         // Phase 1: ensure each visible sector's geometry is built (cached once).
         {
@@ -242,7 +241,7 @@ fn build_border_geometry(sectors: &[&SectorData]) -> Vec<(String, Path2d, Path2d
                     .any(|g| g.key == key && g.rset.contains(&hex)),
             }
         };
-        let mut acc: HashMap<&str, (String, Path2d, Path2d)> = HashMap::new();
+        let mut acc: HashMap<&str, (String, PathBuilder, PathBuilder)> = HashMap::new();
         for sector in sectors {
             let Some(loc) = sector.info.location else {
                 continue;
@@ -251,18 +250,14 @@ fn build_border_geometry(sectors: &[&SectorData]) -> Vec<(String, Path2d, Path2d
                 continue;
             };
             for g in &geom.groups {
-                let entry = acc.entry(g.key.as_str()).or_insert_with(|| {
-                    (
-                        g.color.clone(),
-                        Path2d::new().unwrap(),
-                        Path2d::new().unwrap(),
-                    )
-                });
-                entry.1.add_path(&g.fill);
-                entry.2.add_path(&g.interior_stroke); // cached same-sector edges
-                                                      // Seam edges: stroke only where the neighbor sector is built AND
-                                                      // the neighbor hex isn't in this group's region (border ends at
-                                                      // the seam). An unbuilt neighbor is left un-stroked, not bordered.
+                let entry = acc
+                    .entry(g.key.as_str())
+                    .or_insert_with(|| (g.color.clone(), PathBuilder::new(), PathBuilder::new()));
+                entry.1.add(&g.fill);
+                entry.2.add(&g.interior_stroke); // cached same-sector edges
+                                                 // Seam edges: stroke only where the neighbor sector is built AND
+                                                 // the neighbor hex isn't in this group's region (border ends at
+                                                 // the seam). An unbuilt neighbor is left un-stroked, not bordered.
                 for seam in &g.seams {
                     if neighbor_strokes(&g.key, seam.nb_cell, seam.nb) {
                         entry.2.move_to(seam.a.0, seam.a.1);
@@ -271,7 +266,9 @@ fn build_border_geometry(sectors: &[&SectorData]) -> Vec<(String, Path2d, Path2d
                 }
             }
         }
-        acc.into_values().collect()
+        acc.into_values()
+            .map(|(color, fill, stroke)| (color, fill.finish(), stroke.finish()))
+            .collect()
     })
 }
 
@@ -337,16 +334,16 @@ fn stitch_loops(edges: &[Edge]) -> Vec<BorderLoop> {
 }
 
 /// Cardinal-spline `lp` into `path` (move + béziers, close if the loop is closed).
-fn spline_into(path: &Path2d, lp: &BorderLoop, tension: f64) {
+fn spline_into(path: &PathBuilder, lp: &BorderLoop, tension: f64) {
     if lp.points.len() < 2 {
         return;
     }
     path.move_to(lp.points[0].0, lp.points[0].1);
     for [c1, c2, end] in cardinal_spline_beziers(&lp.points, tension, lp.closed) {
-        path.bezier_curve_to(c1.0, c1.1, c2.0, c2.1, end.0, end.1);
+        path.bezier_to(c1.0, c1.1, c2.0, c2.1, end.0, end.1);
     }
     if lp.closed {
-        path.close_path();
+        path.close();
     }
 }
 
@@ -357,7 +354,7 @@ fn spline_into(path: &Path2d, lp: &BorderLoop, tension: f64) {
 /// edge, so no per-sector seam resolution is needed (curve styles are rare, so the
 /// hex path's per-frame caching concern doesn't apply — this rebuilds on the same
 /// sector-set change as the hex path).
-fn build_curved_geometry(sectors: &[&SectorData]) -> Vec<(String, Path2d, Path2d)> {
+fn build_curved_geometry(sectors: &[&SectorData]) -> Vec<(String, Geometry, Geometry)> {
     use std::collections::HashSet;
     let mut regions: HashMap<&str, HashSet<(i32, i32)>> = HashMap::new();
     let mut colors: HashMap<&str, String> = HashMap::new();
@@ -381,7 +378,7 @@ fn build_curved_geometry(sectors: &[&SectorData]) -> Vec<(String, Path2d, Path2d
     }
     regions
         .into_iter()
-        .filter_map(|(key, rset)| {
+        .map(|(key, rset)| {
             let mut edges: Vec<Edge> = Vec::new();
             for &(wc, wr) in &rset {
                 for (nb, (va, vb)) in hex_neighbors(wc, wr) {
@@ -394,13 +391,17 @@ fn build_curved_geometry(sectors: &[&SectorData]) -> Vec<(String, Path2d, Path2d
                 }
             }
             let loops = stitch_loops(&edges);
-            let fill = Path2d::new().ok()?;
-            let stroke = Path2d::new().ok()?;
+            let fill = PathBuilder::new();
+            let stroke = PathBuilder::new();
             for lp in &loops {
                 spline_into(&fill, lp, 0.5);
                 spline_into(&stroke, lp, 0.6);
             }
-            Some((colors.get(key).cloned().unwrap_or_default(), fill, stroke))
+            (
+                colors.get(key).cloned().unwrap_or_default(),
+                fill.finish(),
+                stroke.finish(),
+            )
         })
         .collect()
 }
@@ -411,7 +412,7 @@ fn build_curved_geometry(sectors: &[&SectorData]) -> Vec<(String, Path2d, Path2d
 /// so strokes stay crisp on retina.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_micro_borders(
-    canvas: &Canvas2d,
+    c: &impl Canvas,
     view: &ViewState,
     w: f64,
     h: f64,
@@ -458,11 +459,10 @@ pub(crate) fn draw_micro_borders(
         if bc.groups.is_empty() {
             return;
         }
-        let ctx = &canvas.ctx;
         let s = view.scale;
         // World(parsec) → device: device = dpr · (w/2 + (p − center)·s).
-        let a = dpr * s;
-        let (e, f) = (
+        let m = Affine::scale_translate(
+            dpr * s,
             dpr * (w / 2.0 - view.center.0 * s),
             dpr * (h / 2.0 - view.center.1 * s),
         );
@@ -478,37 +478,25 @@ pub(crate) fn draw_micro_borders(
         } else {
             (0.10 * s).max(2.4) / s
         };
-        ctx.save();
-        let _ = ctx.set_transform(a, 0.0, 0.0, a, e, f);
-        ctx.set_line_cap("round");
-        ctx.set_line_join("round");
-        ctx.set_line_width(stroke_w);
+        let style = StrokeStyle::round(stroke_w);
         for (color, fill, stroke) in &bc.groups {
             // A theme may force a single micro-border color (Atlas/FASA); otherwise
             // each group keeps its baked per-allegiance otu.css color. The geometry
             // is color-independent, so this needs no cache rebuild on a style switch.
             let color = micro_override.unwrap_or(color);
             if filled {
-                ctx.set_global_alpha(0.25); // FILL_ALPHA = 64/255
-                ctx.set_fill_style_str(color);
-                ctx.fill_with_path_2d(fill);
-                ctx.set_global_alpha(1.0);
+                c.fill_geometry(fill, m, color, 0.25); // FILL_ALPHA = 64/255
             }
-            ctx.set_stroke_style_str(color);
             if curved {
                 // The reference curve branch strokes the spline directly, with no
                 // region clip (RenderContext.cs:1856 else) — the smooth outline
                 // already sits on the region edge.
-                ctx.stroke_with_path(stroke);
+                c.stroke_geometry(stroke, m, color, &style, None);
             } else {
                 // Hex: clip the outline to its region so only the inner half shows
                 // — adjacent borders abut cleanly instead of double-stroking.
-                ctx.save();
-                ctx.clip_with_path_2d(fill);
-                ctx.stroke_with_path(stroke);
-                ctx.restore();
+                c.stroke_geometry(stroke, m, color, &style, Some(fill));
             }
         }
-        ctx.restore();
     });
 }

@@ -7,9 +7,8 @@ use std::collections::HashMap;
 
 use tmap_core::astrometrics::parse_hex;
 use tmap_core::dto::{SectorData, World};
-use web_sys::Path2d;
 
-use crate::canvas::{Canvas, Canvas2d};
+use crate::canvas::{Affine, Canvas, Geometry, PathBuilder, Shadow, StrokeStyle, TextAlign};
 use crate::glyph;
 
 use super::common::{
@@ -42,9 +41,9 @@ const ZONE_R: f64 = 0.4;
 struct SectorDots {
     more_colors: bool,
     dotmap: bool, // disc radius tier the geometry was built for
-    discs: Vec<(String, Path2d)>,
-    outlines: Vec<(String, Path2d)>,
-    zones: Vec<(String, Path2d)>,
+    discs: Vec<(String, Geometry)>,
+    outlines: Vec<(String, Geometry)>,
+    zones: Vec<(String, Geometry)>,
 }
 thread_local! {
     static SECTOR_DOTS: RefCell<HashMap<(i32, i32), SectorDots>> = RefCell::new(HashMap::new());
@@ -73,7 +72,7 @@ fn is_anomaly(world: &World) -> bool {
 /// `anomaly` style elements (`content`/font/color/position). Drawn whenever
 /// worlds are visible (the glyph replaces the dot at every detail tier).
 pub(crate) fn draw_placeholder_glyphs(
-    canvas: &Canvas2d,
+    c: &impl Canvas,
     view: &ViewState,
     w: f64,
     h: f64,
@@ -86,7 +85,6 @@ pub(crate) fn draw_placeholder_glyphs(
     if s < WORLD_BASIC_SCALE {
         return;
     }
-    let ctx = &canvas.ctx;
     let cs = s * CONTENT_SCALE;
     // Reference FontInfo sizes are 0.6 parsec (same convention as our other
     // glyph fonts, ~size·cs px).
@@ -98,8 +96,6 @@ pub(crate) fn draw_placeholder_glyphs(
         "{}px 'Arial Unicode MS', 'Segoe UI Symbol', sans-serif",
         (0.6 * cs).max(6.0) as i32
     );
-    ctx.set_text_align("center");
-    ctx.set_text_baseline("middle");
     for sector in sectors {
         let Some(loc) = sector.info.location else {
             continue;
@@ -116,15 +112,26 @@ pub(crate) fn draw_placeholder_glyphs(
             if !on_screen(x, y, w, h, cs) {
                 continue;
             }
-            // Placeholders are rare, so set state per glyph (no batching needed).
             if is_anomaly(world) {
-                ctx.set_font(&anomaly_font);
-                ctx.set_fill_style_str(theme.highlight);
-                let _ = ctx.fill_text("\u{2316}", x, y); // position (0, 0)
+                // position (0, 0)
+                c.fill_text(
+                    "\u{2316}",
+                    x,
+                    y,
+                    theme.highlight,
+                    &anomaly_font,
+                    TextAlign::Center,
+                );
             } else {
-                ctx.set_font(&star_font);
-                ctx.set_fill_style_str(theme.world_dry);
-                let _ = ctx.fill_text("*", x, y + 0.17 * s); // position (0, 0.17)
+                // position (0, 0.17)
+                c.fill_text(
+                    "*",
+                    x,
+                    y + 0.17 * s,
+                    theme.world_dry,
+                    &star_font,
+                    TextAlign::Center,
+                );
             }
         }
     }
@@ -138,16 +145,14 @@ fn build_sector_dots(
 ) -> SectorDots {
     use std::f64::consts::{PI, TAU};
     let disc_r = disc_radius(dotmap);
-    let mut discs: HashMap<String, Path2d> = HashMap::new();
-    let mut outlines: HashMap<String, Path2d> = HashMap::new();
-    let mut zones: HashMap<String, Path2d> = HashMap::new();
+    let mut discs: HashMap<String, PathBuilder> = HashMap::new();
+    let mut outlines: HashMap<String, PathBuilder> = HashMap::new();
+    let mut zones: HashMap<String, PathBuilder> = HashMap::new();
     if let Some(loc) = sector.info.location {
-        let add_circle = |map: &mut HashMap<String, Path2d>, color: &str, cx: f64, cy: f64| {
-            let p = map
-                .entry(color.to_owned())
-                .or_insert_with(|| Path2d::new().unwrap());
+        let add_circle = |map: &mut HashMap<String, PathBuilder>, color: &str, cx: f64, cy: f64| {
+            let p = map.entry(color.to_owned()).or_default();
             p.move_to(cx + disc_r, cy);
-            let _ = p.arc(cx, cy, disc_r, 0.0, TAU);
+            p.arc(cx, cy, disc_r, 0.0, TAU);
         };
         for world in &sector.worlds {
             // Placeholder worlds: at Atlas+ zoom they get the `*`/`⌖` glyph
@@ -180,16 +185,14 @@ fn build_sector_dots(
                     "R" => theme.red_zone,
                     _ => theme.green_zone.unwrap_or(theme.amber),
                 };
-                let p = zones
-                    .entry(zcolor.to_owned())
-                    .or_insert_with(|| Path2d::new().unwrap());
+                let p = zones.entry(zcolor.to_owned()).or_default();
                 let v0 = hex_vertex_r(wc, wr, 0, HEX_VR * 0.95);
                 p.move_to(v0.0, v0.1);
                 for k in 1..6 {
                     let v = hex_vertex_r(wc, wr, k, HEX_VR * 0.95);
                     p.line_to(v.0, v.1);
                 }
-                p.close_path();
+                p.close();
             } else {
                 // Travel zone: a single open-bottom arc behind the disc (amber/red).
                 let zc = match world.zone.as_str() {
@@ -199,11 +202,9 @@ fn build_sector_dots(
                 };
                 if let Some(zc) = zc {
                     let (a0, a1) = (PI - 0.384, 2.0 * PI + 0.384);
-                    let p = zones
-                        .entry(zc.to_owned())
-                        .or_insert_with(|| Path2d::new().unwrap());
+                    let p = zones.entry(zc.to_owned()).or_default();
                     p.move_to(cx + ZONE_R * a0.cos(), cy + ZONE_R * a0.sin());
-                    let _ = p.arc(cx, cy, ZONE_R, a0, a1);
+                    p.arc(cx, cy, ZONE_R, a0, a1);
                 }
             }
             // Mongoose offsets the disc off hex center (DiscPosition); the zone
@@ -220,12 +221,15 @@ fn build_sector_dots(
             }
         }
     }
+    let finish = |m: HashMap<String, PathBuilder>| -> Vec<(String, Geometry)> {
+        m.into_iter().map(|(c, p)| (c, p.finish())).collect()
+    };
     SectorDots {
         more_colors,
         dotmap,
-        discs: discs.into_iter().collect(),
-        outlines: outlines.into_iter().collect(),
-        zones: zones.into_iter().collect(),
+        discs: finish(discs),
+        outlines: finish(outlines),
+        zones: finish(zones),
     }
 }
 
@@ -233,7 +237,7 @@ fn build_sector_dots(
 /// from the per-sector cache, drawn under one view transform.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_world_dots(
-    canvas: &Canvas2d,
+    c: &impl Canvas,
     view: &ViewState,
     w: f64,
     h: f64,
@@ -244,14 +248,12 @@ pub(crate) fn draw_world_dots(
 ) {
     let s = view.scale;
     let dotmap = s < WORLD_BASIC_SCALE; // bigger discs when no per-world detail
-    let mut discs: HashMap<String, Path2d> = HashMap::new();
-    let mut outlines: HashMap<String, Path2d> = HashMap::new();
-    let mut zones: HashMap<String, Path2d> = HashMap::new();
-    let merge = |dst: &mut HashMap<String, Path2d>, src: &[(String, Path2d)]| {
-        for (c, p) in src {
-            dst.entry(c.clone())
-                .or_insert_with(|| Path2d::new().unwrap())
-                .add_path(p);
+    let mut discs: HashMap<String, PathBuilder> = HashMap::new();
+    let mut outlines: HashMap<String, PathBuilder> = HashMap::new();
+    let mut zones: HashMap<String, PathBuilder> = HashMap::new();
+    let merge = |dst: &mut HashMap<String, PathBuilder>, src: &[(String, Geometry)]| {
+        for (color, p) in src {
+            dst.entry(color.clone()).or_default().add(p);
         }
     };
     SECTOR_DOTS.with(|cache| {
@@ -274,32 +276,25 @@ pub(crate) fn draw_world_dots(
             merge(&mut outlines, &dots.outlines);
         }
     });
-    let ctx = &canvas.ctx;
-    let a = dpr * s;
-    let (e, f) = (
+    let m = Affine::scale_translate(
+        dpr * s,
         dpr * (w / 2.0 - view.center.0 * s),
         dpr * (h / 2.0 - view.center.1 * s),
     );
     let cs = s * CONTENT_SCALE;
-    ctx.save();
-    let _ = ctx.set_transform(a, 0.0, 0.0, a, e, f);
     // Zones first (behind), then disc fills, then vacuum outlines. Line widths
     // are css px ÷ s (the transform scales by s).
-    ctx.set_line_width(((0.03 * cs).max(1.5)) / s);
-    for (color, path) in &zones {
-        ctx.set_stroke_style_str(color);
-        ctx.stroke_with_path(path);
+    let zone_style = StrokeStyle::plain(((0.03 * cs).max(1.5)) / s);
+    for (color, p) in zones {
+        c.stroke_geometry(&p.finish(), m, &color, &zone_style, None);
     }
-    for (color, path) in &discs {
-        ctx.set_fill_style_str(color);
-        ctx.fill_with_path_2d(path);
+    for (color, p) in discs {
+        c.fill_geometry(&p.finish(), m, &color, 1.0);
     }
-    ctx.set_line_width(((0.02 * cs).max(1.0)) / s);
-    for (color, path) in &outlines {
-        ctx.set_stroke_style_str(color);
-        ctx.stroke_with_path(path);
+    let outline_style = StrokeStyle::plain(((0.02 * cs).max(1.0)) / s);
+    for (color, p) in outlines {
+        c.stroke_geometry(&p.finish(), m, &color, &outline_style, None);
     }
-    ctx.restore();
 }
 
 /// Faithful port of the reference `DrawWorld` text layout, drawn in
@@ -311,14 +306,13 @@ pub(crate) fn draw_world_dots(
 /// Offsets and font sizes are in parsec units (× scale → px); `cs = s ·
 /// CONTENT_SCALE` sizes glyphs to fill the hex while layout offsets use true `s`.
 pub(crate) fn draw_world_glyphs(
-    canvas: &Canvas2d,
+    c: &impl Canvas,
     view: &ViewState,
     w: f64,
     h: f64,
     sectors: &[&SectorData],
     theme: &Theme,
 ) {
-    let ctx = &canvas.ctx;
     let s = view.scale;
     let poster = s >= WORLD_FULL_SCALE; // poster vs atlas positions
     let show_uwp = s >= WORLD_UWP_SCALE;
@@ -396,42 +390,45 @@ pub(crate) fn draw_world_glyphs(
         return;
     }
 
-    // Text is centered vertically at its y; set once for every pass below.
-    ctx.set_text_baseline("middle");
-
     // ── Hex number (top, just inside the top edge — reference TopCenter).
     // Skipped when the style numbers *every* hex (Draft/FASA/Terminal) — that pass
     // already labels the world's hex (reference gates the per-world number the same).
     if !theme.number_all_hexes {
-        ctx.set_font(&hex_font);
-        ctx.set_text_align("center");
-        ctx.set_fill_style_str(theme.text_hex);
         let hex_dy = -0.5 * s + hex_pt * 0.55;
         for (world, x, y) in &vis {
-            let _ = ctx.fill_text(&world.hex, *x, *y + hex_dy);
+            c.fill_text(
+                &world.hex,
+                *x,
+                *y + hex_dy,
+                theme.text_hex,
+                &hex_font,
+                TextAlign::Center,
+            );
         }
     }
 
     // ── Starport class (above the disc). Same font as names (700, name_pt).
     if !theme.drop_starport {
-        ctx.set_font(&name_font);
-        ctx.set_fill_style_str(theme.text);
         for (world, x, y) in &vis {
             if let Some(sp) = world.uwp.chars().next() {
                 if sp != '?' {
-                    let _ =
-                        ctx.fill_text(sp.encode_utf8(&mut [0u8; 4]), *x + sp_x * s, *y + sp_y * s);
+                    c.fill_text(
+                        sp.encode_utf8(&mut [0u8; 4]),
+                        *x + sp_x * s,
+                        *y + sp_y * s,
+                        theme.text,
+                        &name_font,
+                        TextAlign::Center,
+                    );
                 }
             }
         }
     }
 
-    // ── Gas giant (upper-right): filled discs batched into one path; Saturn
-    // ring (only when zoomed past the UWP threshold) stroked per giant.
+    // ── Gas giant (upper-right): a filled disc, plus a Saturn ring (only when
+    // zoomed past the UWP threshold).
     if !theme.drop_gas_giant {
         let r = (0.05 * cs).max(1.0);
-        let disc = Path2d::new().unwrap();
-        let mut any = false;
         let has_gg = |wld: &World| {
             wld.pbg
                 .as_bytes()
@@ -439,51 +436,33 @@ pub(crate) fn draw_world_glyphs(
                 .is_some_and(|&b| b > b'0' && b != b'?')
         };
         for (world, x, y) in &vis {
-            if has_gg(world) {
-                let (gx, gy) = (*x + gg_x * s, *y + gg_y * s);
-                disc.move_to(gx + r, gy);
-                let _ = disc.arc(gx, gy, r, 0.0, std::f64::consts::TAU);
-                any = true;
+            if !has_gg(world) {
+                continue;
             }
-        }
-        if any {
-            ctx.set_fill_style_str(theme.text_gg);
-            ctx.fill_with_path_2d(&disc);
+            let (gx, gy) = (*x + gg_x * s, *y + gg_y * s);
+            c.fill_circle(gx, gy, r, theme.text_gg);
             if show_uwp {
-                ctx.set_stroke_style_str(theme.text_gg);
-                ctx.set_line_width((r / 4.0).max(0.6));
-                for (world, x, y) in &vis {
-                    if has_gg(world) {
-                        let (gx, gy) = (*x + gg_x * s, *y + gg_y * s);
-                        ctx.begin_path();
-                        let _ = ctx.ellipse(
-                            gx,
-                            gy,
-                            r * 1.75,
-                            r * 0.4,
-                            -std::f64::consts::FRAC_PI_6,
-                            0.0,
-                            std::f64::consts::TAU,
-                        );
-                        ctx.stroke();
-                    }
-                }
+                c.stroke_ellipse(
+                    gx,
+                    gy,
+                    r * 1.75,
+                    r * 0.4,
+                    -std::f64::consts::FRAC_PI_6,
+                    theme.text_gg,
+                    (r / 4.0).max(0.6),
+                );
             }
         }
     }
 
-    // ── Bases (left side) as classic glyphs. Font/align set once; fill toggles
-    // only between the text color and the highlight (highlight is sparse), so track
-    // the last color. `hi` is the highlight color unless this theme drops highlights.
+    // ── Bases (left side) as classic glyphs. `hi` is the highlight color unless
+    // this theme drops highlights.
     let hi = if theme.drop_highlight {
         theme.text
     } else {
         theme.highlight
     };
     if !theme.drop_bases {
-        ctx.set_font(&glyph_font);
-        ctx.set_text_align("center");
-        let mut last = "";
         let bx = base_x * s;
         for (world, x, y) in &vis {
             let mut chars = world.bases.chars();
@@ -492,28 +471,34 @@ pub(crate) fn draw_world_glyphs(
                 if let Some(g) = glyph::base_glyph(&world.allegiance, c0) {
                     bottom_used = g.bias == glyph::Bias::Bottom;
                     let col = if g.highlight { hi } else { theme.text };
-                    if col != last {
-                        ctx.set_fill_style_str(col);
-                        last = col;
-                    }
                     let gy = if bottom_used {
                         base_bottom_y
                     } else {
                         base_top_y
                     } * s;
-                    let _ = ctx.fill_text(g.chars, *x + bx, *y + gy);
+                    c.fill_text(
+                        g.chars,
+                        *x + bx,
+                        *y + gy,
+                        col,
+                        &glyph_font,
+                        TextAlign::Center,
+                    );
                 }
             }
             if let Some(c1) = chars.next() {
                 if let Some(g) = glyph::base_glyph(&world.allegiance, c1) {
                     let bottom = !bottom_used;
                     let col = if g.highlight { hi } else { theme.text };
-                    if col != last {
-                        ctx.set_fill_style_str(col);
-                        last = col;
-                    }
                     let gy = if bottom { base_bottom_y } else { base_top_y } * s;
-                    let _ = ctx.fill_text(g.chars, *x + bx, *y + gy);
+                    c.fill_text(
+                        g.chars,
+                        *x + bx,
+                        *y + gy,
+                        col,
+                        &glyph_font,
+                        TextAlign::Center,
+                    );
                 }
             }
         }
@@ -521,9 +506,6 @@ pub(crate) fn draw_world_glyphs(
 
     // ── UWP (above name), only past the UWP scale threshold.
     if show_uwp && !theme.drop_uwp {
-        ctx.set_font(&uwp_font);
-        ctx.set_text_align("center");
-        ctx.set_text_baseline("middle");
         let pad = (uwp_pt * 0.35).max(1.0);
         for (world, x, y) in &vis {
             if is_placeholder(world) {
@@ -536,38 +518,43 @@ pub(crate) fn draw_world_glyphs(
             if theme.uwp_filled {
                 let bw = world.uwp.chars().count() as f64 * uwp_pt * 0.62 + pad * 2.0;
                 let bh = uwp_pt + pad;
-                ctx.set_fill_style_str("#000000");
-                ctx.fill_rect(*x - bw / 2.0, ty - bh / 2.0, bw, bh);
+                c.fill_rect(*x - bw / 2.0, ty - bh / 2.0, bw, bh, "#000000");
             }
-            ctx.set_fill_style_str(theme.text_uwp);
-            let _ = ctx.fill_text(&world.uwp, *x, ty);
+            c.fill_text(
+                &world.uwp,
+                *x,
+                ty,
+                theme.text_uwp,
+                &uwp_font,
+                TextAlign::Center,
+            );
         }
     }
 
     // ── Allegiance code (e.g. NaHu) to the right of the disc, when zoomed in.
     if s >= ALLEGIANCE_MIN_SCALE && !theme.drop_allegiance {
-        ctx.set_font(&uwp_font);
-        ctx.set_text_align("left");
-        ctx.set_fill_style_str(theme.text_alleg);
         for (world, x, y) in &vis {
             if is_placeholder(world) {
                 continue;
             }
             if !world.allegiance.is_empty() && world.allegiance != "--" {
-                let _ = ctx.fill_text(&world.allegiance, *x + 0.20 * s, *y + 0.08 * s);
+                c.fill_text(
+                    &world.allegiance,
+                    *x + 0.20 * s,
+                    *y + 0.08 * s,
+                    theme.text_alleg,
+                    &uwp_font,
+                    TextAlign::Left,
+                );
             }
         }
     }
 
     // ── World name (bottom). High-pop (≥1e9) in ALL CAPS, capitals in red —
-    // the reference's `IsHi` uppercase + capital highlight. Fill toggles only
-    // for the sparse capitals, so track the last color rather than re-setting.
-    ctx.set_font(&name_font);
-    ctx.set_text_align("center");
-    let mut last = "";
+    // the reference's `IsHi` uppercase + capital highlight.
     let name_dy = name_y * s;
     // Candy squishes names vertically (`worlds.textStyle.Scale (1.0, 0.5)`); other
-    // styles draw 1:1, so skip the save/scale/restore overhead unless asked.
+    // styles draw 1:1, so skip the rotate/scale path unless asked.
     let (nsx, nsy) = theme.world_name_scale;
     let squish = (nsx - 1.0).abs() > f64::EPSILON || (nsy - 1.0).abs() > f64::EPSILON;
     for (world, x, y) in &vis {
@@ -586,23 +573,26 @@ pub(crate) fn draw_world_glyphs(
         } else {
             theme.text
         };
-        if col != last {
-            ctx.set_fill_style_str(col);
-            last = col;
-        }
         let name = if hi_pop || theme.uppercase_worlds {
             world.name.to_uppercase()
         } else {
             world.name.clone()
         };
         if squish {
-            ctx.save();
-            let _ = ctx.translate(*x, *y + name_dy);
-            let _ = ctx.scale(nsx, nsy);
-            let _ = ctx.fill_text(&name, 0.0, 0.0);
-            ctx.restore();
+            c.fill_text_rotated(
+                &name,
+                *x,
+                *y + name_dy,
+                col,
+                &name_font,
+                0.0,
+                nsx,
+                nsy,
+                TextAlign::Center,
+                None,
+            );
         } else {
-            let _ = ctx.fill_text(&name, *x, *y + name_dy);
+            c.fill_text(&name, *x, *y + name_dy, col, &name_font, TextAlign::Center);
         }
     }
 }
@@ -614,15 +604,14 @@ pub(crate) fn draw_world_glyphs(
 /// ring: a 4-arc near-full zone circle, the gas-giant marker, the UWP, then the
 /// (vertically-squished, left-aligned) name — not stacked below the disc.
 pub(crate) fn draw_world_images(
-    canvas: &Canvas2d,
+    c: &impl Canvas,
     view: &ViewState,
     w: f64,
     h: f64,
     sectors: &[&SectorData],
     theme: &Theme,
 ) {
-    use std::f64::consts::{PI, TAU};
-    let ctx = &canvas.ctx;
+    use std::f64::consts::PI;
     let s = view.scale;
     let show_uwp = s >= WORLD_UWP_SCALE;
     let cs = s * CONTENT_SCALE;
@@ -673,7 +662,7 @@ pub(crate) fn draw_world_images(
         if size <= 0 {
             // Belt: 1.5×1.0 aspect (RenderContext:1375-1379).
             let (rw, rh) = (image_radius * 1.5 * s, image_radius * s);
-            canvas.draw_image(
+            c.draw_image(
                 "/api/res/Candy/Belt.png",
                 *x - rw,
                 *y - rh,
@@ -689,7 +678,7 @@ pub(crate) fn draw_world_images(
                 n.to_string()
             };
             let r = image_radius * s;
-            canvas.draw_image(
+            c.draw_image(
                 &format!("/api/res/Candy/Hyd{digit}.png"),
                 *x - r,
                 *y - r,
@@ -704,13 +693,19 @@ pub(crate) fn draw_world_images(
         // ── Zone: four 80° arcs → a dashed near-full circle (RenderContext:1427-1430).
         let (amber, red) = (world.zone == "A", world.zone == "R");
         if amber || red {
-            ctx.set_stroke_style_str(if amber { theme.amber } else { theme.red_zone });
-            ctx.set_line_width((0.035 * s).max(1.0));
+            let zcolor = if amber { theme.amber } else { theme.red_zone };
+            let zw = (0.035 * s).max(1.0);
             let r = deco * s;
             for start in [5.0_f64, 95.0, 185.0, 275.0] {
-                ctx.begin_path();
-                let _ = ctx.arc(*x, *y, r, start * PI / 180.0, (start + 80.0) * PI / 180.0);
-                ctx.stroke();
+                c.stroke_arc(
+                    *x,
+                    *y,
+                    r,
+                    start * PI / 180.0,
+                    (start + 80.0) * PI / 180.0,
+                    zcolor,
+                    zw,
+                );
             }
             deco += 0.1;
         }
@@ -725,29 +720,35 @@ pub(crate) fn draw_world_images(
             let gr = (0.05 * s).max(1.5);
             deco += 0.05;
             let gx = *x + deco * s;
-            ctx.set_fill_style_str(theme.highlight);
-            ctx.begin_path();
-            let _ = ctx.arc(gx, *y, gr, 0.0, TAU);
-            ctx.fill();
+            c.fill_circle(gx, *y, gr, theme.highlight);
             // Saturn ring: thin ellipse rotated −30° (RenderContext `DrawGasGiant`).
-            ctx.set_stroke_style_str(theme.highlight);
-            ctx.set_line_width((gr / 4.0).max(0.6));
-            ctx.begin_path();
-            let _ = ctx.ellipse(gx, *y, gr * 1.75, gr * 0.4, -PI / 6.0, 0.0, TAU);
-            ctx.stroke();
+            c.stroke_ellipse(
+                gx,
+                *y,
+                gr * 1.75,
+                gr * 0.4,
+                -PI / 6.0,
+                theme.highlight,
+                (gr / 4.0).max(0.6),
+            );
             deco += 0.1;
         }
 
         // ── UWP (right of the ring, left-aligned) once past the UWP scale.
         if show_uwp && !theme.drop_uwp {
-            ctx.set_font(&uwp_font);
-            ctx.set_text_align("left");
-            ctx.set_text_baseline("middle");
-            ctx.set_fill_style_str(theme.text_uwp);
-            let _ = ctx.fill_text(&world.uwp, *x + deco * s, *y - 0.18 * s);
+            c.fill_text(
+                &world.uwp,
+                *x + deco * s,
+                *y - 0.18 * s,
+                theme.text_uwp,
+                &uwp_font,
+                TextAlign::Left,
+            );
         }
 
-        // ── Name (right of the ring, left-aligned, vertically squished).
+        // ── Name (right of the ring, left-aligned, vertically squished). Candy
+        // draws names with a hard drop shadow (`textBackgroundStyle = Shadow`) for
+        // the 3-D "eye-candy" look — a hard offset copy in the background color.
         let hi_pop = b.get(4).copied().and_then(ehex).is_some_and(|p| p >= 9);
         let is_capital = world
             .codes()
@@ -762,29 +763,24 @@ pub(crate) fn draw_world_images(
         } else {
             theme.text
         };
-        ctx.set_font(&name_font);
-        ctx.set_text_align("left");
-        ctx.set_text_baseline("middle");
-        ctx.set_fill_style_str(col);
-        ctx.save();
-        let _ = ctx.translate(*x + deco * s, *y);
-        let _ = ctx.scale(nsx, nsy);
-        // Candy draws names with a drop shadow (`textBackgroundStyle = Shadow`) for
-        // the 3-D "eye-candy" look — a hard offset copy in the background color.
-        if theme.text_shadow {
-            ctx.set_shadow_color(theme.background);
-            ctx.set_shadow_offset_x(2.0);
-            ctx.set_shadow_offset_y(2.0);
-            ctx.set_shadow_blur(1.0);
-        }
-        let _ = ctx.fill_text(&name, 0.0, 0.0);
-        if theme.text_shadow {
-            ctx.set_shadow_color("rgba(0,0,0,0)");
-            ctx.set_shadow_offset_x(0.0);
-            ctx.set_shadow_offset_y(0.0);
-            ctx.set_shadow_blur(0.0);
-        }
-        ctx.restore();
+        let shadow = theme.text_shadow.then(|| Shadow {
+            color: theme.background.to_string(),
+            dx: 2.0,
+            dy: 2.0,
+            blur: 1.0,
+        });
+        c.fill_text_rotated(
+            &name,
+            *x + deco * s,
+            *y,
+            col,
+            &name_font,
+            0.0,
+            nsx,
+            nsy,
+            TextAlign::Left,
+            shadow.as_ref(),
+        );
     }
 }
 

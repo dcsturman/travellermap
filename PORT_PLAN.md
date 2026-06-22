@@ -15,11 +15,12 @@ file as we go: tick boxes, fold in decisions, keep entries short.
 
 ## Baked-in tech decisions
 
-- **All render logic in Rust/WASM behind a `Canvas` trait; Canvas 2D backend now, wgpu later.**
-  The trait mirrors the reference `AbstractGraphics`, so `RenderContext`/`Stylesheet` is ported
-  once and a `WgpuCanvas` can drop in without rewriting scene logic. WASM can't paint directly —
-  `web-sys` is the binding to Canvas 2D/WebGPU; the win is that *logic* (scene, culling, LOD,
-  parsing) is compiled WASM while the browser's native/GPU rasterizer does the final draw.
+- **All render logic in Rust/WASM behind a `Canvas` trait (Canvas 2D backend).**
+  The trait mirrors the reference `AbstractGraphics` and is fully sealed: every render pass draws
+  through it (retained `Geometry`/`PathBuilder`, an affine transform, clip, immediate shapes/text),
+  so scene logic never touches `web-sys` directly. WASM can't paint directly — `web-sys` is the
+  binding to Canvas 2D; the win is that *logic* (scene, culling, LOD, parsing) is compiled WASM while
+  the browser's native/GPU-accelerated 2D rasterizer does the final draw.
 - **Parsing lives in `tmap-core`** (I/O-free): `.tab`/`.sec`/`.xml` → `dto` types. Backend does
   I/O + serving; frontend consumes JSON. Same parser will feed the future tile-precompute tool.
 - **LOD is in the API contract from day one** (`?lod=`), but the parser is always full-fidelity —

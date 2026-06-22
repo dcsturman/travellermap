@@ -48,7 +48,18 @@ pub(crate) fn draw_sector_names(
         }
         let text = upcase(name, theme);
         let (sx, sy) = theme.sector_name_scale;
-        c.fill_text_rotated(&text, cx, cy, color, &font, theme.name_rotation, sx, sy);
+        c.fill_text_rotated(
+            &text,
+            cx,
+            cy,
+            color,
+            &font,
+            theme.name_rotation,
+            sx,
+            sy,
+            TextAlign::Center,
+            None,
+        );
     }
 }
 
@@ -93,7 +104,18 @@ pub(crate) fn draw_subsector_names(
         }
         let text = upcase(&ss.name, theme);
         let (sx, sy) = theme.subsector_name_scale;
-        c.fill_text_rotated(&text, cx, cy, color, &font, theme.name_rotation, sx, sy);
+        c.fill_text_rotated(
+            &text,
+            cx,
+            cy,
+            color,
+            &font,
+            theme.name_rotation,
+            sx,
+            sy,
+            TextAlign::Center,
+            None,
+        );
     }
 }
 
@@ -258,6 +280,28 @@ pub(crate) fn draw_galactic_directions(c: &impl Canvas, w: f64, h: f64) {
     use std::f64::consts::FRAC_PI_2;
     c.fill_text("COREWARD", cx, 20.0, COLOR, &font, TextAlign::Center);
     c.fill_text("RIMWARD", cx, h - 34.0, COLOR, &font, TextAlign::Center);
-    c.fill_text_rotated("SPINWARD", 18.0, cy, COLOR, &font, -FRAC_PI_2, 1.0, 1.0);
-    c.fill_text_rotated("TRAILING", w - 18.0, cy, COLOR, &font, FRAC_PI_2, 1.0, 1.0);
+    c.fill_text_rotated(
+        "SPINWARD",
+        18.0,
+        cy,
+        COLOR,
+        &font,
+        -FRAC_PI_2,
+        1.0,
+        1.0,
+        TextAlign::Center,
+        None,
+    );
+    c.fill_text_rotated(
+        "TRAILING",
+        w - 18.0,
+        cy,
+        COLOR,
+        &font,
+        FRAC_PI_2,
+        1.0,
+        1.0,
+        TextAlign::Center,
+        None,
+    );
 }

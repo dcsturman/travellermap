@@ -1,13 +1,12 @@
 //! Boundary grids: straight sector/subsector lines, and the cached per-parsec
-//! hex grid drawn from world-space `Path2d`s under one view transform.
+//! hex grid drawn from world-space [`Geometry`] under one view transform.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 
 use tmap_core::astrometrics::PARSEC_SCALE_X;
-use web_sys::Path2d;
 
-use crate::canvas::{Canvas, Canvas2d};
+use crate::canvas::{Affine, Canvas, Geometry, PathBuilder, StrokeStyle, TextAlign};
 
 use super::common::{
     grid_color, hex_parsec, hex_vertex, on_screen, sector_in_viewport, visible_hex_range,
@@ -21,7 +20,7 @@ use super::Theme;
 /// (Local hex is derived in the frontend's `world_hex` convention, not tmap-core's
 /// `coordinates_to_location`, which uses a different absolute origin.)
 pub(crate) fn draw_all_hex_numbers(
-    canvas: &Canvas2d,
+    c: &impl Canvas,
     view: &ViewState,
     w: f64,
     h: f64,
@@ -29,12 +28,8 @@ pub(crate) fn draw_all_hex_numbers(
 ) {
     let s = view.scale;
     let (c0, c1, r0, r1) = visible_hex_range(view, w, h);
-    let ctx = &canvas.ctx;
     let font_px = (0.10 * s * CONTENT_SCALE).max(6.0);
-    ctx.set_font(&format!("{}px {}", font_px as i32, theme.font));
-    ctx.set_fill_style_str(theme.text_hex);
-    ctx.set_text_align("center");
-    ctx.set_text_baseline("top"); // reference TopCenter
+    let font = format!("{}px {}", font_px as i32, theme.font);
     let dy = -0.5 * s; // top edge of the hex
     for wc in c0..=c1 {
         for wr in r0..=r1 {
@@ -54,7 +49,15 @@ pub(crate) fn draw_all_hex_numbers(
             } else {
                 format!("{col:02}{row:02}")
             };
-            let _ = ctx.fill_text(&label, cx, cy + dy);
+            // Reference TopCenter (top baseline at the hex's top edge).
+            c.fill_text_top(
+                &label,
+                cx,
+                cy + dy,
+                theme.text_hex,
+                &font,
+                TextAlign::Center,
+            );
         }
     }
 }
@@ -100,7 +103,7 @@ pub(crate) fn draw_grid_lines(
 // now we stroke cached world-space paths under one view transform. (Clear on
 // milieu switch, like `SECTOR_GEOM`.)
 thread_local! {
-    static GRID_GEOM: RefCell<HashMap<(i32, i32), Path2d>> = RefCell::new(HashMap::new());
+    static GRID_GEOM: RefCell<HashMap<(i32, i32), Geometry>> = RefCell::new(HashMap::new());
 }
 
 /// Clear the cached hex-grid geometry (milieu switch).
@@ -108,10 +111,10 @@ pub(crate) fn clear_grid_geom() {
     GRID_GEOM.with(|c| c.borrow_mut().clear());
 }
 
-/// Build (once) the full hex-grid outline `Path2d` for one sector, in world
+/// Build (once) the full hex-grid outline geometry for one sector, in world
 /// coords (so it composes with the world→device transform like the borders).
-fn build_grid_geom(loc: (i32, i32)) -> Path2d {
-    let p = Path2d::new().unwrap();
+fn build_grid_geom(loc: (i32, i32)) -> Geometry {
+    let p = PathBuilder::new();
     for col in 1..=SECTOR_W {
         for row in 1..=SECTOR_H {
             let (wc, wr) = (loc.0 * SECTOR_W + col, loc.1 * SECTOR_H + row);
@@ -121,17 +124,17 @@ fn build_grid_geom(loc: (i32, i32)) -> Path2d {
                 let v = hex_vertex(wc, wr, k);
                 p.line_to(v.0, v.1);
             }
-            p.close_path();
+            p.close();
         }
     }
-    p
+    p.finish()
 }
 
-/// Per-parsec hex grid, drawn from cached per-sector world-space `Path2d`s under
-/// one view transform — a handful of `add_path` + a single `stroke`, instead of
-/// a `stroke()` per on-screen hexagon.
+/// Per-parsec hex grid, drawn from cached per-sector world-space geometries under
+/// one view transform — a handful of `add` + a single `stroke_geometry`, instead
+/// of a `stroke()` per on-screen hexagon.
 pub(crate) fn draw_hex_grid(
-    canvas: &Canvas2d,
+    c: &impl Canvas,
     view: &ViewState,
     w: f64,
     h: f64,
@@ -146,7 +149,7 @@ pub(crate) fn draw_hex_grid(
     // Draw the grid for every *charted* sector overlapping the viewport (from
     // the index, not the loaded set) so it shows regardless of world-data load
     // state and never tiles the uncharted void.
-    let combined = Path2d::new().unwrap();
+    let combined = PathBuilder::new();
     let mut any = false;
     GRID_GEOM.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -155,28 +158,24 @@ pub(crate) fn draw_hex_grid(
                 continue;
             }
             let g = cache.entry(cell).or_insert_with(|| build_grid_geom(cell));
-            combined.add_path(g);
+            combined.add(g);
             any = true;
         }
     });
     if !any {
         return;
     }
-    let ctx = &canvas.ctx;
+    let combined = combined.finish();
     // World(parsec) → device: device = dpr · (w/2 + (p − center)·s), uniform.
-    let a = dpr * s;
-    let (e, f) = (
+    let m = Affine::scale_translate(
+        dpr * s,
         dpr * (w / 2.0 - view.center.0 * s),
         dpr * (h / 2.0 - view.center.1 * s),
     );
-    ctx.save();
-    let _ = ctx.set_transform(a, 0.0, 0.0, a, e, f);
-    ctx.set_line_width(1.0 / s); // ~1 css px (the transform scales by s)
-                                 // Theme override (flat color) or the scale-faded gray `gridColor`.
-    match grid_override {
-        Some(c) => ctx.set_stroke_style_str(c),
-        None => ctx.set_stroke_style_str(&grid_color(s)),
-    }
-    ctx.stroke_with_path(&combined);
-    ctx.restore();
+    // Theme override (flat color) or the scale-faded gray `gridColor`. Width is
+    // ~1 css px (the transform scales the world-space width by s).
+    let color = grid_override
+        .map(str::to_string)
+        .unwrap_or_else(|| grid_color(s));
+    c.stroke_geometry(&combined, m, &color, &StrokeStyle::plain(1.0 / s), None);
 }

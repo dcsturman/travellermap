@@ -25,10 +25,9 @@ mod worlds;
 use std::collections::HashMap;
 
 use tmap_core::dto::{Overlays, RouteResult, SectorData};
-use wasm_bindgen::JsCast;
-use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, Path2d};
+use web_sys::HtmlCanvasElement;
 
-use crate::canvas::Canvas;
+use crate::canvas::{Canvas, Geometry, PathBuilder};
 
 // Public API (unchanged for `main.rs`).
 pub use common::{
@@ -71,25 +70,13 @@ pub fn draw(
     theme: &Theme,
     route: Option<&RouteResult>,
 ) {
-    let Some(ctx) = canvas
-        .get_context("2d")
-        .ok()
-        .flatten()
-        .and_then(|o| o.dyn_into::<CanvasRenderingContext2d>().ok())
-    else {
+    // Draw in logical (CSS) pixels: `for_frame` scales the context by the device
+    // pixel ratio so `view.scale` is px-per-parsec in CSS units — matching the
+    // reference's `Stylesheet` calibration (fontScale, LOD thresholds) and
+    // staying crisp on retina.
+    let Some((c, w, h, dpr)) = Canvas2d::for_frame(canvas) else {
         return;
     };
-    // Draw in logical (CSS) pixels: scale the context by the device pixel ratio
-    // so `view.scale` is px-per-parsec in CSS units — matching the reference's
-    // `Stylesheet` calibration (fontScale, LOD thresholds) and staying crisp on
-    // retina. The 2D context persists between calls, so reset the transform.
-    let (buf_w, css_w) = (canvas.width() as f64, canvas.client_width().max(1) as f64);
-    let dpr = buf_w / css_w;
-    let _ = ctx.set_transform(1.0, 0.0, 0.0, 1.0, 0.0, 0.0);
-    let _ = ctx.scale(dpr, dpr);
-    let w = css_w;
-    let h = canvas.client_height().max(1) as f64;
-    let c = Canvas2d { ctx };
 
     // Per-layer timing for the profiling HUD. `now()` (performance.now) is
     // cheap, so always measure; only paint the overlay when `perf_hud` is on.
@@ -109,8 +96,7 @@ pub fn draw(
     if let Some(jc) = opts.jump_clip {
         c.clear(JUMPMAP_SURROUND, w, h);
         let clip = build_jump_clip_path(&view, w, h, jc);
-        c.ctx.save();
-        c.ctx.clip_with_path_2d(&clip);
+        c.push_clip(&clip);
         c.clear(theme.background, w, h); // deep space inside the bubble
         mark("stars", &mut marks);
         mark("macro", &mut marks);
@@ -258,7 +244,7 @@ pub fn draw(
     // the bubble). Nothing past here belongs in the cutout (dim/route/compass/HUD
     // are all suppressed by the caller's cutout options), so restore unconditionally.
     if opts.jump_clip.is_some() {
-        c.ctx.restore();
+        c.pop_clip();
     }
 
     // Dim sectors not flagged Official/Preserve/InReview (opt-in appearance).
@@ -283,11 +269,11 @@ pub fn draw(
     }
 }
 
-/// Build the clip path (CSS-px space) for a jump-N cutout: the union of the
+/// Build the clip geometry (CSS-px space) for a jump-N cutout: the union of the
 /// bubble's hexes, each inflated slightly so the union is gap-free and has a
 /// clean outer boundary (the same trick the border fills use).
-fn build_jump_clip_path(view: &ViewState, w: f64, h: f64, jc: JumpClip) -> Path2d {
-    let path = Path2d::new().unwrap();
+fn build_jump_clip_path(view: &ViewState, w: f64, h: f64, jc: JumpClip) -> Geometry {
+    let path = PathBuilder::new();
     for (hc, hr) in jump_hexes(jc.center, jc.jump) {
         for k in 0..6 {
             let (x, y) = view.to_screen(w, h, hex_vertex_r(hc, hr, k, HEX_VR * 1.06));
@@ -297,9 +283,9 @@ fn build_jump_clip_path(view: &ViewState, w: f64, h: f64, jc: JumpClip) -> Path2
                 path.line_to(x, y);
             }
         }
-        path.close_path();
+        path.close();
     }
-    path
+    path.finish()
 }
 
 /// `performance.now()` in milliseconds (monotonic, sub-ms). Returns 0 if
