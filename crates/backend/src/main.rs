@@ -80,6 +80,12 @@ struct AppState {
     overlays: Arc<OnceLock<Overlays>>,
     /// Lazily-built, cached per-milieu name search index.
     search_cache: Arc<Mutex<HashMap<String, Arc<SearchIndex>>>>,
+    /// Per-milieu build lock for the search index (single-flight). A request that
+    /// arrives while the background warm-up (or another request) is still building
+    /// waits on this and then reuses that build, instead of starting a wasteful
+    /// second build that contends for CPU — the cause of the "slow until warm"
+    /// first search on a cold (1-vCPU) instance.
+    search_builds: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     /// Cache of serialized JSON responses (key → (etag, bytes)) so repeat
     /// requests skip parsing + serialization. The data is static at runtime.
     response_cache: Arc<Mutex<HashMap<String, (String, Bytes)>>>,
@@ -192,6 +198,22 @@ impl AppState {
 
     /// The name search index for a milieu, built and cached on first use.
     fn search_index(&self, milieu: &str) -> Result<Arc<SearchIndex>, (StatusCode, String)> {
+        // Fast path: already built.
+        if let Some(idx) = self.search_cache.lock().unwrap().get(milieu) {
+            return Ok(idx.clone());
+        }
+        // Single-flight: take the per-milieu build lock so only one build runs at a
+        // time. A caller racing the warm-up blocks here, then finds the finished
+        // index on the re-check below — it never starts a second, contending build.
+        let build_lock = self
+            .search_builds
+            .lock()
+            .unwrap()
+            .entry(milieu.to_string())
+            .or_default()
+            .clone();
+        let _guard = build_lock.lock().unwrap();
+        // Re-check: the build we waited on may have just populated the cache.
         if let Some(idx) = self.search_cache.lock().unwrap().get(milieu) {
             return Ok(idx.clone());
         }
@@ -459,6 +481,7 @@ impl AppState {
             universe_cache: Arc::new(Mutex::new(HashMap::new())),
             overlays: Arc::new(OnceLock::new()),
             search_cache: Arc::new(Mutex::new(HashMap::new())),
+            search_builds: Arc::new(Mutex::new(HashMap::new())),
             response_cache: Arc::new(Mutex::new(HashMap::new())),
             region_cache: Arc::new(Mutex::new(HashMap::new())),
             route_cache: Arc::new(Mutex::new(HashMap::new())),
