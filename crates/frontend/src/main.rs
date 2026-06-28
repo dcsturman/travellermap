@@ -953,6 +953,12 @@ fn App() -> impl IntoView {
     // Touch gesture state inside the system SVG (one-finger pan / two-finger pinch).
     #[cfg(feature = "callisto")]
     let sys_touch = RwSignal::new(None::<TouchGesture>);
+    // Whether the current popup gesture actually panned/pinched (vs. a clean tap).
+    // Reset on every press/touch start, set on any pan/pinch move; read by the
+    // tap-outside-to-dismiss handlers so a drag that ends on the dark margin doesn't
+    // close the popup.
+    #[cfg(feature = "callisto")]
+    let sys_moved = RwSignal::new(false);
     let (route_status, set_route_status) = signal(String::new());
     // Distinguish a click (set endpoint) from a drag (pan): remember press origin.
     let down_pos = RwSignal::new(None::<(f64, f64)>);
@@ -2065,12 +2071,14 @@ fn App() -> impl IntoView {
     #[cfg(feature = "callisto")]
     let on_sys_down = move |ev: web_sys::MouseEvent| {
         ev.prevent_default();
+        sys_moved.set(false);
         let (px, py) = sys_pan.get_untracked();
         sys_drag.set(Some((ev.client_x() as f64, ev.client_y() as f64, px, py)));
     };
     #[cfg(feature = "callisto")]
     let on_sys_move = move |ev: web_sys::MouseEvent| {
         if let Some((sx, sy, opx, opy)) = sys_drag.get_untracked() {
+            sys_moved.set(true);
             sys_pan.set((
                 opx + ev.client_x() as f64 - sx,
                 opy + ev.client_y() as f64 - sy,
@@ -2098,6 +2106,7 @@ fn App() -> impl IntoView {
     #[cfg(feature = "callisto")]
     let sys_touch_move = move |ev: web_sys::TouchEvent| {
         ev.prevent_default();
+        sys_moved.set(true);
         let pts = touch_points(&ev);
         match (sys_touch.get_untracked(), pts.as_slice()) {
             (Some(TouchGesture::One { last }), [a]) => {
@@ -2154,6 +2163,20 @@ fn App() -> impl IntoView {
     #[cfg(feature = "callisto")]
     let btn = "padding:6px 12px; border-radius:15px; cursor:pointer; border:1px solid #2a3145; \
                background:rgba(40,44,58,0.7); color:#cdd5e6; font:600 12px system-ui;";
+    // Platform-appropriate gesture hint: a coarse pointer (touch) uses pinch +
+    // long-press; a fine pointer (mouse) uses scroll + double-click. Detected via
+    // the `(pointer: coarse)` media query so the wording matches the device.
+    #[cfg(feature = "callisto")]
+    let sys_hint = if win()
+        .match_media("(pointer: coarse)")
+        .ok()
+        .flatten()
+        .is_some_and(|m| m.matches())
+    {
+        "Pinch to zoom · drag to pan · long-press a world for its surface"
+    } else {
+        "Scroll to zoom · drag to pan · double-click a world for its surface"
+    };
     #[cfg(feature = "callisto")]
     let system_modal = view! {
         <Show when=move || system_view.get().is_some()>
@@ -2163,6 +2186,17 @@ fn App() -> impl IntoView {
             <div style="position:fixed; top:0; left:0; width:100vw; height:100dvh; \
                         z-index:30; display:flex; flex-direction:column; \
                         background:rgba(0,0,0,0.9);">
+                // Mobile: let the header wrap and drop the pan/zoom hint to its own
+                // full-width line (order:1, flex-basis:100%) so the ✕ (and Reset/
+                // Print/Download) can never be pushed off the right edge on a narrow /
+                // portrait viewport. The ✕ is `flex:none` so it keeps its size and
+                // wraps intact rather than clipping.
+                <style>
+                    "@media (max-width:640px){\
+                       .tmap-sysmodal-head{flex-wrap:wrap;row-gap:6px}\
+                       .tmap-sysmodal-hint{order:1;flex-basis:100%;white-space:normal}\
+                     }"
+                </style>
                 {move || match system_view.get() {
                     // Render in flight — spinner + reassuring copy + live elapsed counter.
                     Some(ImgView::Loading { title }) => view! {
@@ -2203,6 +2237,7 @@ fn App() -> impl IntoView {
                         // show the body's UWP/spectral under the cursor.
                         let on_svg_move = move |ev: web_sys::MouseEvent| {
                             if let Some((sx, sy, opx, opy)) = sys_drag.get_untracked() {
+                                sys_moved.set(true);
                                 sys_pan.set((opx + ev.client_x() as f64 - sx, opy + ev.client_y() as f64 - sy));
                                 sys_tip.set(None);
                             } else {
@@ -2228,6 +2263,7 @@ fn App() -> impl IntoView {
                         // A single finger also shows the tooltip and arms a long-press
                         // (→ world surface); two fingers cancel both.
                         let on_svg_tstart = move |ev: web_sys::TouchEvent| {
+                            sys_moved.set(false);
                             let pts = touch_points(&ev);
                             match *pts.as_slice() {
                                 [a, b, ..] => sys_touch.set(Some(TouchGesture::Two { dist: pt_dist(a, b), mid: pt_mid(a, b) })),
@@ -2268,19 +2304,26 @@ fn App() -> impl IntoView {
                         };
                         view! {
                             <style>".tmap-sysmap svg{width:100%;height:100%;display:block}"</style>
-                            <div style="flex:none; display:flex; align-items:center; gap:8px; padding:10px 14px;">
+                            <div class="tmap-sysmodal-head" style="flex:none; display:flex; align-items:center; gap:8px; padding:10px 14px;">
                                 <span style="flex:1; min-width:0; font:700 15px system-ui; color:#fff; \
                                              overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
                                     {title.clone()}
                                 </span>
-                                <span style="flex:none; color:#9aa3b8; font:12px system-ui; white-space:nowrap;">
-                                    "Scroll/pinch to zoom · drag to pan · double-click a world for its surface"
+                                <span class="tmap-sysmodal-hint"
+                                      style="flex:none; color:#9aa3b8; font:12px system-ui; white-space:nowrap;">
+                                    {sys_hint}
                                 </span>
                                 <button style=btn on:click=move |_| reset_sys()>"⟳  Reset"</button>
                                 <span on:click=move |_| close_system()
-                                      style="cursor:pointer; color:#fff; font-size:24px; line-height:1; padding:0 6px;">"✕"</span>
+                                      style="flex:none; cursor:pointer; color:#fff; font-size:24px; line-height:1; padding:0 6px;">"✕"</span>
                             </div>
                             <div on:wheel=on_sys_wheel
+                                 // Tap on empty space (not a body, not a pan) dismisses.
+                                 on:click=move |ev: web_sys::MouseEvent| {
+                                     if !sys_moved.get_untracked() && body_from_target(ev.target()).is_none() {
+                                         close_system();
+                                     }
+                                 }
                                  on:mousedown=on_sys_down
                                  on:mousemove=on_svg_move
                                  on:mouseup=on_sys_up
@@ -2308,7 +2351,7 @@ fn App() -> impl IntoView {
                         let (svc_p, title_p) = (svc.clone(), title.clone());
                         let (obj_d, title_d) = (obj.clone(), title.clone());
                         view! {
-                            <div style="flex:none; display:flex; align-items:center; gap:8px; padding:10px 14px;">
+                            <div class="tmap-sysmodal-head" style="flex:none; display:flex; align-items:center; gap:8px; padding:10px 14px;">
                                 <span style="flex:1; min-width:0; font:700 15px system-ui; color:#fff; \
                                              overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
                                     {title.clone()}
@@ -2319,11 +2362,23 @@ fn App() -> impl IntoView {
                                 // Download uses the object URL (cross-origin download attr is ignored otherwise).
                                 <button style=btn on:click=move |_| download_url(&obj_d, &format!("{title_d}.png"))>"⬇  Download"</button>
                                 <span on:click=move |_| close_system()
-                                      style="cursor:pointer; color:#fff; font-size:24px; line-height:1; padding:0 6px;">"✕"</span>
+                                      style="flex:none; cursor:pointer; color:#fff; font-size:24px; line-height:1; padding:0 6px;">"✕"</span>
                             </div>
                             <div on:wheel=on_sys_wheel on:mousedown=on_sys_down on:mousemove=on_sys_move
+                                 // Tap on the dark margin around the image (the container
+                                 // itself, not the <img>) — and not a pan — dismisses.
+                                 on:click=move |ev: web_sys::MouseEvent| {
+                                     if sys_moved.get_untracked() { return; }
+                                     let bg = match (ev.target(), ev.current_target()) {
+                                         (Some(t), Some(c)) => {
+                                             wasm_bindgen::JsValue::from(t) == wasm_bindgen::JsValue::from(c)
+                                         }
+                                         _ => false,
+                                     };
+                                     if bg { close_system(); }
+                                 }
                                  on:mouseup=on_sys_up on:mouseleave=on_sys_up
-                                 on:touchstart=move |ev| sys_touch_seed(&ev)
+                                 on:touchstart=move |ev| { sys_moved.set(false); sys_touch_seed(&ev); }
                                  on:touchmove=sys_touch_move
                                  on:touchend=move |ev| sys_touch_seed(&ev)
                                  on:touchcancel=move |ev| sys_touch_seed(&ev)
