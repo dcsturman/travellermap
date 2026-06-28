@@ -534,13 +534,19 @@ async fn main() {
         .unwrap_or_else(|_| PathBuf::from("res"));
     let state = AppState::new(res_dir);
 
-    // Warm the default-milieu cache in the background. On a Cloud Run cold start
+    // Warm the default-milieu caches in the background. On a Cloud Run cold start
     // the triggering request is the static `index.html`; the browser then spends
     // time downloading + initializing the WASM bundle before it asks for data, so
     // building the M1105 universe concurrently usually has it cached by the time
     // the first `/api/universe` lands — hiding the parse instead of blocking the
     // port (which would stall even the HTML). spawn_blocking keeps the synchronous
     // parse off the async workers. See PORT_PLAN.md / DEPLOY.md.
+    //
+    // The search index is warmed here too: `build_index` re-walks every sector to
+    // parse all world data + metadata and build the Tantivy index — seconds of
+    // work that otherwise lands inline on the user's *first* `/api/search`. It
+    // reuses the universe built just above (cached), so this is the index build
+    // alone. Without it, search is fast on every request but the first.
     {
         let warm = state.clone();
         tokio::task::spawn_blocking(move || {
@@ -552,6 +558,14 @@ async fn main() {
                     t0.elapsed()
                 ),
                 Err((_, e)) => eprintln!("warm-up: {DEFAULT_MILIEU} universe failed: {e}"),
+            }
+            let t1 = std::time::Instant::now();
+            match warm.search_index(DEFAULT_MILIEU) {
+                Ok(_) => println!(
+                    "warm-up: {DEFAULT_MILIEU} search index ready in {:?}",
+                    t1.elapsed()
+                ),
+                Err((_, e)) => eprintln!("warm-up: {DEFAULT_MILIEU} search index failed: {e}"),
             }
         });
     }
