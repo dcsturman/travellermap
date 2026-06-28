@@ -1142,10 +1142,9 @@ fn App() -> impl IntoView {
                             ((s.x, s.y), name)
                         })
                         .collect();
-                    set_status.set(format!(
-                        "{m} — {} sectors · drag to pan, scroll to zoom",
-                        map.len()
-                    ));
+                    // Clear the loading message once ready — no persistent hint
+                    // line (the milieu shows in Settings; credits cover attribution).
+                    set_status.set(String::new());
                     index.set_value(map);
                     set_index_ready.set(true);
                     set_version.update(|v| *v += 1); // redraw so sector names show
@@ -2565,7 +2564,11 @@ fn App() -> impl IntoView {
             // --- jump-route planner panel (toggled by the route button) ---
             <Show when=move || route_open.get()>
                 <div class="tmap-panel"
-                     style="position:fixed; top:56px; left:12px; width:300px; \
+                     // z-index above the search box (z 7): the planner sits directly
+                     // under it in the same corner, and the search results dropdown
+                     // would otherwise overlay — and swallow clicks on — the Start
+                     // input and ✕ here. (Mobile already gets z 8 from .tmap-panel.)
+                     style="position:fixed; top:56px; left:12px; width:300px; z-index:9; \
                             max-width:calc(100vw - 24px); box-sizing:border-box; \
                             max-height:min(350px, calc(100dvh - 70px)); display:flex; flex-direction:column; \
                             padding:10px 14px 12px; border-radius:0; background:#fff; \
