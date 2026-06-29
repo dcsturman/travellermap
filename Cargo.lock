@@ -2767,6 +2767,7 @@ dependencies = [
  "serde_json",
  "tantivy",
  "tmap-core",
+ "tmap-render",
  "tokio",
  "tower",
  "tower-http",

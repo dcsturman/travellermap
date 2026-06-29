@@ -45,6 +45,8 @@ mod compat;
 mod compat_suite;
 mod route;
 mod search;
+mod svg_canvas;
+mod tile;
 use search::SearchIndex;
 
 /// Macro-overlay vector files, grouped by kind (mirrors the reference
@@ -499,6 +501,10 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route("/api/search", get(get_search))
         .route("/api/route", get(get_route))
         .route("/api/sector/{milieu}/{name}", get(get_sector))
+        // Poster-style map tile as SVG (the reference renders PNG server-side;
+        // we emit vector SVG via the shared tmap-render passes). For external
+        // <img> consumers (e.g. worldgen's Route Map).
+        .route("/api/tile", get(tile::get_tile))
         // Public-API compatibility layer (documented URLs + PascalCase JSON).
         .route("/api/coordinates", get(compat::get_coordinates))
         .route("/api/sec", get(get_sec).post(post_sec))
@@ -2689,6 +2695,19 @@ pub(crate) fn build_sector_bytes(
     name: &str,
     lod: &str,
 ) -> Result<Vec<u8>, (StatusCode, String)> {
+    let data = build_sector_data(state, milieu, name, lod)?;
+    serde_json::to_vec(&data).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+/// Parse + assemble a sector's full [`SectorData`] (worlds + borders + routes +
+/// labels) from `res/`. The in-memory form behind both `/api/sector` (which
+/// serializes it) and `/api/tile` (which renders it).
+pub(crate) fn build_sector_data(
+    state: &AppState,
+    milieu: &str,
+    name: &str,
+    lod: &str,
+) -> Result<SectorData, (StatusCode, String)> {
     let dir = state.res_dir.join("Sectors").join(milieu);
 
     // The index gives the sector's grid position + which data file/format to
@@ -2860,7 +2879,7 @@ pub(crate) fn build_sector_bytes(
         routes,
         labels,
     };
-    serde_json::to_vec(&data).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+    Ok(data)
 }
 
 /// A single, harmless path segment: no separators, no `..`, not empty.
