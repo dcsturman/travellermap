@@ -2,6 +2,7 @@
 //! the state-batched glyph passes (hex#, starport, gas giant, bases, UWP,
 //! allegiance, name) — a faithful port of the reference `DrawWorld` layout.
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -305,6 +306,26 @@ pub(crate) fn draw_world_dots(
 /// on-screen worlds — instead of re-setting that state per glyph per world.
 /// Offsets and font sizes are in parsec units (× scale → px); `cs = s ·
 /// CONTENT_SCALE` sizes glyphs to fill the hex while layout offsets use true `s`.
+/// Draw one text glyph per visible world for which `glyph` returns `Some` — at the
+/// world's screen position offset by the returned `(dx, dy)`, in a fixed
+/// color/font/alignment. Collapses the otherwise-identical per-pass loops (hex
+/// number, starport, allegiance). Returning `Cow` keeps borrowed strings (hex,
+/// allegiance) allocation-free while letting a pass own a computed one (starport).
+fn text_pass<C: Canvas>(
+    c: &C,
+    vis: &[(&World, f64, f64)],
+    color: &str,
+    font: &str,
+    align: TextAlign,
+    glyph: impl for<'a> Fn(&'a World) -> Option<(Cow<'a, str>, f64, f64)>,
+) {
+    for &(world, x, y) in vis {
+        if let Some((text, dx, dy)) = glyph(world) {
+            c.fill_text(&text, x + dx, y + dy, color, font, align);
+        }
+    }
+}
+
 pub(crate) fn draw_world_glyphs(
     c: &impl Canvas,
     view: &ViewState,
@@ -395,34 +416,17 @@ pub(crate) fn draw_world_glyphs(
     // already labels the world's hex (reference gates the per-world number the same).
     if !theme.number_all_hexes {
         let hex_dy = -0.5 * s + hex_pt * 0.55;
-        for (world, x, y) in &vis {
-            c.fill_text(
-                &world.hex,
-                *x,
-                *y + hex_dy,
-                theme.text_hex,
-                &hex_font,
-                TextAlign::Center,
-            );
-        }
+        text_pass(c, &vis, theme.text_hex, &hex_font, TextAlign::Center, |w| {
+            Some((Cow::Borrowed(w.hex.as_str()), 0.0, hex_dy))
+        });
     }
 
     // ── Starport class (above the disc). Same font as names (700, name_pt).
     if !theme.drop_starport {
-        for (world, x, y) in &vis {
-            if let Some(sp) = world.uwp.chars().next() {
-                if sp != '?' {
-                    c.fill_text(
-                        sp.encode_utf8(&mut [0u8; 4]),
-                        *x + sp_x * s,
-                        *y + sp_y * s,
-                        theme.text,
-                        &name_font,
-                        TextAlign::Center,
-                    );
-                }
-            }
-        }
+        text_pass(c, &vis, theme.text, &name_font, TextAlign::Center, |w| {
+            let sp = w.uwp.chars().next()?;
+            (sp != '?').then(|| (Cow::Owned(sp.to_string()), sp_x * s, sp_y * s))
+        });
     }
 
     // ── Gas giant (upper-right): a filled disc, plus a Saturn ring (only when
@@ -533,21 +537,13 @@ pub(crate) fn draw_world_glyphs(
 
     // ── Allegiance code (e.g. NaHu) to the right of the disc, when zoomed in.
     if s >= ALLEGIANCE_MIN_SCALE && !theme.drop_allegiance {
-        for (world, x, y) in &vis {
-            if is_placeholder(world) {
-                continue;
-            }
-            if !world.allegiance.is_empty() && world.allegiance != "--" {
-                c.fill_text(
-                    &world.allegiance,
-                    *x + 0.20 * s,
-                    *y + 0.08 * s,
-                    theme.text_alleg,
-                    &uwp_font,
-                    TextAlign::Left,
-                );
-            }
-        }
+        text_pass(c, &vis, theme.text_alleg, &uwp_font, TextAlign::Left, |w| {
+            (!is_placeholder(w) && !w.allegiance.is_empty() && w.allegiance != "--").then_some((
+                Cow::Borrowed(w.allegiance.as_str()),
+                0.20 * s,
+                0.08 * s,
+            ))
+        });
     }
 
     // ── World name (bottom). High-pop (≥1e9) in ALL CAPS, capitals in red —
