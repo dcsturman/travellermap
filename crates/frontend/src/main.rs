@@ -599,7 +599,10 @@ async fn post_png_to_discord(
     if resp.ok() {
         Ok(())
     } else {
-        Err(format!("Discord rejected the post (HTTP {})", resp.status()))
+        Err(format!(
+            "Discord rejected the post (HTTP {})",
+            resp.status()
+        ))
     }
 }
 
@@ -627,7 +630,10 @@ async fn canvas_png(canvas: &HtmlCanvasElement) -> Option<Vec<u8>> {
 #[cfg(feature = "callisto")]
 fn svg_aspect(svg: &str) -> Option<(f64, f64)> {
     let vb = svg.split("viewBox=\"").nth(1)?.split('"').next()?;
-    let nums: Vec<f64> = vb.split_whitespace().filter_map(|n| n.parse().ok()).collect();
+    let nums: Vec<f64> = vb
+        .split_whitespace()
+        .filter_map(|n| n.parse().ok())
+        .collect();
     match nums.as_slice() {
         [_, _, w, h] if *w > 0.0 && *h > 0.0 => Some((*w, *h)),
         _ => None,
@@ -658,8 +664,7 @@ async fn svg_to_png(svg: &str, target_w: u32) -> Option<Vec<u8>> {
     let canvas: HtmlCanvasElement = doc.create_element("canvas").ok()?.dyn_into().ok()?;
     canvas.set_width(w);
     canvas.set_height(h);
-    let ctx: web_sys::CanvasRenderingContext2d =
-        canvas.get_context("2d").ok()??.dyn_into().ok()?;
+    let ctx: web_sys::CanvasRenderingContext2d = canvas.get_context("2d").ok()??.dyn_into().ok()?;
     ctx.set_fill_style_str("#0b0e16");
     ctx.fill_rect(0.0, 0.0, w as f64, h as f64);
     ctx.draw_image_with_html_image_element_and_dw_and_dh(&img, 0.0, 0.0, w as f64, h as f64)
@@ -2652,31 +2657,34 @@ fn App() -> impl IntoView {
     // Builder closures (not moved values) so they can be embedded inside the
     // re-rendering `<Show>` panels, which require `Fn` children.
     #[cfg(feature = "callisto")]
-    let discord_settings = move || view! {
-        <div style="font-weight:700; color:#aab3c8; margin:12px 0 2px;">"DISCORD"</div>
-        <input type="text" placeholder="Channel webhook URL"
-               prop:value=move || discord_webhook.get()
-               on:input=move |ev| {
-                   let v = event_target_value(&ev);
-                   discord_webhook_save(&v);
-                   discord_webhook.set(v);
-               }
-               style="width:100%; box-sizing:border-box; padding:6px 8px; border-radius:6px; \
-                      border:1px solid #2a3145; background:#0c0f18; color:#cfd6e6; \
-                      font:12px ui-monospace,monospace;" />
-        <div style="font-size:11px; color:#7e879c; line-height:1.45; margin-top:3px;">
-            "Discord → Channel → Edit → Integrations → Webhooks → New/Copy URL. \
-             Then use the 💬 Discord button on a world, system, or the map view."
-        </div>
-    }
-    .into_any();
+    let discord_settings = move || {
+        view! {
+            <div style="font-weight:700; color:#aab3c8; margin:12px 0 2px;">"DISCORD"</div>
+            <input type="text" placeholder="Channel webhook URL"
+                   prop:value=move || discord_webhook.get()
+                   on:input=move |ev| {
+                       let v = event_target_value(&ev);
+                       discord_webhook_save(&v);
+                       discord_webhook.set(v);
+                   }
+                   style="width:100%; box-sizing:border-box; padding:6px 8px; border-radius:6px; \
+                          border:1px solid #2a3145; background:#0c0f18; color:#cfd6e6; \
+                          font:12px ui-monospace,monospace;" />
+            <div style="font-size:11px; color:#7e879c; line-height:1.45; margin-top:3px;">
+                "Discord → Channel → Edit → Integrations → Webhooks → New/Copy URL. \
+                 Then use the 💬 Discord button on a world, system, or the map view."
+            </div>
+        }
+        .into_any()
+    };
     #[cfg(not(feature = "callisto"))]
     let discord_settings = move || ().into_any();
 
     // "Send current map view to Discord" button (callisto), embedded in the route
     // planner so a computed jump route can be posted. Captures the live canvas.
     #[cfg(feature = "callisto")]
-    let discord_map_btn = move || view! {
+    let discord_map_btn = move || {
+        view! {
         <button title="Post the current map view to Discord"
                 on:click=move |_| {
                     let Some(cv) = canvas_ref.get_untracked() else { return };
@@ -2695,14 +2703,16 @@ fn App() -> impl IntoView {
             "💬  Send map to Discord"
         </button>
     }
-    .into_any();
+    .into_any()
+    };
     #[cfg(not(feature = "callisto"))]
     let discord_map_btn = move || ().into_any();
 
     // "Send to Discord" button for the jump-N neighborhood cutout overlay — sits
     // beside its Print / Download buttons and posts the cutout canvas.
     #[cfg(feature = "callisto")]
-    let discord_jumpmap_btn = move || view! {
+    let discord_jumpmap_btn = move || {
+        view! {
         <button title="Post this neighborhood to Discord"
                 on:click=move |_| {
                     let Some(cv) = jumpmap_ref.get_untracked() else { return };
@@ -2721,7 +2731,8 @@ fn App() -> impl IntoView {
                        border:1px solid #2a3145; background:rgba(40,44,58,0.7); \
                        color:#cdd5e6; font:600 12px system-ui;">"💬  Discord"</button>
     }
-    .into_any();
+    .into_any()
+    };
     #[cfg(not(feature = "callisto"))]
     let discord_jumpmap_btn = move || ().into_any();
 
