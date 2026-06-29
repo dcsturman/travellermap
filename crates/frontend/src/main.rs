@@ -512,6 +512,162 @@ fn tooltip_text(g: &web_sys::Element) -> String {
     }
 }
 
+// --- Discord sharing (callisto-only, local deployment) ----------------------
+// A GM "Send to Discord" path: paste a channel webhook URL once (saved to
+// localStorage), and each map/view POSTs its PNG straight to that channel via
+// the webhook. Browser → Discord directly — the API server stays untouched and
+// true to the reference. Gated to `callisto` since it's local, not upstream.
+
+/// localStorage key holding the saved Discord channel webhook URL.
+#[cfg(feature = "callisto")]
+const DISCORD_WEBHOOK_KEY: &str = "tmap.discord_webhook";
+
+#[cfg(feature = "callisto")]
+fn discord_webhook_load() -> String {
+    win()
+        .local_storage()
+        .ok()
+        .flatten()
+        .and_then(|s| s.get_item(DISCORD_WEBHOOK_KEY).ok().flatten())
+        .unwrap_or_default()
+}
+#[cfg(feature = "callisto")]
+fn discord_webhook_save(url: &str) {
+    if let Ok(Some(s)) = win().local_storage() {
+        let _ = s.set_item(DISCORD_WEBHOOK_KEY, url);
+    }
+}
+
+/// Minimal JSON string literal (quotes + escapes) for the webhook `content`
+/// caption — avoids pulling serde_json into the frontend just for this.
+#[cfg(feature = "callisto")]
+fn json_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Build an `image/png` Blob from raw bytes (a FormData file part).
+#[cfg(feature = "callisto")]
+fn png_blob(bytes: &[u8]) -> Option<web_sys::Blob> {
+    let arr = js_sys::Uint8Array::from(bytes);
+    let parts = js_sys::Array::new();
+    parts.push(&arr);
+    let bag = web_sys::BlobPropertyBag::new();
+    bag.set_type("image/png");
+    web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &bag).ok()
+}
+
+/// POST a PNG Blob to a Discord channel webhook as a file attachment, with an
+/// optional `content` caption. The browser sets the multipart boundary from the
+/// FormData body. Returns a human-readable error on failure.
+#[cfg(feature = "callisto")]
+async fn post_png_to_discord(
+    webhook: &str,
+    blob: &web_sys::Blob,
+    filename: &str,
+    caption: &str,
+) -> Result<(), String> {
+    let fd = web_sys::FormData::new().map_err(|_| "couldn't build the upload".to_string())?;
+    fd.append_with_blob_and_filename("files[0]", blob, filename)
+        .map_err(|_| "couldn't attach the image".to_string())?;
+    if !caption.is_empty() {
+        fd.append_with_str(
+            "payload_json",
+            &format!("{{\"content\":{}}}", json_string(caption)),
+        )
+        .map_err(|_| "couldn't attach the caption".to_string())?;
+    }
+    let resp = gloo_net::http::Request::post(webhook)
+        .body(fd)
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(|_| "couldn't reach Discord (check the webhook URL)".to_string())?;
+    if resp.ok() {
+        Ok(())
+    } else {
+        Err(format!("Discord rejected the post (HTTP {})", resp.status()))
+    }
+}
+
+/// Fetch a `blob:`/`data:` URL back into raw bytes — recovers the PNG bytes of an
+/// image we hold only as an object URL, and reads a canvas/SVG data URL.
+#[cfg(feature = "callisto")]
+async fn fetch_bytes(url: &str) -> Option<Vec<u8>> {
+    gloo_net::http::Request::get(url)
+        .send()
+        .await
+        .ok()?
+        .binary()
+        .await
+        .ok()
+}
+
+/// A canvas's current contents as PNG bytes.
+#[cfg(feature = "callisto")]
+async fn canvas_png(canvas: &HtmlCanvasElement) -> Option<Vec<u8>> {
+    let url = canvas.to_data_url_with_type("image/png").ok()?;
+    fetch_bytes(&url).await
+}
+
+/// Intrinsic aspect `(w, h)` from an SVG's `viewBox`, for rasterization sizing.
+#[cfg(feature = "callisto")]
+fn svg_aspect(svg: &str) -> Option<(f64, f64)> {
+    let vb = svg.split("viewBox=\"").nth(1)?.split('"').next()?;
+    let nums: Vec<f64> = vb.split_whitespace().filter_map(|n| n.parse().ok()).collect();
+    match nums.as_slice() {
+        [_, _, w, h] if *w > 0.0 && *h > 0.0 => Some((*w, *h)),
+        _ => None,
+    }
+}
+
+/// Rasterize an inline SVG string to PNG bytes at `target_w` (height from aspect):
+/// load it into an <img>, await decode, draw onto an offscreen canvas over a dark
+/// backdrop, read back as PNG. Discord won't inline SVG, so the system map is
+/// flattened to PNG before posting.
+#[cfg(feature = "callisto")]
+async fn svg_to_png(svg: &str, target_w: u32) -> Option<Vec<u8>> {
+    let (vw, vh) = svg_aspect(svg).unwrap_or((4.0, 3.0));
+    let w = target_w.max(1);
+    let h = (((w as f64) * vh / vw).round() as u32).max(1);
+    let doc = win().document()?;
+    let img = web_sys::HtmlImageElement::new().ok()?;
+    let src = format!(
+        "data:image/svg+xml;charset=utf-8,{}",
+        String::from(js_sys::encode_uri_component(svg))
+    );
+    img.set_width(w);
+    img.set_height(h);
+    img.set_src(&src);
+    wasm_bindgen_futures::JsFuture::from(img.decode())
+        .await
+        .ok()?;
+    let canvas: HtmlCanvasElement = doc.create_element("canvas").ok()?.dyn_into().ok()?;
+    canvas.set_width(w);
+    canvas.set_height(h);
+    let ctx: web_sys::CanvasRenderingContext2d =
+        canvas.get_context("2d").ok()??.dyn_into().ok()?;
+    ctx.set_fill_style_str("#0b0e16");
+    ctx.fill_rect(0.0, 0.0, w as f64, h as f64);
+    ctx.draw_image_with_html_image_element_and_dw_and_dh(&img, 0.0, 0.0, w as f64, h as f64)
+        .ok()?;
+    let url = canvas.to_data_url_with_type("image/png").ok()?;
+    fetch_bytes(&url).await
+}
+
 /// Trigger a browser download of a canvas as a PNG (via a data-URL `<a download>`).
 fn download_canvas_png(canvas: &HtmlCanvasElement, filename: &str) {
     let Ok(url) = canvas.to_data_url_with_type("image/png") else {
@@ -959,6 +1115,12 @@ fn App() -> impl IntoView {
     // close the popup.
     #[cfg(feature = "callisto")]
     let sys_moved = RwSignal::new(false);
+    // Discord sharing (callisto): the saved channel webhook URL (persisted to
+    // localStorage), and a transient toast message for share success/failure.
+    #[cfg(feature = "callisto")]
+    let discord_webhook = RwSignal::new(discord_webhook_load());
+    #[cfg(feature = "callisto")]
+    let share_status = RwSignal::new(None::<String>);
     let (route_status, set_route_status) = signal(String::new());
     // Distinguish a click (set endpoint) from a drag (pan): remember press origin.
     let down_pos = RwSignal::new(None::<(f64, f64)>);
@@ -2038,6 +2200,30 @@ fn App() -> impl IntoView {
         sys_zoom.set(1.0);
         sys_pan.set((0.0, 0.0));
     };
+    // Post PNG bytes to the saved Discord channel webhook, surfacing progress /
+    // result in the share toast. Shared by every "Send to Discord" button. No
+    // webhook configured → a prompt to set one in Settings.
+    #[cfg(feature = "callisto")]
+    let share_png = move |bytes: Vec<u8>, filename: String, caption: String| {
+        let hook = discord_webhook.get_untracked().trim().to_string();
+        if hook.is_empty() {
+            share_status.set(Some("Set a Discord webhook URL in Settings first.".into()));
+            set_timeout(5000, move || share_status.set(None));
+            return;
+        }
+        share_status.set(Some("Sending to Discord…".into()));
+        spawn_local(async move {
+            let result = match png_blob(&bytes) {
+                Some(blob) => post_png_to_discord(&hook, &blob, &filename, &caption).await,
+                None => Err("couldn't encode the image".to_string()),
+            };
+            share_status.set(Some(match result {
+                Ok(()) => "Posted to Discord ✓".to_string(),
+                Err(e) => format!("Discord: {e}"),
+            }));
+            set_timeout(4000, move || share_status.set(None));
+        });
+    };
     // Wheel zoom, anchored on the cursor so the point under it stays put.
     #[cfg(feature = "callisto")]
     let on_sys_wheel = move |ev: web_sys::WheelEvent| {
@@ -2232,6 +2418,9 @@ fn App() -> impl IntoView {
                     Some(ImgView::System { svg, title, sector, hex }) => {
                         let (sec_d, hex_d) = (sector.clone(), hex.clone());
                         let (sec_t, hex_t) = (sector.clone(), hex.clone());
+                        // Copies for the "Send to Discord" button (svg itself is moved
+                        // into inner_html below).
+                        let (svg_share, title_share) = (svg.clone(), title.clone());
                         // Mouse move: pan while a drag is in progress, otherwise hover →
                         // show the body's UWP/spectral under the cursor.
                         let on_svg_move = move |ev: web_sys::MouseEvent| {
@@ -2313,6 +2502,17 @@ fn App() -> impl IntoView {
                                     {sys_hint}
                                 </span>
                                 <button style=btn on:click=move |_| reset_sys()>"⟳  Reset"</button>
+                                <button style=btn title="Post this system map to Discord"
+                                        on:click=move |_| {
+                                            let (svg, cap) = (svg_share.clone(), title_share.clone());
+                                            share_status.set(Some("Rendering for Discord…".into()));
+                                            spawn_local(async move {
+                                                match svg_to_png(&svg, 1600).await {
+                                                    Some(bytes) => share_png(bytes, "system.png".into(), cap),
+                                                    None => share_status.set(Some("Couldn't render the system map.".into())),
+                                                }
+                                            });
+                                        }>"💬  Discord"</button>
                                 <span on:click=move |_| close_system()
                                       style="flex:none; cursor:pointer; color:#fff; font-size:24px; line-height:1; padding:0 6px;">"✕"</span>
                             </div>
@@ -2349,6 +2549,7 @@ fn App() -> impl IntoView {
                     Some(ImgView::Ready { obj, svc, title }) => {
                         let (svc_p, title_p) = (svc.clone(), title.clone());
                         let (obj_d, title_d) = (obj.clone(), title.clone());
+                        let (obj_s, title_s) = (obj.clone(), title.clone());
                         view! {
                             <div class="tmap-sysmodal-head" style="flex:none; display:flex; align-items:center; gap:8px; padding:10px 14px;">
                                 <span style="flex:1; min-width:0; font:700 15px system-ui; color:#fff; \
@@ -2360,6 +2561,17 @@ fn App() -> impl IntoView {
                                 <button style=btn on:click=move |_| print_image_url(&svc_p, &title_p)>"🖨  Print"</button>
                                 // Download uses the object URL (cross-origin download attr is ignored otherwise).
                                 <button style=btn on:click=move |_| download_url(&obj_d, &format!("{title_d}.png"))>"⬇  Download"</button>
+                                <button style=btn title="Post this world map to Discord"
+                                        on:click=move |_| {
+                                            let (url, cap) = (obj_s.clone(), title_s.clone());
+                                            share_status.set(Some("Sending to Discord…".into()));
+                                            spawn_local(async move {
+                                                match fetch_bytes(&url).await {
+                                                    Some(bytes) => share_png(bytes, "world.png".into(), cap),
+                                                    None => share_status.set(Some("Couldn't read the image.".into())),
+                                                }
+                                            });
+                                        }>"💬  Discord"</button>
                                 <span on:click=move |_| close_system()
                                       style="flex:none; cursor:pointer; color:#fff; font-size:24px; line-height:1; padding:0 6px;">"✕"</span>
                             </div>
@@ -2415,6 +2627,103 @@ fn App() -> impl IntoView {
     .into_any();
     #[cfg(not(feature = "callisto"))]
     let system_modal = ().into_any();
+
+    // Transient "Send to Discord" toast (callisto): a fixed bottom-center pill
+    // shown while sharing and on success/failure. Lives at the top level so it
+    // shows for the map-view share too (no popup open).
+    #[cfg(feature = "callisto")]
+    let share_toast = view! {
+        <Show when=move || share_status.get().is_some()>
+            <div style="position:fixed; left:50%; bottom:calc(24px + env(safe-area-inset-bottom)); \
+                        transform:translateX(-50%); z-index:40; pointer-events:none; \
+                        padding:9px 16px; border-radius:18px; background:rgba(12,15,24,0.95); \
+                        border:1px solid #2a3145; color:#e9eef9; font:600 13px system-ui; \
+                        box-shadow:0 4px 18px rgba(0,0,0,0.5); white-space:nowrap;">
+                {move || share_status.get().unwrap_or_default()}
+            </div>
+        </Show>
+    }
+    .into_any();
+    #[cfg(not(feature = "callisto"))]
+    let share_toast = ().into_any();
+
+    // Settings "DISCORD" section (callisto): paste a channel webhook URL once;
+    // persisted to localStorage. The "Send to Discord" buttons post here.
+    // Builder closures (not moved values) so they can be embedded inside the
+    // re-rendering `<Show>` panels, which require `Fn` children.
+    #[cfg(feature = "callisto")]
+    let discord_settings = move || view! {
+        <div style="font-weight:700; color:#aab3c8; margin:12px 0 2px;">"DISCORD"</div>
+        <input type="text" placeholder="Channel webhook URL"
+               prop:value=move || discord_webhook.get()
+               on:input=move |ev| {
+                   let v = event_target_value(&ev);
+                   discord_webhook_save(&v);
+                   discord_webhook.set(v);
+               }
+               style="width:100%; box-sizing:border-box; padding:6px 8px; border-radius:6px; \
+                      border:1px solid #2a3145; background:#0c0f18; color:#cfd6e6; \
+                      font:12px ui-monospace,monospace;" />
+        <div style="font-size:11px; color:#7e879c; line-height:1.45; margin-top:3px;">
+            "Discord → Channel → Edit → Integrations → Webhooks → New/Copy URL. \
+             Then use the 💬 Discord button on a world, system, or the map view."
+        </div>
+    }
+    .into_any();
+    #[cfg(not(feature = "callisto"))]
+    let discord_settings = move || ().into_any();
+
+    // "Send current map view to Discord" button (callisto), embedded in the route
+    // planner so a computed jump route can be posted. Captures the live canvas.
+    #[cfg(feature = "callisto")]
+    let discord_map_btn = move || view! {
+        <button title="Post the current map view to Discord"
+                on:click=move |_| {
+                    let Some(cv) = canvas_ref.get_untracked() else { return };
+                    let cap = route_status.get_untracked();
+                    share_status.set(Some("Sending to Discord…".into()));
+                    spawn_local(async move {
+                        match canvas_png(&cv).await {
+                            Some(bytes) => share_png(bytes, "jumpmap.png".into(), cap),
+                            None => share_status.set(Some("Couldn't capture the map.".into())),
+                        }
+                    });
+                }
+                style="width:100%; margin-top:6px; padding:6px 10px; border-radius:6px; \
+                       cursor:pointer; border:1px solid #2a3145; background:rgba(40,44,58,0.7); \
+                       color:#cdd5e6; font:600 12px system-ui;">
+            "💬  Send map to Discord"
+        </button>
+    }
+    .into_any();
+    #[cfg(not(feature = "callisto"))]
+    let discord_map_btn = move || ().into_any();
+
+    // "Send to Discord" button for the jump-N neighborhood cutout overlay — sits
+    // beside its Print / Download buttons and posts the cutout canvas.
+    #[cfg(feature = "callisto")]
+    let discord_jumpmap_btn = move || view! {
+        <button title="Post this neighborhood to Discord"
+                on:click=move |_| {
+                    let Some(cv) = jumpmap_ref.get_untracked() else { return };
+                    let cap = jumpmap.get_untracked()
+                        .map(|(_, n, _, j)| format!("Jump-{j} Neighborhood: {n}"))
+                        .unwrap_or_default();
+                    share_status.set(Some("Sending to Discord…".into()));
+                    spawn_local(async move {
+                        match canvas_png(&cv).await {
+                            Some(bytes) => share_png(bytes, "jumpmap.png".into(), cap),
+                            None => share_status.set(Some("Couldn't capture the neighborhood.".into())),
+                        }
+                    });
+                }
+                style="flex:1; padding:7px 0; border-radius:15px; cursor:pointer; \
+                       border:1px solid #2a3145; background:rgba(40,44,58,0.7); \
+                       color:#cdd5e6; font:600 12px system-ui;">"💬  Discord"</button>
+    }
+    .into_any();
+    #[cfg(not(feature = "callisto"))]
+    let discord_jumpmap_btn = move || ().into_any();
 
     // --- Share panel helpers: a read-only field + Copy button, fed by memos off
     //     the live `share_url` (link as-is; embed wrapped in an <iframe>). ---
@@ -2621,6 +2930,7 @@ fn App() -> impl IntoView {
                                 text-align:center; margin-top:6px;">
                         {move || route_status.get()}
                     </div>
+                    {discord_map_btn()}
                     // Scrollable results region — the box is capped, the list scrolls.
                     <div style="flex:1; min-height:0; overflow:auto; margin-top:4px;">
                         {move || route.with(|r| r.as_ref().map(|r| {
@@ -2770,10 +3080,12 @@ fn App() -> impl IntoView {
                                 style="flex:1; padding:7px 0; border-radius:15px; cursor:pointer; \
                                        border:1px solid #2a3145; background:rgba(40,44,58,0.7); \
                                        color:#cdd5e6; font:600 12px system-ui;">"⬇  Download PNG"</button>
+                        {discord_jumpmap_btn()}
                     </div>
                 </div>
             </Show>
             {system_modal}
+            {share_toast}
             // --- bottom pane (mirrors the reference #bottom-pane): red stripe,
             //     the per-sector data-source credit (or Mongoose copyright) on the
             //     left, the TRAVELLER® wordmark on the right. ---
@@ -2984,6 +3296,7 @@ fn App() -> impl IntoView {
                     {toggle_row("More World Colors", opt_world_colors)}
                     {toggle_row("Filled Borders", opt_filled)}
                     {toggle_row("Dim Unofficial", opt_dim)}
+                    {discord_settings()}
                     <div style="font-weight:700; color:#aab3c8; margin:12px 0 2px;">"DEBUG"</div>
                     {toggle_row("Frame Timing (HUD)", opt_perf)}
                 </div>

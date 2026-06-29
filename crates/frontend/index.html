@@ -8,6 +8,19 @@
     <meta name="viewport"
           content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Traveller Map</title>
+    <meta name="theme-color" content="#0c0f18" />
+
+    <!-- Favicons / PWA icons. Trunk copies the `assets/` dir (and the root
+         favicon.ico) into dist verbatim; the plain <link> tags below pass through
+         to the emitted HTML and reference the copied, stable paths. -->
+    <link data-trunk rel="copy-dir" href="assets" />
+    <link data-trunk rel="copy-file" href="assets/favicon.ico" />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/assets/favicon-16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/assets/apple-touch-icon.png" />
+    <link rel="manifest" href="/assets/site.webmanifest" />
+
     <!-- Trunk compiles this crate to wasm and injects the loader.
          data-wasm-opt="3" optimizes the release bundle for *speed* (this is the
          build we profile/ship). Use "z" instead if download size dominates. -->

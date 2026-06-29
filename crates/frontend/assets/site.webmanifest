@@ -1,0 +1,13 @@
+{
+  "name": "Traveller Map",
+  "short_name": "Traveller Map",
+  "description": "An interactive map of the Traveller universe.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0c0f18",
+  "theme_color": "#0c0f18",
+  "icons": [
+    { "src": "/assets/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/assets/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

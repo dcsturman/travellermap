@@ -19,7 +19,8 @@ tmap-core.workspace = true
 serde.workspace = true
 leptos = { version = "0.8.19", features = ["csr"] }
 console_error_panic_hook = "0.1.7"
-web-sys = { version = "0.3.100", features = ["HtmlCanvasElement", "CanvasRenderingContext2d", "MouseEvent", "WheelEvent", "UiEvent", "Event", "Window", "Document", "HtmlElement", "HtmlAnchorElement", "EventTarget", "Element", "RequestCache", "Performance", "Path2d", "Navigator", "Clipboard", "Blob", "BlobPropertyBag", "Url", "DomRect", "KeyboardEvent", "TouchEvent", "TouchList", "Touch", "VisualViewport", "History", "Location", "UrlSearchParams", "MediaQueryList"] }
+web-sys = { version = "0.3.100", features = ["HtmlCanvasElement", "CanvasRenderingContext2d", "MouseEvent", "WheelEvent", "UiEvent", "Event", "Window", "Document", "HtmlElement", "HtmlAnchorElement", "EventTarget", "Element", "RequestCache", "Performance", "Path2d", "Navigator", "Clipboard", "Blob", "BlobPropertyBag", "Url", "DomRect", "KeyboardEvent", "TouchEvent", "TouchList", "Touch", "VisualViewport", "History", "Location", "UrlSearchParams", "MediaQueryList", "FormData", "HtmlImageElement", "Storage"] }
 wasm-bindgen = "0.2.123"
+wasm-bindgen-futures = "0.4"
 gloo-net = { version = "0.7.0", default-features = false, features = ["http", "json"] }
 js-sys = "0.3.100"
