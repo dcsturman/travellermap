@@ -272,6 +272,9 @@ fn launch_render(
     sys_gen: RwSignal<u64>,
     url: String,
     title: String,
+    // If the fetch fails (non-2xx or unreachable) and this is `Some`, silently
+    // re-launch it instead of showing an error card — the globe → flat fallback.
+    fallback: Option<String>,
 ) {
     // Revoke a prior object URL and stop a prior timer so nothing leaks.
     if let Some(ImgView::Ready { obj, .. }) = system_view.get_untracked() {
@@ -298,6 +301,28 @@ fn launch_render(
         if let Some(id) = sys_timer.get_untracked() {
             win().clear_interval_with_handle(id);
             sys_timer.set(None);
+        }
+        // Failed (non-2xx or unreachable) and a fallback was supplied → retry it
+        // (globe → flat) silently rather than erroring out.
+        let failed = match &result {
+            Ok(resp) => !resp.ok(),
+            Err(_) => true,
+        };
+        if failed {
+            if let Some(fb) = fallback {
+                launch_render(
+                    system_view,
+                    sys_zoom,
+                    sys_pan,
+                    sys_elapsed,
+                    sys_timer,
+                    sys_gen,
+                    fb,
+                    title,
+                    None,
+                );
+                return;
+            }
         }
         let state = match result {
             Ok(resp) if resp.ok() => match resp.binary().await {
@@ -1126,6 +1151,13 @@ fn App() -> impl IntoView {
     let discord_webhook = RwSignal::new(discord_webhook_load());
     #[cfg(feature = "callisto")]
     let share_status = RwSignal::new(None::<String>);
+    // World-surface projection (callisto): the base `/api/world?...` URL of the
+    // currently-shown world (no projection param) so the Flat/Globe toggle can
+    // re-fetch it, and whether the globe (orthographic spinning APNG) is active.
+    #[cfg(feature = "callisto")]
+    let world_base = RwSignal::new(None::<String>);
+    #[cfg(feature = "callisto")]
+    let world_globe = RwSignal::new(false);
     let (route_status, set_route_status) = signal(String::new());
     // Distinguish a click (set endpoint) from a drag (pan): remember press origin.
     let down_pos = RwSignal::new(None::<(f64, f64)>);
@@ -1747,16 +1779,42 @@ fn App() -> impl IntoView {
             w.hex.clone(),
         );
     };
+    // Show a world's surface from its base `/api/world?...` URL (no projection),
+    // in the requested projection: flat is the default equirectangular map; globe
+    // appends `&projection=globe` for the orthographic spinning APNG, with the
+    // flat URL passed as the fetch fallback so a globe failure degrades silently.
+    // Remembers the base + projection so the Flat/Globe toggle can re-fetch.
+    #[cfg(feature = "callisto")]
+    let launch_world = move |base: String, globe: bool, title: String| {
+        world_base.set(Some(base.clone()));
+        world_globe.set(globe);
+        let (url, fallback) = if globe {
+            (format!("{base}&projection=globe"), Some(base))
+        } else {
+            (base, None)
+        };
+        launch_render(
+            system_view,
+            sys_zoom,
+            sys_pan,
+            sys_elapsed,
+            sys_timer,
+            sys_gen,
+            url,
+            title,
+            fallback,
+        );
+    };
     // Render one body's surface map (`/api/world`) from the data-attributes the
     // system SVG carries on each `<g class="sysmap-body">`. `sector`/`hex` are the
     // system's seed identity; `orbit` (absent for moons) defaults to the service's
     // main-world orbit. This is the "double-click/long-press any world in the
-    // system" path — it reuses the PNG zoom/pan viewer via `launch_render`.
+    // system" path — its default projection is the spinning globe.
     #[cfg(feature = "callisto")]
     let open_body_world =
         move |sector: &str, hex: &str, name: &str, uwp: &str, orbit: Option<String>| {
             let enc = |s: &str| String::from(js_sys::encode_uri_component(s));
-            let mut url = format!(
+            let mut base = format!(
                 "{WORLD_SERVICE}?sector={}&hex={}&name={}&uwp={}&scale=2.0",
                 enc(sector),
                 enc(hex),
@@ -1764,7 +1822,7 @@ fn App() -> impl IntoView {
                 enc(uwp),
             );
             if let Some(o) = orbit.filter(|o| !o.is_empty()) {
-                url.push_str(&format!("&orbit={}", enc(&o)));
+                base.push_str(&format!("&orbit={}", enc(&o)));
             }
             let title = format!("{name} — {sector} {hex} · World Map");
             sys_tip.set(None);
@@ -1772,16 +1830,8 @@ fn App() -> impl IntoView {
                 clear_timeout(id);
                 sys_lp.set(None);
             }
-            launch_render(
-                system_view,
-                sys_zoom,
-                sys_pan,
-                sys_elapsed,
-                sys_timer,
-                sys_gen,
-                url,
-                title,
-            );
+            // Double-click / long-press a planet → default to the spinning globe.
+            launch_world(base, true, title);
         };
     // Double-click a world → solar-system popup (Callisto, dev-only). The
     // preceding single-clicks already selected + upgraded the world to full LOD,
@@ -1836,7 +1886,7 @@ fn App() -> impl IntoView {
                 return; // popup closed / superseded during the probe
             }
             let enc = |s: &str| String::from(js_sys::encode_uri_component(s));
-            let mut url = format!(
+            let mut base = format!(
                 "{WORLD_SERVICE}?sector={}&hex={}&name={}&uwp={}&scale=2.0",
                 enc(&sector),
                 enc(&w.hex),
@@ -1844,20 +1894,12 @@ fn App() -> impl IntoView {
                 enc(&w.uwp),
             );
             if let Some(o) = orbit.filter(|o| !o.is_empty()) {
-                url.push_str(&format!("&orbit={}", enc(&o)));
+                base.push_str(&format!("&orbit={}", enc(&o)));
             }
-            // launch_render restarts the spinner/timer under a new generation and
+            // The World Map button keeps the existing default: the flat map.
+            // launch_world restarts the spinner/timer under a new generation and
             // swaps to the image (or error) when the render lands.
-            launch_render(
-                system_view,
-                sys_zoom,
-                sys_pan,
-                sys_elapsed,
-                sys_timer,
-                sys_gen,
-                url,
-                title,
-            );
+            launch_world(base, false, title);
         });
     };
     #[cfg(not(feature = "callisto"))]
@@ -2555,12 +2597,40 @@ fn App() -> impl IntoView {
                         let (svc_p, title_p) = (svc.clone(), title.clone());
                         let (obj_d, title_d) = (obj.clone(), title.clone());
                         let (obj_s, title_s) = (obj.clone(), title.clone());
+                        let (title_f, title_g) = (title.clone(), title.clone());
+                        // Flat ⇄ Globe: re-fetch the same world's base URL in the
+                        // other projection (no-op if already showing it).
+                        let seg = "padding:6px 12px; border:none; cursor:pointer; \
+                                   font:600 12px system-ui;";
                         view! {
                             <div class="tmap-sysmodal-head" style="flex:none; display:flex; align-items:center; gap:8px; padding:10px 14px;">
                                 <span style="flex:1; min-width:0; font:700 15px system-ui; color:#fff; \
                                              overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
                                     {title.clone()}
                                 </span>
+                                <div style="flex:none; display:flex; border:1px solid #2a3145; \
+                                            border-radius:15px; overflow:hidden;">
+                                    <button style=seg
+                                            style:background=move || if world_globe.get() { "rgba(40,44,58,0.7)" } else { "#e32736" }
+                                            style:color=move || if world_globe.get() { "#cdd5e6" } else { "#fff" }
+                                            on:click=move |_| {
+                                                if world_globe.get_untracked() {
+                                                    if let Some(b) = world_base.get_untracked() {
+                                                        launch_world(b, false, title_f.clone());
+                                                    }
+                                                }
+                                            }>"🗺 Flat"</button>
+                                    <button style=seg
+                                            style:background=move || if world_globe.get() { "#e32736" } else { "rgba(40,44,58,0.7)" }
+                                            style:color=move || if world_globe.get() { "#fff" } else { "#cdd5e6" }
+                                            on:click=move |_| {
+                                                if !world_globe.get_untracked() {
+                                                    if let Some(b) = world_base.get_untracked() {
+                                                        launch_world(b, true, title_g.clone());
+                                                    }
+                                                }
+                                            }>"🌐 Globe"</button>
+                                </div>
                                 <button style=btn on:click=move |_| reset_sys()>"⟳  Reset"</button>
                                 // Print uses the absolute service URL (a blob: print doc can't resolve our object URL).
                                 <button style=btn on:click=move |_| print_image_url(&svc_p, &title_p)>"🖨  Print"</button>
