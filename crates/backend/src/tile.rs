@@ -138,15 +138,23 @@ fn render_tile(
     let psx = f64::from(PARSEC_SCALE_X);
     let cx_ref = (x + 0.5) * wf / (scale * psx);
     let cy_ref = (y + 0.5) * hf / scale;
-    // Reference coords → render world space. The render passes index hexes as
-    // `wc = sx·32 + hx`, `wr = sy·40 + hy`, whereas the reference subtracts
-    // REFERENCE_HEX_X/Y (1, 40); so the render frame is shifted by (+1, +40) hex
-    // units, and x is then horizontally compressed by PSX (`hex_parsec`).
+    // Reference coords → render world space. Two adjustments:
+    //  1. Frame origin: the render passes index hexes as `wc = sx·32 + hx`,
+    //     `wr = sy·40 + hy`, whereas the reference subtracts REFERENCE_HEX_X/Y
+    //     (1, 40) — so the render frame is shifted by (+1, +40) hex units, and x
+    //     is then horizontally compressed by PSX (`hex_parsec`).
+    //  2. Hex-center convention: the reference's `HexToCenter` places a hex at
+    //     `(X − 0.5, Y − [X even ? 0.5 : 0])`, while `hex_parsec` uses
+    //     `(wc, wr + [wc even ? 0.5 : 0])`. Net, our world positions sit a uniform
+    //     (+0.5, +0.5) parsec off the reference — invisible on the standalone map,
+    //     but it would slide an external overlay (worldgen's route) off our worlds.
+    //     Adding 0.5 to the view center cancels it so tiles match the reference
+    //     pixel-for-pixel.
     let view = ViewState {
         scale,
         center: (
-            (cx_ref + f64::from(REFERENCE_HEX_X)) * psx,
-            cy_ref + f64::from(REFERENCE_HEX_Y),
+            (cx_ref + f64::from(REFERENCE_HEX_X) + 0.5) * psx,
+            cy_ref + f64::from(REFERENCE_HEX_Y) + 0.5,
         ),
     };
 
