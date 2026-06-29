@@ -594,22 +594,39 @@ fn json_string(s: &str) -> String {
     out
 }
 
-/// Build an `image/png` Blob from raw bytes (a FormData file part).
+/// Build a typed Blob from raw bytes (a FormData file part).
 #[cfg(feature = "callisto")]
-fn png_blob(bytes: &[u8]) -> Option<web_sys::Blob> {
+fn typed_blob(bytes: &[u8], mime: &str) -> Option<web_sys::Blob> {
     let arr = js_sys::Uint8Array::from(bytes);
     let parts = js_sys::Array::new();
     parts.push(&arr);
     let bag = web_sys::BlobPropertyBag::new();
-    bag.set_type("image/png");
+    bag.set_type(mime);
     web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &bag).ok()
 }
 
-/// POST a PNG Blob to a Discord channel webhook as a file attachment, with an
-/// optional `content` caption. The browser sets the multipart boundary from the
+/// Build an `image/png` Blob from raw bytes (a FormData file part).
+#[cfg(feature = "callisto")]
+fn png_blob(bytes: &[u8]) -> Option<web_sys::Blob> {
+    typed_blob(bytes, "image/png")
+}
+
+/// Yield to the browser's event loop (one macrotask) so a pending state change —
+/// e.g. the "Rendering globe…" toast — paints before a synchronous CPU burst (the
+/// single-threaded GIF encode) freezes the main thread.
+#[cfg(feature = "callisto")]
+async fn yield_to_browser() {
+    let promise = js_sys::Promise::new(&mut |resolve, _| {
+        let _ = win().set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 16);
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+}
+
+/// POST a Blob (PNG/GIF) to a Discord channel webhook as a file attachment, with
+/// an optional `content` caption. The browser sets the multipart boundary from the
 /// FormData body. Returns a human-readable error on failure.
 #[cfg(feature = "callisto")]
-async fn post_png_to_discord(
+async fn post_file_to_discord(
     webhook: &str,
     blob: &web_sys::Blob,
     filename: &str,
@@ -2430,7 +2447,7 @@ fn App() -> impl IntoView {
         share_status.set(Some("Sending to Discord…".into()));
         spawn_local(async move {
             let result = match png_blob(&bytes) {
-                Some(blob) => post_png_to_discord(&hook, &blob, &filename, &caption).await,
+                Some(blob) => post_file_to_discord(&hook, &blob, &filename, &caption).await,
                 None => Err("couldn't encode the image".to_string()),
             };
             share_status.set(Some(match result {
@@ -2852,8 +2869,9 @@ fn App() -> impl IntoView {
                     // WebGL spinning globe — a square canvas the `globe.rs` rAF loop
                     // draws into (the Effect above starts/stops it). The shader
                     // discards outside the disc, so the dark popup shows through.
-                    Some(ImgView::Globe { title, .. }) => {
+                    Some(ImgView::Globe { title, tex, starport }) => {
                         let (title_f, title_g) = (title.clone(), title.clone());
+                        let (tex_d, title_d, starport_d) = (tex.clone(), title.clone(), starport);
                         let seg = "padding:6px 12px; border:none; cursor:pointer; \
                                    font:600 12px system-ui;";
                         view! {
@@ -2885,6 +2903,35 @@ fn App() -> impl IntoView {
                                                 }
                                             }>"🌐 Globe"</button>
                                 </div>
+                                // Spin the globe into a looping animated GIF (rendered
+                                // client-side, one full rotation) and post it to Discord.
+                                <button style=btn title="Post the spinning globe to Discord (animated GIF)"
+                                        on:click=move |_| {
+                                            let hook = discord_webhook.get_untracked().trim().to_string();
+                                            if hook.is_empty() {
+                                                share_status.set(Some("Set a Discord webhook URL in Settings first.".into()));
+                                                set_timeout(5000, move || share_status.set(None));
+                                                return;
+                                            }
+                                            let (tex, cap, sp) = (tex_d.clone(), title_d.clone(), starport_d);
+                                            share_status.set(Some("Rendering globe…".into()));
+                                            spawn_local(async move {
+                                                // Let the toast paint before the synchronous
+                                                // (single-threaded) capture + GIF encode.
+                                                yield_to_browser().await;
+                                                let gif = globe::capture_frames(&tex, sp, 256, 40)
+                                                    .and_then(|frames| globe::frames_to_gif(&frames, 256, 4));
+                                                let result = match gif.as_deref().and_then(|b| typed_blob(b, "image/gif")) {
+                                                    Some(blob) => post_file_to_discord(&hook, &blob, "globe.gif", &cap).await,
+                                                    None => Err("couldn't render the globe".to_string()),
+                                                };
+                                                share_status.set(Some(match result {
+                                                    Ok(()) => "Posted to Discord ✓".to_string(),
+                                                    Err(e) => format!("Discord: {e}"),
+                                                }));
+                                                set_timeout(4000, move || share_status.set(None));
+                                            });
+                                        }>"💬  Discord"</button>
                                 <span on:click=move |_| close_system()
                                       style="flex:none; cursor:pointer; color:#fff; font-size:24px; line-height:1; padding:0 6px;">"✕"</span>
                             </div>

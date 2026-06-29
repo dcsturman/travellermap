@@ -12,7 +12,9 @@ description = "Leptos/WASM client that renders the Traveller map in the browser.
 # dependency); this marker feature — no extra deps — gates the dblclick handler +
 # modal so a default build never has them and never calls the external service.
 # OFF by default; run with `trunk serve --features callisto`.
-callisto = []
+# Pulls in the GIF encoder used to share the spinning globe to Discord (client-side
+# render → animated GIF); kept out of the default build via optional deps.
+callisto = ["dep:gif", "dep:color_quant"]
 
 [dependencies]
 tmap-core.workspace = true
@@ -24,3 +26,6 @@ wasm-bindgen = "0.2.123"
 wasm-bindgen-futures = "0.4"
 gloo-net = { version = "0.7.0", default-features = false, features = ["http", "json"] }
 js-sys = "0.3.100"
+# Globe→Discord GIF sharing (callisto only); pure-Rust, wasm-friendly.
+gif = { version = "0.13", optional = true }
+color_quant = { version = "1.1", optional = true }

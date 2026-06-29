@@ -134,6 +134,68 @@ fn link(gl: &Gl, vert: &WebGlShader, frag: &WebGlShader) -> Option<WebGlProgram>
     }
 }
 
+/// Compile + link the globe program on `gl`, upload `tex_img` as the equirect
+/// texture, and wire the static uniforms (texture unit + beacon). Returns the
+/// `uSpin` location for the caller to drive per frame. Shared by the live
+/// [`start`] rAF loop and the offscreen [`capture_frames`] GIF path. `None` on
+/// any GL failure. Leaves blending enabled; the caller sets the viewport.
+fn setup(
+    gl: &Gl,
+    tex_img: &HtmlImageElement,
+    starport: Option<(f32, f32)>,
+) -> Option<WebGlUniformLocation> {
+    let vert = compile(gl, Gl::VERTEX_SHADER, VERT)?;
+    let frag = compile(gl, Gl::FRAGMENT_SHADER, FRAG)?;
+    let prog = link(gl, &vert, &frag)?;
+    gl.use_program(Some(&prog));
+
+    // Fullscreen quad ([-1,1]²) as a triangle strip; `p` = position in the shader.
+    let buf = gl.create_buffer()?;
+    gl.bind_buffer(Gl::ARRAY_BUFFER, Some(&buf));
+    let verts: [f32; 8] = [-1., -1., 1., -1., -1., 1., 1., 1.];
+    let arr = js_sys::Float32Array::new_with_length(8);
+    arr.copy_from(&verts);
+    gl.buffer_data_with_array_buffer_view(Gl::ARRAY_BUFFER, &arr, Gl::STATIC_DRAW);
+    let pos = gl.get_attrib_location(&prog, "position") as u32;
+    gl.vertex_attrib_pointer_with_i32(pos, 2, Gl::FLOAT, false, 0, 0);
+    gl.enable_vertex_attrib_array(pos);
+
+    // Texture: REPEAT in longitude, CLAMP in latitude, LINEAR, straight alpha
+    // (alpha is city-light data, not opacity), no flip / colorspace conversion.
+    let tex = gl.create_texture()?;
+    gl.bind_texture(Gl::TEXTURE_2D, Some(&tex));
+    gl.pixel_storei(Gl::UNPACK_FLIP_Y_WEBGL, 0);
+    gl.pixel_storei(Gl::UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
+    gl.pixel_storei(Gl::UNPACK_COLORSPACE_CONVERSION_WEBGL, Gl::NONE as i32);
+    gl.tex_parameteri(Gl::TEXTURE_2D, Gl::TEXTURE_WRAP_S, Gl::REPEAT as i32);
+    gl.tex_parameteri(Gl::TEXTURE_2D, Gl::TEXTURE_WRAP_T, Gl::CLAMP_TO_EDGE as i32);
+    gl.tex_parameteri(Gl::TEXTURE_2D, Gl::TEXTURE_MIN_FILTER, Gl::LINEAR as i32);
+    gl.tex_parameteri(Gl::TEXTURE_2D, Gl::TEXTURE_MAG_FILTER, Gl::LINEAR as i32);
+    gl.tex_image_2d_with_u32_and_u32_and_image(
+        Gl::TEXTURE_2D,
+        0,
+        Gl::RGBA as i32,
+        Gl::RGBA,
+        Gl::UNSIGNED_BYTE,
+        tex_img,
+    )
+    .ok()?;
+
+    // Static uniforms (only uSpin changes per frame).
+    let u_tex = gl.get_uniform_location(&prog, "uTex");
+    let u_spin = gl.get_uniform_location(&prog, "uSpin")?;
+    let u_beacon = gl.get_uniform_location(&prog, "uBeacon");
+    let u_has = gl.get_uniform_location(&prog, "uHasBeacon");
+    gl.active_texture(Gl::TEXTURE0);
+    gl.uniform1i(u_tex.as_ref(), 0);
+    let (blon, blat) = starport.unwrap_or((0.0, 0.0));
+    gl.uniform2f(u_beacon.as_ref(), blon, blat);
+    gl.uniform1f(u_has.as_ref(), if starport.is_some() { 1.0 } else { 0.0 });
+    gl.enable(Gl::BLEND);
+    gl.blend_func(Gl::SRC_ALPHA, Gl::ONE_MINUS_SRC_ALPHA);
+    Some(u_spin)
+}
+
 /// Whether the browser can give us a WebGL context — checked before choosing the
 /// WebGL globe over the APNG fallback.
 pub fn webgl_available() -> bool {
@@ -204,56 +266,7 @@ pub fn start(
     canvas.set_height(px);
 
     let gl: Gl = canvas.get_context("webgl").ok()??.dyn_into().ok()?;
-
-    let vert = compile(&gl, Gl::VERTEX_SHADER, VERT)?;
-    let frag = compile(&gl, Gl::FRAGMENT_SHADER, FRAG)?;
-    let prog = link(&gl, &vert, &frag)?;
-    gl.use_program(Some(&prog));
-
-    // Fullscreen quad ([-1,1]²) as a triangle strip; `p` = position in the shader.
-    let buf = gl.create_buffer()?;
-    gl.bind_buffer(Gl::ARRAY_BUFFER, Some(&buf));
-    let verts: [f32; 8] = [-1., -1., 1., -1., -1., 1., 1., 1.];
-    let arr = js_sys::Float32Array::new_with_length(8);
-    arr.copy_from(&verts);
-    gl.buffer_data_with_array_buffer_view(Gl::ARRAY_BUFFER, &arr, Gl::STATIC_DRAW);
-    let pos = gl.get_attrib_location(&prog, "position") as u32;
-    gl.vertex_attrib_pointer_with_i32(pos, 2, Gl::FLOAT, false, 0, 0);
-    gl.enable_vertex_attrib_array(pos);
-
-    // Texture: REPEAT in longitude, CLAMP in latitude, LINEAR, straight alpha
-    // (alpha is city-light data, not opacity), no flip / colorspace conversion.
-    let tex = gl.create_texture()?;
-    gl.bind_texture(Gl::TEXTURE_2D, Some(&tex));
-    gl.pixel_storei(Gl::UNPACK_FLIP_Y_WEBGL, 0);
-    gl.pixel_storei(Gl::UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
-    gl.pixel_storei(Gl::UNPACK_COLORSPACE_CONVERSION_WEBGL, Gl::NONE as i32);
-    gl.tex_parameteri(Gl::TEXTURE_2D, Gl::TEXTURE_WRAP_S, Gl::REPEAT as i32);
-    gl.tex_parameteri(Gl::TEXTURE_2D, Gl::TEXTURE_WRAP_T, Gl::CLAMP_TO_EDGE as i32);
-    gl.tex_parameteri(Gl::TEXTURE_2D, Gl::TEXTURE_MIN_FILTER, Gl::LINEAR as i32);
-    gl.tex_parameteri(Gl::TEXTURE_2D, Gl::TEXTURE_MAG_FILTER, Gl::LINEAR as i32);
-    gl.tex_image_2d_with_u32_and_u32_and_image(
-        Gl::TEXTURE_2D,
-        0,
-        Gl::RGBA as i32,
-        Gl::RGBA,
-        Gl::UNSIGNED_BYTE,
-        tex_img,
-    )
-    .ok()?;
-
-    // Static uniforms (only uSpin changes per frame).
-    let u_tex = gl.get_uniform_location(&prog, "uTex");
-    let u_spin = gl.get_uniform_location(&prog, "uSpin")?;
-    let u_beacon = gl.get_uniform_location(&prog, "uBeacon");
-    let u_has = gl.get_uniform_location(&prog, "uHasBeacon");
-    gl.active_texture(Gl::TEXTURE0);
-    gl.uniform1i(u_tex.as_ref(), 0);
-    let (blon, blat) = starport.unwrap_or((0.0, 0.0));
-    gl.uniform2f(u_beacon.as_ref(), blon, blat);
-    gl.uniform1f(u_has.as_ref(), if starport.is_some() { 1.0 } else { 0.0 });
-    gl.enable(Gl::BLEND);
-    gl.blend_func(Gl::SRC_ALPHA, Gl::ONE_MINUS_SRC_ALPHA);
+    let u_spin = setup(&gl, tex_img, starport)?;
     gl.viewport(0, 0, px as i32, px as i32);
 
     // Self-rescheduling rAF loop, halted by `alive`/`stop()`.
@@ -321,4 +334,112 @@ pub fn parse_starport(header: &str) -> Option<(f32, f32)> {
 /// Helper so `main` can build the texture endpoint from a base `/api/world` URL.
 pub fn texture_url(base: &str) -> String {
     format!("{base}&projection=globe&format=texture")
+}
+
+/// Render `frames` evenly-spaced rotation steps of the globe into an offscreen
+/// `size`×`size` WebGL canvas and read each one back as RGBA. Spin angles are
+/// `2π·i/frames`, so the sequence is exactly periodic → a seamless GIF loop.
+/// Frames come back **top-down** (rows already flipped from WebGL's bottom-up
+/// origin). `None` on any GL failure. Used to share the spinning globe to Discord.
+#[cfg(feature = "callisto")]
+pub fn capture_frames(
+    tex_img: &HtmlImageElement,
+    starport: Option<(f32, f32)>,
+    size: u32,
+    frames: u32,
+) -> Option<Vec<Vec<u8>>> {
+    use core::f32::consts::PI;
+
+    let doc = web_sys::window()?.document()?;
+    let canvas: HtmlCanvasElement = doc.create_element("canvas").ok()?.dyn_into().ok()?;
+    canvas.set_width(size);
+    canvas.set_height(size);
+
+    // Preserve the drawing buffer so read_pixels is robust across drivers (we read
+    // synchronously after each draw, but this removes any compositing-timing doubt).
+    let opts = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&opts, &"preserveDrawingBuffer".into(), &true.into());
+    let _ = js_sys::Reflect::set(&opts, &"premultipliedAlpha".into(), &false.into());
+    let gl: Gl = canvas
+        .get_context_with_context_options("webgl", &opts)
+        .ok()??
+        .dyn_into()
+        .ok()?;
+
+    let u_spin = setup(&gl, tex_img, starport)?;
+    let s = size as i32;
+    gl.viewport(0, 0, s, s);
+
+    let stride = size as usize * 4;
+    let mut buf = vec![0u8; stride * size as usize];
+    (0..frames)
+        .map(|i| {
+            let spin = 2.0 * PI * (i as f32) / (frames as f32);
+            gl.clear_color(0.0, 0.0, 0.0, 0.0);
+            gl.clear(Gl::COLOR_BUFFER_BIT);
+            gl.uniform1f(Some(&u_spin), spin);
+            gl.draw_arrays(Gl::TRIANGLE_STRIP, 0, 4);
+            gl.read_pixels_with_opt_u8_array(
+                0,
+                0,
+                s,
+                s,
+                Gl::RGBA,
+                Gl::UNSIGNED_BYTE,
+                Some(&mut buf),
+            )
+            .ok()?;
+            // WebGL reads bottom-up; reverse rows for a top-down GIF frame.
+            Some(buf.chunks_exact(stride).rev().flatten().copied().collect())
+        })
+        .collect()
+}
+
+/// Encode RGBA `frames` (top-down, `size`×`size`) into a single infinitely-looping
+/// animated GIF. Because every frame is the same texture merely rotated, one global
+/// 256-colour palette (NeuQuant on a representative frame) is near-lossless and
+/// keeps the file small. `delay_cs` is the per-frame delay in centiseconds. The
+/// globe renders on a transparent clear, so each frame is flattened over the popup's
+/// dark backdrop first. `None` on encode failure.
+#[cfg(feature = "callisto")]
+pub fn frames_to_gif(frames: &[Vec<u8>], size: u16, delay_cs: u16) -> Option<Vec<u8>> {
+    use color_quant::NeuQuant;
+    use gif::{Encoder, Frame, Repeat};
+
+    const BG: [u8; 3] = [0x0b, 0x0e, 0x16]; // popup backdrop (#0b0e16)
+
+    // RGBA-over-BG → opaque RGBA (alpha forced to 255 so NeuQuant + index_of agree).
+    let flatten = |rgba: &[u8]| -> Vec<u8> {
+        rgba.chunks_exact(4)
+            .flat_map(|px| {
+                let a = u32::from(px[3]);
+                let mix =
+                    |c: u8, b: u8| ((u32::from(c) * a + u32::from(b) * (255 - a)) / 255) as u8;
+                [mix(px[0], BG[0]), mix(px[1], BG[1]), mix(px[2], BG[2]), 255]
+            })
+            .collect::<Vec<u8>>()
+    };
+    let flat: Vec<Vec<u8>> = frames.iter().map(|f| flatten(f)).collect();
+
+    // One shared palette from the middle frame.
+    let nq = NeuQuant::new(10, 256, flat.get(flat.len() / 2)?);
+    let palette = nq.color_map_rgb();
+
+    let mut out: Vec<u8> = Vec::new();
+    {
+        let mut enc = Encoder::new(&mut out, size, size, &palette).ok()?;
+        enc.set_repeat(Repeat::Infinite).ok()?;
+        for f in &flat {
+            let indices: Vec<u8> = f.chunks_exact(4).map(|px| nq.index_of(px) as u8).collect();
+            let frame = Frame {
+                width: size,
+                height: size,
+                buffer: std::borrow::Cow::Owned(indices),
+                delay: delay_cs,
+                ..Frame::default()
+            };
+            enc.write_frame(&frame).ok()?;
+        }
+    }
+    Some(out)
 }
