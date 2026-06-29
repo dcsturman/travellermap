@@ -10,6 +10,8 @@
 //! types (a subset of fields/features), never a different parse — see the LOD
 //! invariant in `PORT_PLAN.md`.
 
+use std::fmt::Write as _;
+
 use crate::astrometrics::Coord;
 use serde::{Deserialize, Serialize};
 
@@ -466,10 +468,10 @@ impl UniverseResult {
         for s in &self.sectors {
             out.push_str("<Sector");
             if let Some(abbr) = &s.abbreviation {
-                out.push_str(&format!(" Abbreviation=\"{}\"", xml_escape(abbr)));
+                write!(out, " Abbreviation=\"{}\"", xml_escape(abbr)).unwrap();
             }
             if !s.tags.is_empty() {
-                out.push_str(&format!(" Tags=\"{}\"", xml_escape(&s.tags)));
+                write!(out, " Tags=\"{}\"", xml_escape(&s.tags)).unwrap();
             }
             out.push('>');
             xml_el(&mut out, "X", &s.x.to_string());
@@ -477,7 +479,7 @@ impl UniverseResult {
             xml_el(&mut out, "Milieu", &s.milieu);
             for n in &s.names {
                 match &n.lang {
-                    Some(lang) => out.push_str(&format!("<Name Lang=\"{}\">", xml_escape(lang))),
+                    Some(lang) => write!(out, "<Name Lang=\"{}\">", xml_escape(lang)).unwrap(),
                     None => out.push_str("<Name>"),
                 }
                 out.push_str(&xml_escape(&n.text));

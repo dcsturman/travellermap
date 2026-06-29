@@ -25,6 +25,8 @@
 //! plus the sector display name and (usually empty) header fields; this module
 //! has no I/O.
 
+use std::fmt::Write as _;
+
 use crate::astrometrics::{parse_hex, SECTOR_HEIGHT, SECTOR_WIDTH};
 use crate::metadata::{MetaAllegiance, MetaBorder, MetaLabel, MetaRoute, SectorMetadata};
 use crate::world_util::allegiance_name;
@@ -186,11 +188,11 @@ fn write_route(out: &mut String, route: &MetaRoute, sheet: &Stylesheet) {
     let (end_hex, eox, eoy) = fix_hex(&route.end, route.end_offset_x, route.end_offset_y);
 
     if sox != 0 || soy != 0 {
-        out.push_str(&format!("{sox} {soy} "));
+        write!(out, "{sox} {soy} ").unwrap();
     }
-    out.push_str(&format!("{start_hex} "));
+    write!(out, "{start_hex} ").unwrap();
     if eox != 0 || eoy != 0 {
-        out.push_str(&format!("{eox} {eoy} "));
+        write!(out, "{eox} {eoy} ").unwrap();
     }
     out.push_str(&end_hex);
 
@@ -216,7 +218,7 @@ fn write_label(out: &mut String, label: &MetaLabel) {
             if offset != 0 {
                 out.push('/');
                 // Reference format "+0;-0": explicit sign, no leading zeros.
-                out.push_str(&format!("{offset:+}"));
+                write!(out, "{offset:+}").unwrap();
             }
             out.push(' ');
             out.push_str(line);
