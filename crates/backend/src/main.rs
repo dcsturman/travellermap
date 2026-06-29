@@ -2209,50 +2209,48 @@ fn build_credits(
     let nonempty = |s: String| (!s.is_empty()).then_some(s);
     let (meta, worlds) = assemble_metadata(state, milieu, entry);
 
+    // `meta`/`worlds` are owned, used once here — move each field into the result
+    // instead of cloning it out.
     let mut r = tmap_core::dto::CreditsResult {
         sector_x: meta.x,
         sector_y: meta.y,
         ..Default::default()
     };
-    r.sector_name = meta.names.first().map(|n| n.text.clone());
-    r.credits = meta.credits_text.clone();
-    r.sector_tags = nonempty(meta.tags.clone());
-    r.sector_author = meta.data_file.author.clone();
-    r.sector_source = meta.data_file.source.clone();
-    r.sector_publisher = meta.data_file.publisher.clone();
-    r.sector_copyright = meta.data_file.copyright.clone();
-    r.sector_ref = meta.data_file.reference.clone();
-    r.sector_milieu = meta
-        .data_file
-        .milieu
-        .clone()
-        .or_else(|| Some(milieu.to_string()));
+    r.sector_name = meta.names.into_iter().next().map(|n| n.text);
+    r.credits = meta.credits_text;
+    r.sector_tags = nonempty(meta.tags);
+    r.sector_author = meta.data_file.author;
+    r.sector_source = meta.data_file.source;
+    r.sector_publisher = meta.data_file.publisher;
+    r.sector_copyright = meta.data_file.copyright;
+    r.sector_ref = meta.data_file.reference;
+    r.sector_milieu = meta.data_file.milieu.or_else(|| Some(milieu.to_string()));
 
-    if let Some(p) = meta.products.first() {
-        r.product_publisher = p.publisher.clone();
-        r.product_title = p.title.clone();
-        r.product_author = p.author.clone();
-        r.product_ref = p.reference.clone();
+    if let Some(p) = meta.products.into_iter().next() {
+        r.product_publisher = p.publisher;
+        r.product_title = p.title;
+        r.product_author = p.author;
+        r.product_ref = p.reference;
     }
 
     // Subsector (by its letter index A–P for this hex).
     let letter = astrometrics::subsector_letter(hex).to_string();
-    if let Some(ss) = meta.subsectors.iter().find(|s| s.index == letter) {
-        r.subsector_name = nonempty(ss.name.clone());
-        r.subsector_index = nonempty(ss.index.clone());
+    if let Some(ss) = meta.subsectors.into_iter().find(|s| s.index == letter) {
+        r.subsector_name = nonempty(ss.name);
+        r.subsector_index = nonempty(ss.index);
     }
 
     // World at the hex.
-    if let Some(w) = worlds.iter().find(|w| w.hex == hex) {
-        r.world_name = nonempty(w.name.clone());
-        r.world_hex = nonempty(w.hex.clone());
-        r.world_uwp = nonempty(w.uwp.clone());
-        r.world_remarks = nonempty(w.remarks.clone());
-        r.world_ix = w.importance.clone();
-        r.world_ex = w.economic.clone();
-        r.world_cx = w.cultural.clone();
-        r.world_pbg = nonempty(w.pbg.clone());
-        r.world_allegiance = nonempty(w.allegiance.clone());
+    if let Some(w) = worlds.into_iter().find(|w| w.hex == hex) {
+        r.world_name = nonempty(w.name);
+        r.world_hex = nonempty(w.hex);
+        r.world_uwp = nonempty(w.uwp);
+        r.world_remarks = nonempty(w.remarks);
+        r.world_ix = w.importance;
+        r.world_ex = w.economic;
+        r.world_cx = w.cultural;
+        r.world_pbg = nonempty(w.pbg);
+        r.world_allegiance = nonempty(w.allegiance);
     }
 
     r
@@ -2841,14 +2839,12 @@ pub(crate) fn build_sector_bytes(
 
     // Review tags + data-source credit (prefer the per-sector xml; the inline
     // region-list block carries Tags too, so fall back to it for tags).
-    let mut tags = meta.tags.clone();
-    if tags.is_empty() {
-        tags = inline_meta.tags.clone();
-    }
-    let credits = meta
-        .credits_text
-        .clone()
-        .or_else(|| inline_meta.credits_text.clone());
+    let tags = if meta.tags.is_empty() {
+        inline_meta.tags
+    } else {
+        meta.tags
+    };
+    let credits = meta.credits_text.or(inline_meta.credits_text);
 
     let data = SectorData {
         info: SectorInfo {
