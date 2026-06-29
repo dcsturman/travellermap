@@ -1332,20 +1332,24 @@ fn build_sec_from_text(q: &SecQuery, body: &str) -> Result<String, (StatusCode, 
     // Subsector (letter only — posted data carries no subsector names) / quadrant
     // filtering, mirroring SECHandler's `options.filter`.
     let filtered: Vec<World> = if let Some(sub) = &q.subsector {
-        let idx = subsector_index_for(sub, &[]).ok_or((
-            StatusCode::NOT_FOUND,
-            format!("subsector '{sub}' not found"),
-        ))?;
+        let idx = subsector_index_for(sub, &[]).ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                format!("subsector '{sub}' not found"),
+            )
+        })?;
         all_worlds
             .iter()
             .filter(|w| astrometrics::subsector_index(&w.hex) == idx)
             .cloned()
             .collect()
     } else if let Some(quad) = &q.quadrant {
-        let qidx = quadrant_index_for(quad).ok_or((
-            StatusCode::BAD_REQUEST,
-            format!("quadrant '{quad}' is invalid"),
-        ))?;
+        let qidx = quadrant_index_for(quad).ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("quadrant '{quad}' is invalid"),
+            )
+        })?;
         all_worlds
             .iter()
             .filter(|w| astrometrics::quadrant_index(&w.hex) == qidx)
@@ -1413,35 +1417,44 @@ fn build_sec(state: &AppState, q: &SecQuery) -> Result<String, (StatusCode, Stri
     } else {
         return Err((StatusCode::BAD_REQUEST, "No sector specified.".into()));
     }
-    .ok_or((
-        StatusCode::NOT_FOUND,
-        "The specified sector was not found.".into(),
-    ))?;
+    .ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            "The specified sector was not found.".into(),
+        )
+    })?;
 
     let dir = state.res_dir.join("Sectors").join(&q.milieu);
-    let (data_file, outcome) = resolve_and_parse_worlds(&dir, &entry.name, Some(entry)).ok_or((
-        StatusCode::NOT_FOUND,
-        format!("no data for '{}'", entry.name),
-    ))?;
+    let (data_file, outcome) = resolve_and_parse_worlds(&dir, &entry.name, Some(entry))
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                format!("no data for '{}'", entry.name),
+            )
+        })?;
     let all_worlds = outcome.worlds;
 
     // Subsector / quadrant filtering (mirrors SECHandler's `options.filter`).
     let subsectors = gather_subsectors(state, &dir, &data_file, entry, &q.milieu);
     let filtered: Vec<World> = if let Some(sub) = &q.subsector {
-        let idx = subsector_index_for(sub, &subsectors).ok_or((
-            StatusCode::NOT_FOUND,
-            format!("subsector '{sub}' not found"),
-        ))?;
+        let idx = subsector_index_for(sub, &subsectors).ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                format!("subsector '{sub}' not found"),
+            )
+        })?;
         all_worlds
             .iter()
             .filter(|w| astrometrics::subsector_index(&w.hex) == idx)
             .cloned()
             .collect()
     } else if let Some(quad) = &q.quadrant {
-        let qidx = quadrant_index_for(quad).ok_or((
-            StatusCode::BAD_REQUEST,
-            format!("quadrant '{quad}' is invalid"),
-        ))?;
+        let qidx = quadrant_index_for(quad).ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("quadrant '{quad}' is invalid"),
+            )
+        })?;
         all_worlds
             .iter()
             .filter(|w| astrometrics::quadrant_index(&w.hex) == qidx)
@@ -2149,10 +2162,12 @@ fn build_msec(state: &AppState, q: &MsecQuery) -> Result<String, (StatusCode, St
     } else {
         return Err((StatusCode::BAD_REQUEST, "No sector specified.".into()));
     }
-    .ok_or((
-        StatusCode::NOT_FOUND,
-        "The specified sector was not found.".into(),
-    ))?;
+    .ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            "The specified sector was not found.".into(),
+        )
+    })?;
 
     let (meta, _worlds) = assemble_metadata(state, &q.milieu, entry);
     let name = meta
@@ -2360,17 +2375,19 @@ fn build_jumpworlds(
     } else {
         return Err((StatusCode::BAD_REQUEST, "No sector specified.".into()));
     }
-    .ok_or((
-        StatusCode::NOT_FOUND,
-        "The specified sector was not found.".into(),
-    ))?;
+    .ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            "The specified sector was not found.".into(),
+        )
+    })?;
 
     let hex = q
         .hex
         .as_deref()
-        .ok_or((StatusCode::BAD_REQUEST, "No hex specified.".into()))?;
+        .ok_or_else(|| (StatusCode::BAD_REQUEST, "No hex specified.".into()))?;
     let (chx, chy) =
-        parse_hex(hex).ok_or((StatusCode::BAD_REQUEST, format!("Invalid hex: {hex}")))?;
+        parse_hex(hex).ok_or_else(|| (StatusCode::BAD_REQUEST, format!("Invalid hex: {hex}")))?;
     let (cx, cy) =
         astrometrics::location_to_coordinates(entry.location.x, entry.location.y, chx, chy);
     let center = Coord::new(cx, cy);
