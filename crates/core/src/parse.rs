@@ -896,7 +896,7 @@ pub fn milieu_sector_block(region_xml: &str, name: &str) -> Option<String> {
         .find(|s| {
             s.children()
                 .filter(|n| n.has_tag_name("Name"))
-                .any(|n| n.text().map(|t| t.trim() == name).unwrap_or(false))
+                .any(|n| n.text().is_some_and(|t| t.trim() == name))
         })?;
     Some(region_xml[node.range()].to_owned())
 }

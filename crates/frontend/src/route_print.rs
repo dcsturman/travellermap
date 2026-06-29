@@ -45,8 +45,7 @@ pub fn build_route_print_html(route: &RouteResult, jump: i32) -> String {
     // Inline the starburst markup (drop the XML/DOCTYPE prolog before <svg>).
     let star = STARBURST_SVG
         .find("<svg")
-        .map(|i| &STARBURST_SVG[i..])
-        .unwrap_or("");
+        .map_or("", |i| &STARBURST_SVG[i..]);
 
     let mut rows = String::new();
     for (i, w) in wps.iter().enumerate() {

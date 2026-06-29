@@ -149,8 +149,7 @@ pub fn draw(
     // otherwise the scale-faded gray `gridColor`.
     let gc = theme
         .grid
-        .map(str::to_string)
-        .unwrap_or_else(|| common::grid_color(view.scale));
+        .map_or_else(|| common::grid_color(view.scale), str::to_string);
     if opts.sector_grid && view.scale >= SUBSECTOR_GRID_MIN {
         grid::draw_grid_lines(&c, &view, w, h, SUBSECTOR_W, SUBSECTOR_H, &gc, 1.4);
     }
@@ -293,6 +292,5 @@ fn build_jump_clip_path(view: &ViewState, w: f64, h: f64, jc: JumpClip) -> Geome
 pub(crate) fn now() -> f64 {
     web_sys::window()
         .and_then(|w| w.performance())
-        .map(|p| p.now())
-        .unwrap_or(0.0)
+        .map_or(0.0, |p| p.now())
 }

@@ -514,8 +514,7 @@ impl Theme {
         Self::PRESETS
             .iter()
             .find(|(n, _)| n.eq_ignore_ascii_case(name))
-            .map(|(_, f)| f())
-            .unwrap_or_else(Self::poster)
+            .map_or_else(Self::poster, |(_, f)| f())
     }
 }
 

@@ -84,13 +84,8 @@ pub fn build_world_print_html(sel: &SelectedWorld) -> String {
     let gg = d
         .pbg
         .gas_giants
-        .map(|n| n.to_string())
-        .unwrap_or_else(|| "?".into());
-    let belts = d
-        .pbg
-        .belts
-        .map(|n| n.to_string())
-        .unwrap_or_else(|| "?".into());
+        .map_or_else(|| "?".into(), |n| n.to_string());
+    let belts = d.pbg.belts.map_or_else(|| "?".into(), |n| n.to_string());
     let other = d
         .other_worlds
         .filter(|n| *n > 0)

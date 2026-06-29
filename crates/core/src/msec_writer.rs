@@ -423,7 +423,7 @@ impl Stylesheet {
                     if !prop.eq_ignore_ascii_case("color") || val.is_empty() {
                         continue;
                     }
-                    if best.as_ref().map(|(r, _)| rank >= *r).unwrap_or(true) {
+                    if best.as_ref().is_none_or(|(r, _)| rank >= *r) {
                         best = Some((rank, val.clone()));
                     }
                 }

@@ -2479,7 +2479,7 @@ fn world_to_result(
         ex: w.economic.clone(),
         cx: w.cultural.clone(),
         nobility: w.nobility.clone().unwrap_or_default(),
-        worlds: w.worlds.map(i32::from).unwrap_or(0),
+        worlds: w.worlds.map_or(0, i32::from),
         resource_units: w.resource_units,
         subsector,
         quadrant,

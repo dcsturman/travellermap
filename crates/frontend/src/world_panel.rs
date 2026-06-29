@@ -157,13 +157,8 @@ fn expanded_body(sel: &SelectedWorld) -> AnyView {
     let gg = d
         .pbg
         .gas_giants
-        .map(|n| n.to_string())
-        .unwrap_or_else(|| "?".into());
-    let belts = d
-        .pbg
-        .belts
-        .map(|n| n.to_string())
-        .unwrap_or_else(|| "?".into());
+        .map_or_else(|| "?".into(), |n| n.to_string());
+    let belts = d.pbg.belts.map_or_else(|| "?".into(), |n| n.to_string());
     let system_line = format!("{gg} gas giant(s), {belts} planetoid belt(s)");
     let other_worlds = d.other_worlds.map(|n| format!("{n} other world(s)"));
 
@@ -231,7 +226,7 @@ fn expanded_body(sel: &SelectedWorld) -> AnyView {
 
             {section("Population")}
             <div style="color:#cfd6e6; padding:2px 0;">
-                {pop.map(|p| format!("{p} inhabitants")).unwrap_or_else(|| "Unknown".into())}
+                {pop.map_or_else(|| "Unknown".into(), |p| format!("{p} inhabitants"))}
             </div>
 
             {bases.map(|b| view! {

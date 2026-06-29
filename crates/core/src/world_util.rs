@@ -19,8 +19,7 @@ pub fn from_hex(c: char) -> i32 {
     const ALPHABET: &str = "0123456789ABCDEFGHJKLMNPQRSTUVW";
     ALPHABET
         .find(c.to_ascii_uppercase())
-        .map(|i| i as i32)
-        .unwrap_or(-1)
+        .map_or(-1, |i| i as i32)
 }
 
 /// Resource Units derived from a raw Economic Extension `(Ex)` string (e.g.
@@ -886,7 +885,7 @@ pub fn split_uwp(uwp: &str) -> DecodedUwp {
 
 /// Split a 3-digit PBG (`splitPBG`): Pop mult, Belts, Gas-giants; eHex `-1` → None.
 pub fn split_pbg(pbg: &str) -> Pbg {
-    let digit = |i: usize| pbg.chars().nth(i).map(from_hex).unwrap_or(-1);
+    let digit = |i: usize| pbg.chars().nth(i).map_or(-1, from_hex);
     let fix = |v: i32| if v == -1 { None } else { Some(v) };
     Pbg {
         pop_mult: digit(0).max(0),

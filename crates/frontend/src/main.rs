@@ -1699,8 +1699,7 @@ fn App() -> impl IntoView {
                             .subsectors
                             .iter()
                             .find(|ss| ss.index.starts_with(letter))
-                            .map(|ss| ss.name.clone())
-                            .unwrap_or_else(|| format!("Subsector {letter}"));
+                            .map_or_else(|| format!("Subsector {letter}"), |ss| ss.name.clone());
                         best = Some(WorldHit {
                             dist2: d,
                             world: wld.clone(),
@@ -2454,14 +2453,13 @@ fn App() -> impl IntoView {
         let (cx, cy) = ev
             .current_target()
             .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-            .map(|el| {
+            .map_or((0.0, 0.0), |el| {
                 let r = el.get_bounding_client_rect();
                 (
                     ev.client_x() as f64 - (r.x() + r.width() / 2.0),
                     ev.client_y() as f64 - (r.y() + r.height() / 2.0),
                 )
-            })
-            .unwrap_or((0.0, 0.0));
+            });
         if nz <= 1.0 + 1e-6 {
             sys_pan.set((0.0, 0.0)); // fully out → recenter
         } else {
@@ -2533,11 +2531,10 @@ fn App() -> impl IntoView {
                 let center = ev
                     .current_target()
                     .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-                    .map(|el| {
+                    .map_or((0.0, 0.0), |el| {
                         let r = el.get_bounding_client_rect();
                         (r.x() + r.width() / 2.0, r.y() + r.height() / 2.0)
-                    })
-                    .unwrap_or((0.0, 0.0));
+                    });
                 let nd = pt_dist(*a, *b);
                 let nm = pt_mid(*a, *b);
                 let z = sys_zoom.get_untracked();
@@ -3345,8 +3342,7 @@ fn App() -> impl IntoView {
                         .filter(|(c, h, _, _)| {
                             sel.as_ref().is_some_and(|s| s.sector_coord == *c && &s.world.hex == h)
                         })
-                        .map(|(_, _, _, j)| j)
-                        .unwrap_or(0)
+                        .map_or(0, |(_, _, _, j)| j)
                 }) />
             // --- jump-N neighborhood cutout overlay (a J-N pill renders it) ---
             <Show when=move || jumpmap.get().is_some()>
@@ -3378,8 +3374,7 @@ fn App() -> impl IntoView {
                                        color:#cdd5e6; font:600 12px system-ui;">"🖨  Print"</button>
                         <button on:click=move |_| {
                                     if let Some(cv) = jumpmap_ref.get_untracked() {
-                                        let fname = jumpmap.get_untracked()
-                                            .map(|(_, n, _, j)| format!("{n} jump-{j}.png")).unwrap_or_else(|| "jumpmap.png".into());
+                                        let fname = jumpmap.get_untracked().map_or_else(|| "jumpmap.png".into(), |(_, n, _, j)| format!("{n} jump-{j}.png"));
                                         download_canvas_png(&cv, &fname);
                                     }
                                 }

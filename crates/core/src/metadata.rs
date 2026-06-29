@@ -498,8 +498,7 @@ fn parse_border(node: roxmltree::Node, seq: usize) -> MetaBorder {
     MetaBorder {
         show_label: node
             .attribute("ShowLabel")
-            .map(|v| v != "False" && v != "false")
-            .unwrap_or(true),
+            .is_none_or(|v| v != "False" && v != "false"),
         wrap_label: matches!(node.attribute("WrapLabel"), Some("True") | Some("true")),
         color: attr(node, "Color"),
         allegiance: attr(node, "Allegiance"),
@@ -564,8 +563,7 @@ pub fn parse_sector_metadata(xml: &str) -> SectorMetadata {
                     let index_number = index
                         .chars()
                         .next()
-                        .map(|c| (c.to_ascii_uppercase() as i32) - ('A' as i32))
-                        .unwrap_or(0);
+                        .map_or(0, |c| (c.to_ascii_uppercase() as i32) - ('A' as i32));
                     meta.subsectors.push(MetaSubsector {
                         name,
                         index,

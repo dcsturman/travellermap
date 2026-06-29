@@ -174,8 +174,6 @@ pub(crate) fn draw_hex_grid(
     );
     // Theme override (flat color) or the scale-faded gray `gridColor`. Width is
     // ~1 css px (the transform scales the world-space width by s).
-    let color = grid_override
-        .map(str::to_string)
-        .unwrap_or_else(|| grid_color(s));
+    let color = grid_override.map_or_else(|| grid_color(s), str::to_string);
     c.stroke_geometry(&combined, m, &color, &StrokeStyle::plain(1.0 / s), None);
 }
