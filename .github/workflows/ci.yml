@@ -1,6 +1,6 @@
 # CI for the Rust rewrite (the C#/JS reference tree is not built here — see
 # CLAUDE.md). Two parallel jobs:
-#   - native: clippy + tests for the host crates (tmap-core, tmap-backend).
+#   - native: clippy + tests for the host crates (tmap-core, tmap-render, tmap-backend).
 #   - wasm:   clippy (deny-warnings) the Leptos frontend for wasm32 (it's wasm-only,
 #             so a bare `cargo test` skips it — clippy compiles + lints, the gate).
 #
@@ -36,7 +36,7 @@ env:
 
 jobs:
   native:
-    name: clippy + test (core + backend)
+    name: clippy + test (core + render + backend)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -51,7 +51,7 @@ jobs:
       # default-members is core + backend, so the bare invocations target the
       # native crates; the frontend (wasm-only) is checked in the wasm job.
       - name: Clippy (deny warnings)
-        run: cargo clippy -p tmap-core -p tmap-backend -- -D warnings
+        run: cargo clippy -p tmap-core -p tmap-render -p tmap-backend -- -D warnings
       # TMAP_SKIP_PARITY excludes the compat suite's live travellermap.com
       # comparisons — they run on a local `cargo test` but are network-dependent
       # (slow/rate-limited/offline-hostile), so CI runs only the offline goldens.
