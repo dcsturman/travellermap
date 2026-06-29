@@ -22,6 +22,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::Deserialize;
+use tmap_core::astrometrics::{PARSEC_SCALE_X, REFERENCE_HEX_X, REFERENCE_HEX_Y};
 use tmap_core::dto::SectorData;
 use tmap_render::render::{self, visible_sectors, RenderOptions, Theme, ViewState};
 
@@ -131,10 +132,22 @@ fn render_tile(
     style: &str,
 ) -> Result<String, (StatusCode, String)> {
     let (wf, hf) = (f64::from(w), f64::from(h));
-    // Center the requested tile region in the frontend's compressed world units.
+    // The tile rect's center in the *reference* world-coordinate system (the one
+    // worldgen's x,y address, exactly as TileHandler.cs computes it): x,y are
+    // tile-width units, so the center is `(x+0.5)·w / (scale·PSX)` etc.
+    let psx = f64::from(PARSEC_SCALE_X);
+    let cx_ref = (x + 0.5) * wf / (scale * psx);
+    let cy_ref = (y + 0.5) * hf / scale;
+    // Reference coords → render world space. The render passes index hexes as
+    // `wc = sx·32 + hx`, `wr = sy·40 + hy`, whereas the reference subtracts
+    // REFERENCE_HEX_X/Y (1, 40); so the render frame is shifted by (+1, +40) hex
+    // units, and x is then horizontally compressed by PSX (`hex_parsec`).
     let view = ViewState {
         scale,
-        center: ((x + 0.5) * wf / scale, (y + 0.5) * hf / scale),
+        center: (
+            (cx_ref + f64::from(REFERENCE_HEX_X)) * psx,
+            cy_ref + f64::from(REFERENCE_HEX_Y),
+        ),
     };
 
     let universe = state.universe(milieu)?;
