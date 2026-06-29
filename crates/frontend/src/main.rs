@@ -18,6 +18,8 @@ use wasm_bindgen::JsCast;
 use web_sys::HtmlCanvasElement;
 
 mod canvas;
+#[cfg(feature = "callisto")]
+mod globe;
 mod glyph;
 mod render;
 mod route_print;
@@ -179,10 +181,18 @@ enum ImgView {
         sector: String,
         hex: String,
     },
-    /// Render arrived — zoom/pan viewer over the PNG (world-surface map).
+    /// Render arrived — zoom/pan viewer over the PNG (world-surface map / flat map).
     Ready {
         obj: String,
         svc: String,
+        title: String,
+    },
+    /// Client-side WebGL spinning globe — a decoded equirectangular texture
+    /// (RGB surface, A city-lights) warped on the GPU. `starport` is the beacon
+    /// `(lon, lat)` in radians, or `None`. A `globe.rs` rAF loop animates it.
+    Globe {
+        tex: web_sys::HtmlImageElement,
+        starport: Option<(f32, f32)>,
         title: String,
     },
     /// Render failed (unreachable service, or a 422 from a partial/placeholder UWP).
@@ -642,6 +652,22 @@ async fn fetch_bytes(url: &str) -> Option<Vec<u8>> {
         .binary()
         .await
         .ok()
+}
+
+/// Decode PNG bytes into a fully-loaded `HtmlImageElement` (via a transient object
+/// URL + `decode()`), ready to upload as a WebGL texture. The URL is revoked once
+/// decoding completes — the element keeps its decoded bitmap. Used for the globe
+/// equirectangular texture.
+#[cfg(feature = "callisto")]
+async fn decode_image(bytes: &[u8]) -> Option<web_sys::HtmlImageElement> {
+    let blob = png_blob(bytes)?;
+    let url = web_sys::Url::create_object_url_with_blob(&blob).ok()?;
+    let img = web_sys::HtmlImageElement::new().ok()?;
+    img.set_src(&url);
+    let decoded = wasm_bindgen_futures::JsFuture::from(img.decode()).await;
+    let _ = web_sys::Url::revoke_object_url(&url);
+    decoded.ok()?;
+    Some(img)
 }
 
 /// A canvas's current contents as PNG bytes.
@@ -1158,6 +1184,19 @@ fn App() -> impl IntoView {
     let world_base = RwSignal::new(None::<String>);
     #[cfg(feature = "callisto")]
     let world_globe = RwSignal::new(false);
+    // WebGL globe (callisto): the canvas the renderer draws into, the live rAF
+    // animation (dropped to stop), and a per-world cache of the decoded texture +
+    // starport so revisiting a world skips the fetch/decode.
+    #[cfg(feature = "callisto")]
+    let globe_canvas_ref = NodeRef::<leptos::html::Canvas>::new();
+    // Non-`Send` (web_sys / Rc) → LocalStorage stored values (CSR is single-threaded).
+    #[cfg(feature = "callisto")]
+    let globe_anim = StoredValue::new_local(None::<globe::GlobeAnim>);
+    #[cfg(feature = "callisto")]
+    let globe_cache = StoredValue::new_local(std::collections::HashMap::<
+        String,
+        (web_sys::HtmlImageElement, Option<(f32, f32)>),
+    >::new());
     let (route_status, set_route_status) = signal(String::new());
     // Distinguish a click (set endpoint) from a drag (pan): remember press origin.
     let down_pos = RwSignal::new(None::<(f64, f64)>);
@@ -1779,32 +1818,163 @@ fn App() -> impl IntoView {
             w.hex.clone(),
         );
     };
-    // Show a world's surface from its base `/api/world?...` URL (no projection),
-    // in the requested projection: flat is the default equirectangular map; globe
-    // appends `&projection=globe` for the orthographic spinning APNG, with the
-    // flat URL passed as the fetch fallback so a globe failure degrades silently.
-    // Remembers the base + projection so the Flat/Globe toggle can re-fetch.
+    // Show a world's surface from its base `/api/world?...` URL (no projection), in
+    // the requested projection. Flat is the existing equirectangular `<img>` map.
+    // Globe renders client-side in WebGL from a one-shot equirectangular texture
+    // (`&format=texture`) — smooth 60fps. It falls back to the worldgen APNG
+    // (`&projection=globe`) when WebGL is unavailable or the texture endpoint isn't
+    // live yet, and that in turn falls back to the flat map. Remembers the base +
+    // projection so the Flat/Globe toggle can re-fetch.
     #[cfg(feature = "callisto")]
     let launch_world = move |base: String, globe: bool, title: String| {
         world_base.set(Some(base.clone()));
         world_globe.set(globe);
-        let (url, fallback) = if globe {
-            (format!("{base}&projection=globe"), Some(base))
-        } else {
-            (base, None)
+        // Flat: the existing zoom/pan PNG viewer.
+        if !globe {
+            launch_render(
+                system_view,
+                sys_zoom,
+                sys_pan,
+                sys_elapsed,
+                sys_timer,
+                sys_gen,
+                base,
+                title,
+                None,
+            );
+            return;
+        }
+        // The APNG fallback (worldgen's pre-baked globe), with the flat map as its
+        // own fallback — used when WebGL is out or the texture endpoint 404s.
+        let apng = format!("{base}&projection=globe");
+        let flat = base.clone();
+        let launch_apng = move |title: String| {
+            launch_render(
+                system_view,
+                sys_zoom,
+                sys_pan,
+                sys_elapsed,
+                sys_timer,
+                sys_gen,
+                apng.clone(),
+                title,
+                Some(flat.clone()),
+            );
         };
-        launch_render(
-            system_view,
-            sys_zoom,
-            sys_pan,
-            sys_elapsed,
-            sys_timer,
-            sys_gen,
-            url,
-            title,
-            fallback,
-        );
+        if !globe::webgl_available() {
+            launch_apng(title);
+            return;
+        }
+        // Set the live Globe view: tear down any prior popup state first.
+        let show_globe =
+            move |tex: web_sys::HtmlImageElement, sp: Option<(f32, f32)>, title: String| {
+                if let Some(ImgView::Ready { obj, .. }) = system_view.get_untracked() {
+                    let _ = web_sys::Url::revoke_object_url(&obj);
+                }
+                if let Some(id) = sys_timer.get_untracked() {
+                    win().clear_interval_with_handle(id);
+                    sys_timer.set(None);
+                }
+                sys_gen.update(|g| *g = g.wrapping_add(1));
+                system_view.set(Some(ImgView::Globe {
+                    tex,
+                    starport: sp,
+                    title,
+                }));
+            };
+        // Cached decoded texture → show immediately.
+        if let Some((tex, sp)) = globe_cache.with_value(|c| c.get(&base).cloned()) {
+            show_globe(tex, sp, title);
+            return;
+        }
+        // Spinner while we fetch + decode the texture, under a fresh generation a
+        // close/supersede can invalidate.
+        if let Some(id) = sys_timer.get_untracked() {
+            win().clear_interval_with_handle(id);
+        }
+        let gen = sys_gen.get_untracked().wrapping_add(1);
+        sys_gen.set(gen);
+        system_view.set(Some(ImgView::Loading {
+            title: title.clone(),
+        }));
+        sys_timer.set(Some(start_elapsed_timer(sys_elapsed)));
+        spawn_local(async move {
+            let resp = gloo_net::http::Request::get(&globe::texture_url(&base))
+                .send()
+                .await;
+            if sys_gen.get_untracked() != gen {
+                return;
+            }
+            let img = match resp {
+                Ok(r) if r.ok() => {
+                    let sp = r
+                        .headers()
+                        .get("X-Starport")
+                        .and_then(|h| globe::parse_starport(&h));
+                    match r.binary().await {
+                        Ok(bytes) => decode_image(&bytes).await.map(|img| (img, sp)),
+                        Err(_) => None,
+                    }
+                }
+                _ => None,
+            };
+            if sys_gen.get_untracked() != gen {
+                return;
+            }
+            match img {
+                Some((img, sp)) => {
+                    globe_cache.update_value(|c| {
+                        c.insert(base.clone(), (img.clone(), sp));
+                    });
+                    show_globe(img, sp, title);
+                }
+                // Texture unavailable (endpoint not live / decode failed) → APNG.
+                None => launch_apng(title),
+            }
+        });
     };
+    // Start/stop the WebGL globe renderer in step with the popup state: whenever
+    // the view is `Globe` and its canvas is mounted, (re)start the rAF loop; on any
+    // other view (or close) drop the running animation, which halts the loop and
+    // frees the GL resources. Re-runs when `system_view` or the canvas ref changes.
+    #[cfg(feature = "callisto")]
+    Effect::new(move |_| {
+        let view = system_view.get();
+        globe_anim.update_value(|a| {
+            a.take(); // dropping the prior GlobeAnim stops its loop
+        });
+        if let Some(ImgView::Globe {
+            tex,
+            starport,
+            title,
+        }) = view
+        {
+            if let Some(canvas) = globe_canvas_ref.get() {
+                match globe::start(&canvas, &tex, starport) {
+                    Some(anim) => globe_anim.set_value(Some(anim)),
+                    // GL setup failed after the up-front check (e.g. a fragment
+                    // shader with no `highp` support) → fall back to the APNG globe
+                    // rather than leave a blank canvas. Switching to Loading/Ready
+                    // re-runs this effect into the no-op (non-Globe) branch.
+                    None => {
+                        if let Some(base) = world_base.get_untracked() {
+                            launch_render(
+                                system_view,
+                                sys_zoom,
+                                sys_pan,
+                                sys_elapsed,
+                                sys_timer,
+                                sys_gen,
+                                format!("{base}&projection=globe"),
+                                title,
+                                Some(base),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    });
     // Render one body's surface map (`/api/world`) from the data-attributes the
     // system SVG carries on each `<g class="sysmap-body">`. `sector`/`hex` are the
     // system's seed identity; `orbit` (absent for moons) defaults to the service's
@@ -2679,6 +2849,61 @@ fn App() -> impl IntoView {
                                          let (px, py) = sys_pan.get();
                                          format!("translate({px}px, {py}px) scale({z})")
                                      } />
+                            </div>
+                        }.into_any()
+                    }
+                    // WebGL spinning globe — a square canvas the `globe.rs` rAF loop
+                    // draws into (the Effect above starts/stops it). The shader
+                    // discards outside the disc, so the dark popup shows through.
+                    Some(ImgView::Globe { title, .. }) => {
+                        let (title_f, title_g) = (title.clone(), title.clone());
+                        let seg = "padding:6px 12px; border:none; cursor:pointer; \
+                                   font:600 12px system-ui;";
+                        view! {
+                            <div class="tmap-sysmodal-head" style="flex:none; display:flex; align-items:center; gap:8px; padding:10px 14px;">
+                                <span style="flex:1; min-width:0; font:700 15px system-ui; color:#fff; \
+                                             overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                                    {title.clone()}
+                                </span>
+                                <div style="flex:none; display:flex; border:1px solid #2a3145; \
+                                            border-radius:15px; overflow:hidden;">
+                                    <button style=seg
+                                            style:background=move || if world_globe.get() { "rgba(40,44,58,0.7)" } else { "#e32736" }
+                                            style:color=move || if world_globe.get() { "#cdd5e6" } else { "#fff" }
+                                            on:click=move |_| {
+                                                if world_globe.get_untracked() {
+                                                    if let Some(b) = world_base.get_untracked() {
+                                                        launch_world(b, false, title_f.clone());
+                                                    }
+                                                }
+                                            }>"🗺 Flat"</button>
+                                    <button style=seg
+                                            style:background=move || if world_globe.get() { "#e32736" } else { "rgba(40,44,58,0.7)" }
+                                            style:color=move || if world_globe.get() { "#fff" } else { "#cdd5e6" }
+                                            on:click=move |_| {
+                                                if !world_globe.get_untracked() {
+                                                    if let Some(b) = world_base.get_untracked() {
+                                                        launch_world(b, true, title_g.clone());
+                                                    }
+                                                }
+                                            }>"🌐 Globe"</button>
+                                </div>
+                                <span on:click=move |_| close_system()
+                                      style="flex:none; cursor:pointer; color:#fff; font-size:24px; line-height:1; padding:0 6px;">"✕"</span>
+                            </div>
+                            <div on:click=move |ev: web_sys::MouseEvent| {
+                                     // Tap the dark margin (not the canvas) dismisses.
+                                     let bg = match (ev.target(), ev.current_target()) {
+                                         (Some(t), Some(c)) => {
+                                             wasm_bindgen::JsValue::from(t) == wasm_bindgen::JsValue::from(c)
+                                         }
+                                         _ => false,
+                                     };
+                                     if bg { close_system(); }
+                                 }
+                                 style="flex:1; display:flex; align-items:center; justify-content:center; overflow:hidden;">
+                                <canvas node_ref=globe_canvas_ref
+                                        style="width:min(460px, 80vmin); height:min(460px, 80vmin); display:block;" />
                             </div>
                         }.into_any()
                     }
