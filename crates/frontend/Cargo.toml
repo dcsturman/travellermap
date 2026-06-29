@@ -18,6 +18,7 @@ callisto = ["dep:gif", "dep:color_quant"]
 
 [dependencies]
 tmap-core.workspace = true
+tmap-render.workspace = true
 serde.workspace = true
 leptos = { version = "0.8.19", features = ["csr"] }
 console_error_panic_hook = "0.1.7"

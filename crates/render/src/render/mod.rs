@@ -4,11 +4,12 @@
 //! gets red polity borders, white dashed routes, region labels and a star
 //! field; the close view colors worlds (water/dry, amber/red zones) and reveals
 //! names then UWPs as you zoom in. Absolute parsec coordinates throughout. This
-//! module knows nothing about `web-sys` beyond the `Canvas2d` backend handoff.
+//! module is backend-neutral — it draws only through `trait Canvas`, so the same
+//! passes run in the WASM frontend (Canvas2d) and the native backend (SVG).
 //!
 //! The frame is split into per-pass submodules (one file per render layer);
-//! `draw` below is the only orchestrator. Shared view/transform math, the LOD
-//! thresholds, the palette, and the hex geometry helpers live in [`common`].
+//! [`draw_scene`] below is the only orchestrator. Shared view/transform math, the
+//! LOD thresholds, the palette, and the hex geometry helpers live in [`common`].
 
 mod borders;
 mod common;
@@ -25,7 +26,6 @@ mod worlds;
 use std::collections::HashMap;
 
 use tmap_core::dto::{Overlays, RouteResult, SectorData};
-use web_sys::HtmlCanvasElement;
 
 use crate::canvas::{Canvas, Geometry, PathBuilder};
 
@@ -43,8 +43,6 @@ use common::{
     SUBSECTOR_NAME_MIN, SUBSECTOR_W, WORLD_BASIC_SCALE,
 };
 
-use crate::canvas::Canvas2d;
-
 /// Flat backdrop behind the jump-N cutout bubble (the light gray surround in the
 /// reference's Jump-N Neighborhood image).
 const JUMPMAP_SURROUND: &str = "#e8e8e8";
@@ -58,10 +56,18 @@ pub fn clear_caches() {
     worlds::clear_sector_dots();
 }
 
-/// Draw the map under the current view, choosing layers by LOD.
+/// Draw the map under the current view, choosing layers by LOD, onto any
+/// [`Canvas`] backend. The caller supplies the prepared canvas `c` and the
+/// logical frame size `(w, h)` in CSS pixels plus the device-pixel-ratio `dpr`
+/// (the frontend's `Canvas2d::for_frame` returns these; the backend's SVG canvas
+/// passes `dpr = 1.0`). `view.scale` is px-per-parsec in those CSS units —
+/// matching the reference's `Stylesheet` calibration (fontScale, LOD thresholds).
 #[allow(clippy::too_many_arguments)]
-pub fn draw(
-    canvas: &HtmlCanvasElement,
+pub fn draw_scene<C: Canvas>(
+    c: &C,
+    w: f64,
+    h: f64,
+    dpr: f64,
     sectors: &[&SectorData],
     overlays: Option<&Overlays>,
     sector_index: &HashMap<(i32, i32), String>,
@@ -70,16 +76,8 @@ pub fn draw(
     theme: &Theme,
     route: Option<&RouteResult>,
 ) {
-    // Draw in logical (CSS) pixels: `for_frame` scales the context by the device
-    // pixel ratio so `view.scale` is px-per-parsec in CSS units — matching the
-    // reference's `Stylesheet` calibration (fontScale, LOD thresholds) and
-    // staying crisp on retina.
-    let Some((c, w, h, dpr)) = Canvas2d::for_frame(canvas) else {
-        return;
-    };
-
-    // Per-layer timing for the profiling HUD. `now()` (performance.now) is
-    // cheap, so always measure; only paint the overlay when `perf_hud` is on.
+    // Per-layer timing for the profiling HUD. `now()` is cheap, so always
+    // measure; only paint the overlay when `perf_hud` is on.
     let mut marks: Vec<(&'static str, f64)> = Vec::new();
     let mut t = now();
     let mut mark = |label: &'static str, marks: &mut Vec<(&'static str, f64)>| {
@@ -104,18 +102,18 @@ pub fn draw(
         c.clear(theme.background, w, h);
         // Candy nebula fills the viewport at detail zoom, below the galaxy.
         if theme.show_nebula {
-            stars::draw_nebula(&c, &view, w, h);
+            stars::draw_nebula(c, &view, w, h);
         }
         // Galaxy image behind the starfield (macro zoom only; fades out by scale 2).
         if theme.show_galaxy {
-            stars::draw_galaxy(&c, &view, w, h);
+            stars::draw_galaxy(c, &view, w, h);
         }
-        stars::draw_stars(&c, &view, w, h, theme);
+        stars::draw_stars(c, &view, w, h, theme);
         mark("stars", &mut marks);
 
         if view.scale < MACRO_MAX_SCALE {
             if let Some(ov) = overlays {
-                overlays::draw_overlays(&c, &view, w, h, ov, opts, theme);
+                overlays::draw_overlays(c, &view, w, h, ov, opts, theme);
             }
         }
         // Capitals + homeworlds (Worlds.xml): red dot+name labels. Kept visible
@@ -125,19 +123,19 @@ pub fn draw(
         if opts.important_worlds && (MACRO_WORLDS_MIN..=MACRO_LABEL_MAX_SCALE).contains(&view.scale)
         {
             if let Some(ov) = overlays {
-                overlays::draw_world_labels(&c, &view, w, h, ov, theme);
+                overlays::draw_world_labels(c, &view, w, h, ov, theme);
             }
         }
         // Minor region labels (minor_labels.tab) — red region names, same band.
         if opts.region_names && (MACRO_WORLDS_MIN..=MACRO_LABEL_MAX_SCALE).contains(&view.scale) {
             if let Some(ov) = overlays {
-                overlays::draw_minor_labels(&c, &view, w, h, ov, theme);
+                overlays::draw_minor_labels(c, &view, w, h, ov, theme);
             }
         }
         // Galaxy-scale mega labels at the most zoomed-out view (MegaLabelMaxScale=1/4).
         if opts.region_names && view.scale <= 0.25 {
             if let Some(ov) = overlays {
-                overlays::draw_mega_labels(&c, &view, w, h, ov, theme);
+                overlays::draw_mega_labels(c, &view, w, h, ov, theme);
             }
         }
         mark("macro", &mut marks);
@@ -151,17 +149,17 @@ pub fn draw(
         .grid
         .map_or_else(|| common::grid_color(view.scale), str::to_string);
     if opts.sector_grid && view.scale >= SUBSECTOR_GRID_MIN {
-        grid::draw_grid_lines(&c, &view, w, h, SUBSECTOR_W, SUBSECTOR_H, &gc, 1.4);
+        grid::draw_grid_lines(c, &view, w, h, SUBSECTOR_W, SUBSECTOR_H, &gc, 1.4);
     }
     if opts.sector_grid && view.scale >= SECTOR_GRID_MIN {
-        grid::draw_grid_lines(&c, &view, w, h, SECTOR_W, SECTOR_H, &gc, 1.6);
+        grid::draw_grid_lines(c, &view, w, h, SECTOR_W, SECTOR_H, &gc, 1.6);
     }
     if opts.sector_names && (SECTOR_NAME_MIN..=SECTOR_NAME_MAX).contains(&view.scale) {
-        labels::draw_sector_names(&c, &view, w, h, sector_index, theme);
+        labels::draw_sector_names(c, &view, w, h, sector_index, theme);
     }
     if opts.region_names && (SUBSECTOR_NAME_MIN..=SUBSECTOR_NAME_MAX).contains(&view.scale) {
         for sector in sectors {
-            labels::draw_subsector_names(&c, &view, w, h, sector, theme);
+            labels::draw_subsector_names(c, &view, w, h, sector, theme);
         }
     }
     mark("grid+names", &mut marks);
@@ -170,7 +168,7 @@ pub fn draw(
         // Micro borders (fill behind everything, then stroke).
         if opts.borders {
             borders::draw_micro_borders(
-                &c,
+                c,
                 &view,
                 w,
                 h,
@@ -185,25 +183,17 @@ pub fn draw(
         mark("borders", &mut marks);
         if opts.routes && view.scale >= ROUTE_MIN_SCALE {
             for sector in sectors {
-                routes::draw_routes(
-                    &c,
-                    &view,
-                    w,
-                    h,
-                    sector,
-                    theme.micro_route,
-                    theme.taper_lines,
-                );
+                routes::draw_routes(c, &view, w, h, sector, theme.micro_route, theme.taper_lines);
             }
         }
         // Per-parsec hex grid only once hexes are big enough to read (and to
         // avoid drawing tens of thousands of hexagons when zoomed out).
         if opts.sector_grid && theme.show_hex_grid && view.scale >= PARSEC_GRID_MIN_SCALE {
-            grid::draw_hex_grid(&c, &view, w, h, dpr, sector_index, theme.grid);
+            grid::draw_hex_grid(c, &view, w, h, dpr, sector_index, theme.grid);
         }
         // Blueprint styles number every hex (Draft/FASA/Terminal), not just worlds.
         if theme.number_all_hexes && view.scale >= WORLD_BASIC_SCALE {
-            grid::draw_all_hex_numbers(&c, &view, w, h, theme);
+            grid::draw_all_hex_numbers(c, &view, w, h, theme);
         }
         mark("routes+hexgrid", &mut marks);
         // Disc / zone-ring / vacuum-outline layer: identical geometry at every
@@ -213,18 +203,18 @@ pub fn draw(
         // hydrographics globe texture and a to-the-right decoration ring, but only
         // at detail zoom; the dot tier below that still uses the batched dots.
         if theme.use_world_images && view.scale >= WORLD_BASIC_SCALE {
-            worlds::draw_placeholder_glyphs(&c, &view, w, h, sectors, theme);
-            worlds::draw_world_images(&c, &view, w, h, sectors, theme);
+            worlds::draw_placeholder_glyphs(c, &view, w, h, sectors, theme);
+            worlds::draw_world_images(c, &view, w, h, sectors, theme);
         } else {
-            worlds::draw_world_dots(&c, &view, w, h, dpr, sectors, opts.more_world_colors, theme);
+            worlds::draw_world_dots(c, &view, w, h, dpr, sectors, opts.more_world_colors, theme);
             // Placeholder (`*`) / anomaly (`⌖`) glyphs stand in for the disc on
             // unknown-UWP worlds and deep-space stations.
-            worlds::draw_placeholder_glyphs(&c, &view, w, h, sectors, theme);
+            worlds::draw_placeholder_glyphs(c, &view, w, h, sectors, theme);
             // At basic scale and up, add the per-world text + small glyphs (hex#,
             // starport, gas giant, bases, UWP, allegiance, name) in state-batched
             // passes: canvas font/fill/align set once per pass, not once per glyph.
             if view.scale >= WORLD_BASIC_SCALE {
-                worlds::draw_world_glyphs(&c, &view, w, h, sectors, theme);
+                worlds::draw_world_glyphs(c, &view, w, h, sectors, theme);
             }
         }
         mark("worlds", &mut marks);
@@ -233,8 +223,8 @@ pub fn draw(
         // MicroNameMinScale (16) up (reference `showMicroNames`).
         if opts.region_names && view.scale >= 16.0 {
             for sector in sectors {
-                labels::draw_border_labels(&c, &view, w, h, sector, theme);
-                labels::draw_sector_labels(&c, &view, w, h, sector, theme);
+                labels::draw_border_labels(c, &view, w, h, sector, theme);
+                labels::draw_sector_labels(c, &view, w, h, sector, theme);
             }
         }
     }
@@ -248,23 +238,23 @@ pub fn draw(
 
     // Dim sectors not flagged Official/Preserve/InReview (opt-in appearance).
     if opts.dim_unofficial {
-        status::draw_dim_overlay(&c, &view, w, h, sectors);
+        status::draw_dim_overlay(c, &view, w, h, sectors);
     }
 
     // A computed jump route (from `/api/route`), highlighted over the map.
     if let Some(r) = route {
-        routes::draw_jump_route(&c, &view, w, h, r);
+        routes::draw_jump_route(c, &view, w, h, r);
     }
 
     // Compass labels last, on top of everything, at every zoom.
     if opts.galactic_direction {
-        labels::draw_galactic_directions(&c, w, h);
+        labels::draw_galactic_directions(c, w, h);
     }
 
     mark("labels+misc", &mut marks);
 
     if opts.perf_hud {
-        hud::draw_perf_hud(&c, w, h, &marks, sectors.len(), view.scale);
+        hud::draw_perf_hud(c, w, h, &marks, sectors.len(), view.scale);
     }
 }
 
@@ -287,10 +277,13 @@ fn build_jump_clip_path(view: &ViewState, w: f64, h: f64, jc: JumpClip) -> Geome
     path.finish()
 }
 
-/// `performance.now()` in milliseconds (monotonic, sub-ms). Returns 0 if
-/// unavailable (e.g. no window) so timing degrades gracefully.
+/// Monotonic milliseconds since first call (sub-ms), for the per-pass profiling
+/// timer. `web-time` maps to `performance.now` on wasm and `std::time::Instant`
+/// natively, so this crate stays web-sys-free while the frontend HUD keeps real
+/// timings.
 pub(crate) fn now() -> f64 {
-    web_sys::window()
-        .and_then(|w| w.performance())
-        .map_or(0.0, |p| p.now())
+    thread_local! {
+        static START: web_time::Instant = web_time::Instant::now();
+    }
+    START.with(|s| s.elapsed().as_secs_f64() * 1000.0)
 }

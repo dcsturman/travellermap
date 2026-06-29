@@ -20,7 +20,6 @@ use web_sys::HtmlCanvasElement;
 mod canvas;
 #[cfg(feature = "callisto")]
 mod globe;
-mod glyph;
 mod render;
 mod route_print;
 mod world_panel;

@@ -3,11 +3,11 @@
 # and a Leptos/WASM client-side-rendering frontend.
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/backend", "crates/frontend"]
+members = ["crates/core", "crates/render", "crates/backend", "crates/frontend"]
 # The frontend is wasm-only (built with Trunk), so keep it out of bare
 # root-level `cargo build`/`test`, which target the native host. Build it
 # explicitly: `trunk build` (or `cargo check -p tmap-frontend --target wasm32-unknown-unknown`).
-default-members = ["crates/core", "crates/backend"]
+default-members = ["crates/core", "crates/render", "crates/backend"]
 
 [workspace.package]
 edition = "2021"
@@ -18,6 +18,7 @@ repository = "https://github.com/inexorabletash/travellermap"
 # unify cleanly across native + wasm builds (resolver = "2" above).
 [workspace.dependencies]
 tmap-core = { path = "crates/core" }
+tmap-render = { path = "crates/render" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
