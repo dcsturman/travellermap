@@ -2918,9 +2918,9 @@ fn App() -> impl IntoView {
                                                 // Let the toast paint before the synchronous
                                                 // (single-threaded) capture + GIF encode.
                                                 yield_to_browser().await;
-                                                // 8 cs/frame → ~3.2s per rotation (half the old 4 cs speed).
+                                                // 12 cs/frame → ~4.8s per rotation.
                                                 let gif = globe::capture_frames(&tex, sp, 256, 40)
-                                                    .and_then(|frames| globe::frames_to_gif(&frames, 256, 8));
+                                                    .and_then(|frames| globe::frames_to_gif(&frames, 256, 12));
                                                 let result = match gif.as_deref().and_then(|b| typed_blob(b, "image/gif")) {
                                                     Some(blob) => post_file_to_discord(&hook, &blob, "globe.gif", &cap).await,
                                                     None => Err("couldn't render the globe".to_string()),
