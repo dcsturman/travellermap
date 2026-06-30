@@ -15,12 +15,11 @@ file as we go: tick boxes, fold in decisions, keep entries short.
 
 ## Baked-in tech decisions
 
-- **All render logic in Rust/WASM behind a `Canvas` trait (Canvas 2D backend).**
-  The trait mirrors the reference `AbstractGraphics` and is fully sealed: every render pass draws
-  through it (retained `Geometry`/`PathBuilder`, an affine transform, clip, immediate shapes/text),
-  so scene logic never touches `web-sys` directly. WASM can't paint directly — `web-sys` is the
-  binding to Canvas 2D; the win is that *logic* (scene, culling, LOD, parsing) is compiled WASM while
-  the browser's native/GPU-accelerated 2D rasterizer does the final draw.
+- **All render logic in Rust/WASM behind a `Canvas` trait; Canvas 2D backend now, wgpu later.**
+  The trait mirrors the reference `AbstractGraphics`, so `RenderContext`/`Stylesheet` is ported
+  once and a `WgpuCanvas` can drop in without rewriting scene logic. WASM can't paint directly —
+  `web-sys` is the binding to Canvas 2D/WebGPU; the win is that *logic* (scene, culling, LOD,
+  parsing) is compiled WASM while the browser's native/GPU rasterizer does the final draw.
 - **Parsing lives in `tmap-core`** (I/O-free): `.tab`/`.sec`/`.xml` → `dto` types. Backend does
   I/O + serving; frontend consumes JSON. Same parser will feed the future tile-precompute tool.
 - **LOD is in the API contract from day one** (`?lod=`), but the parser is always full-fidelity —
@@ -109,7 +108,7 @@ the Tantivy + query-language work in Phase 12.)*
 - *Render module split (`9baad5ef`):* `render.rs` → `render/` (one file per pass over a shared
   `common.rs`), to give the parity/theme work clean per-file ownership.
 
-## Phase 10+ — interactive reference features (done)
+## Phase 10 — interactive reference features (done)
 
 Reference features built alongside/after the Phase 10 parity pass.
 
@@ -136,15 +135,11 @@ Reference features built alongside/after the Phase 10 parity pass.
   (top-bar restack, tap-outside-to-close panels, dynamic-viewport modals), **CI** (`2026-06-16`:
   native clippy `-D warnings` + tests; wasm `cargo check` for default + callisto).
 
----
-
-# Remaining phases (11+)
-
 ## Phase 11 — Style themes 🔨 IN PROGRESS
 
 The Poster / Atlas / Print / Draft / FASA / Terminal / Mongoose presets (+ Candy, deferred).
-Plan + per-preset values cited from `Stylesheet.cs`: **`STYLE_THEMES_PLAN.md`**. A theme is a
-small palette+flags struct; all geometry/LOD is shared and already ported.
+Per-preset values are cited from `Stylesheet.cs` (see `crates/render/src/render/theme.rs`).
+A theme is a small palette+flags struct; all geometry/LOD is shared and already ported.
 
 - [x] **A — Theme plumbing + default extraction (2026-06-18).** `render/theme.rs`: a `Theme`
   struct + `Theme::poster()` holding today's exact colors, threaded as `&Theme` through every pass.
@@ -158,57 +153,17 @@ small palette+flags struct; all geometry/LOD is shared and already ported.
   `micro_border_text` overrides (draw-time, no cache rebuild), grid override, `uppercase_worlds`,
   the `worldDetails &= ~…` field drops (FASA/Draft/Mongoose), `show_galaxy`/`show_rift`. Settings →
   **STYLE** selector (red-highlighted, like the milieu picker); switching `render::clear_caches()`
-  then redraws (the world-dot cache bakes colors). **All presets now wired (2026-06-19):** Candy
-  (palette/text/globe/nebula/curved borders), curved micro borders (FASA/Candy), all-hex numbering +
-  subsector hex coords (Draft/FASA/Terminal), and Mongoose (filled-UWP + zone-perimeters + disc-offset
-  glyph layout) + the Candy text scale-expansion. **Minor residuals:** Mongoose's middle base-slot x,
-  and macro-name fonts.
+  then redraws (the world-dot cache bakes colors). **Not yet replicated (flagged in `theme.rs`):**
+  curved micro borders (FASA), all-hex numbering + subsector hex coords (Draft/FASA/Terminal), the
+  Mongoose glyph re-layout + zone-perimeters + filled-UWP, text scale-expansion, and macro-name
+  fonts. **Candy deferred** (needs per-world globe images + nebula background — out of scope) but
+  planned to fully support later (user).
 - [x] **C tail — `&style=` URL round-trip (DONE 2026-06-18).** `build_share_url` appends
   `&style=<preset>` (omitted at the default Poster); `parse_share_params` reads it back
   (case-insensitive, validated against `Theme::PRESETS`) and seeds the `style` signal on load.
   The debounced address-bar reflection includes it, so a shared link / reload restores the style.
   Param name matches travellermap.com's (forward-compatible with the reference-URL work).
-- [ ] **Candy** preset 🔨. **All assets are already local** (`res/Candy/`: `Galaxy.png`, `Nebula.png`,
-  `Rifts.png`, `Hyd0`–`HydA` + `Belt`), served at `/api/res/Candy/`; the world-detail thumbnails already
-  load the `Hyd*` set. (The *photographic* per-world globes are a separate, optional detail-popup feature
-  from the public S3 bucket `travellermap.s3.amazonaws.com/images/worlds/{Abbr} {Hex}.png` — public, CORS
-  `*`, keyed by sector-abbrev+hex; not needed for the Candy map style.) All values below are verbatim from
-  `Stylesheet.cs case Style.Candy:` (790–860) + defaults; cite-checked against a reference screenshot.
-  - **Palette/flags (Phase 1 — no asset deps):**
-    - Background **`#000000`** (Candy never sets it → Poster black); galaxy ON (inherited); rifts forced ON
-      (`Stylesheet.cs:271`) → `show_rift:true`.
-    - **Borders are per-polity, same as Poster** — `border.Color ?? allegianceStylesheet ?? microBorders.pen.color`
-      (`RenderContext.cs:1825-1830`); metadata borders carry no `Color=`, so each polity colors from `otu.css`.
-      Candy's `microBorders.pen.color=FromArgb(128,Red)` is only the no-color fallback → **`micro_border:None`**
-      (do NOT override). No internal Imperium domain seams (our merged-prefix union already matches).
-    - **Polity labels Amber `#FFCC00`** — `microBorders.textColor` default (`Stylesheet.cs:405`), Candy doesn't
-      change it → `micro_border_text` stays Amber (NOT red).
-    - **Sector/subsector watermark `rgba(218,165,32,0.502)`** = `FromArgb(128,Goldenrod)` (`:838`);
-      `fadeSectorSubsectorNames=false` (`:796`) → `name_full/dark/dim` all that color, no fade tiers.
-    - **Amber zone `#daa520` Goldenrod** (`:825`); red zone color unchanged.
-    - **worldDetails drops:** Starport, Allegiance, Bases, Hex (`:817-818`) → `drop_starport/allegiance/bases`.
-    - **Uppercase + non-uniform text `Scale` ("different font" — Arial family unchanged, `:217`)**: worlds
-      `Scale(1.0,0.5) Tr(0,0)` (`:850-853`); sectorName `Scale(0.5,0.25) Tr(0,-0.25)` (`:828-831`); subsectorNames
-      `Scale(0.3,0.15) Tr(0,-0.25)` (`:833-836`); microBorders `Scale(1.0,0.5) Tr(0,0.25)` (`:840-843`); all
-      Uppercase. This vertical-squish transform is the defining Candy look — **in Phase 1 scope**, needs a
-      per-label scale/translate transform in `worlds.rs` (names) + `labels.rs` (sector/subsector/border).
-  - **Phase 1 — DONE 2026-06-19.** `candy()` preset + palette/flags; `uppercase_labels` wired into all label
-    sites; **text transforms** — watermarks horizontal (`name_rotation=0`) + non-uniform `Scale`
-    (sector `(0.5,0.25)`, subsector `(0.3,0.15)`), world names vertical-squished `(1.0,0.5)` via a generalized
-    `fill_text_rotated(scale_x,scale_y)`. New `Theme` fields `name_rotation`/`sector_name_scale`/
-    `subsector_name_scale`/`world_name_scale`. Auto-listed in the STYLE selector + `&style=candy`.
-  - **Phase 2 — DONE 2026-06-19.** Nebula tiling (`stars::draw_nebula`, 2048px world-anchored tile, shown when
-    `deepBackgroundOpacity<0.5`); world-globe compositing (`worlds::draw_world_images`) — `Hyd{0-A}`/`Belt` from
-    `imageRadius(Size)`, decorations laid out **to the right** on a growing `decorationRadius` ring: 4-arc
-    near-full **zone circle**, gas-giant disc, UWP, then the squished left-aligned **name** (matches
-    `RenderContext.cs:1356-1481`). `mod.rs` swaps dots+glyphs → globes for Candy at detail zoom; nebula drawn
-    below galaxy. New `Theme` fields `use_world_images`/`show_nebula`.
-  - **Phase 3 (defer, "not replicated"):** curved micro borders (cardinal spline, tension 0.6 stroke/0.5 fill,
-    `SVGGraphics.cs:677-736` + `RenderUtil.cs` `BorderPath` edge-walk; benefits FASA too — own track), the
-    gas-giant Saturn **ring**, **hide the per-parsec hex grid in Candy** (`parsecGrid.visible=false` +
-    `hexStyle=None`, `Stylesheet.cs:800,805` — needs a `show_hex_grid` theme flag gating `draw_hex_grid`),
-    sector/subsector grid dash `{10,8}`/width, `Shadow` text background, per-scale border/route width taper,
-    `hexContentScale`, and the scale-gated Candy name/UWP thresholds (`CandyMin*Scale`).
+- [ ] **Candy** preset, when its prerequisites (world-globe images + nebula background) land.
 
 ## Phase 12 — Public API compatibility
 
@@ -227,27 +182,17 @@ Full matrix + decisions in **`PORT_API_COMPAT.md`** (the live tracker — don't 
 - [x] Search envelope made API-compatible (`2026-06-16`); JSONP + XML content negotiation across
   universe/search/credits/jumpworlds/route (`29ce0405`); Aslan-interior inline borders from the
   milieu region list (`60dd139d`). Metadata XML, `/data` aliases, POST `/api/sec`+`/api/metadata`.
-- [x] **All documented data endpoints + shape gaps closed.** `/api/coordinates`, `/api/jumpworlds`,
-  and the full `/data/{sector}/…` URL family are implemented + live-parity-tested; the search
-  specials (`(random world)` + canned `(name)`→`res/search/*.json`) landed `2026-06-18`. **Decision
-  taken:** adopt the public PascalCase shapes + documented URLs as the single contract (not a parallel
-  private one) — see `PORT_API_COMPAT.md`. Only render endpoints (tile/poster/jumpmap) remain N/A by
-  design (client-side rendering).
+- [ ] **Remaining endpoint/shape gaps** per `PORT_API_COMPAT.md` — `/api/coordinates`,
+  `/api/jumpworlds`, `(random world)`/canned search specials, and the `/data/{sector}/…` URL
+  family. **Open decision:** reshape to the documented contract vs. a thin compatibility layer.
 
 ## Phase 13 — Polish & quality
 
-- [x] **Top control-bar order + Milieu into Settings — DONE 2026-06-19.** Control cluster is now
-  Home, Settings, Share, Key, Help; the Milieu picker moved into the Settings panel as an "ERA (MILIEU)"
-  wrap-button selector (mirrors STYLE); the standalone milieu panel was removed.
-- [x] **Credits: always-prefix Mongoose ownership — DONE 2026-06-19.** The footer always leads with the
-  Mongoose ownership line, then appends the per-sector data source (line-clamp bumped 2→3 to fit).
-- [x] **World-detail panel tails — DONE 2026-06-19.** (a) **Generate World Map** link: ported the
-  reference `world_util.js` `travellerworlds.com` generator URL (same params + seed) — shown **only in
-  the non-`callisto` build**; the Callisto build keeps its in-app worldgen "World Map" button instead.
-  (b) **Placeholder UWPs** (`XXXXXXX-X`/`???????-?`) now render an "Unsurveyed — no system data" note
-  (+ allegiance/zone) instead of decoding gibberish (`is_placeholder_uwp`, reference `isPlaceholder`).
-  (c) **Resource Units** surfaced in the Economics section — `tmap_core::world_util::resource_units`
-  (RU column when present, else computed `R×L×I×E`, 0→1, signed efficiency; tested vs Regina = 6370).
+- [ ] **World-detail panel tails** — Generate World Map outbound link (`travellerworlds.com`),
+  placeholder (`XXXXXXX-X`) styling, surface RU. *(Core panel + print sheet + per-J range view all
+  shipped — see `crates/frontend/src/world_panel.rs`.)*
+- [ ] **Reference-parity harness** — diff parsed data / rendered frames against travellermap.com
+  (or a local reference build) to catch regressions.
 - [x] **Frontend clippy gated — DONE 2026-06-18.** Cleaned the frontend wasm clippy (real fixes +
   named structs over two complex tuple types; `#[allow(too_many_arguments)]` only on the wide-but-
   flat render entry points). The wasm CI job now runs `cargo clippy … -- -D warnings` for both the
@@ -264,11 +209,7 @@ Full matrix + decisions in **`PORT_API_COMPAT.md`** (the live tracker — don't 
 - [x] **Cloud Run deploy scripts (2026-06-15).** `scripts/build.sh` (local verify) + `scripts/deploy.sh`
   (`gcloud builds submit` → Artifact Registry → `gcloud run deploy`, scale-to-zero). Custom domain
   `travellermap.callistoflight.com` (`DEPLOY.md`). Admin flush gated behind `TMAP_ENABLE_ADMIN`.
-- [x] **CDN (Cloudflare) — code + scripts done (2026-06-18).** Data endpoints now send cacheable
-  `public, max-age=300, s-maxage=86400, stale-while-revalidate` (+ETag) instead of `no-cache`, so the
-  hot sectors edge-cache; `scripts/purge-cdn.sh` flushes the edge on every deploy (wired into
-  `deploy.sh`, optional `CF_ZONE_ID`/`CF_API_TOKEN`). Remaining is the one-time Cloudflare dashboard
-  setup (proxy the record, Full-strict SSL, a `/api`+`/data` cache rule) — documented in `DEPLOY.md`.
+- [x] **CDN** — `Cache-Control`/ETag → Cloud CDN via an HTTPS load balancer (optimization).
 
 *Test:* `scripts/build.sh run` → full app on `:8080`; `scripts/deploy.sh` → live on Cloud Run.
 

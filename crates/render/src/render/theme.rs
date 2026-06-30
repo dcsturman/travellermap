@@ -1,6 +1,6 @@
 //! Map style themes — the palette/font/flags selected per preset, threaded through
 //! every render pass. Ported **verbatim** from the reference `server/Stylesheet.cs`
-//! `switch (style)` block + its `DefaultTo` cascade. See `STYLE_THEMES_PLAN.md`.
+//! `switch (style)` block + its `DefaultTo` cascade.
 //!
 //! Structure mirrors the reference: `poster()` is the default (our current look,
 //! kept as-is), and each alternate is `Self { <overrides>, ..Self::poster() }` —
