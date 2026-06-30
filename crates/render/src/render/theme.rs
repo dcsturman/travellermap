@@ -461,9 +461,10 @@ impl Theme {
     /// subsector watermarks (no fade, `fadeSectorSubsectorNames=false`); **Goldenrod**
     /// amber zones; drops starport/allegiance/bases/hex; UPPERCASE worlds + labels.
     /// `use_world_images`/`show_nebula` drive the Phase-2 globe + nebula compositing
-    /// (local `res/Candy/` assets). **Not yet replicated:** the non-uniform text
-    /// `Scale` squish, curved micro borders (own track), grid dash/width, `Shadow`
-    /// text background, per-scale width taper, `hexContentScale`.
+    /// (local `res/Candy/` assets); curved micro borders are wired via
+    /// `curved_borders`. **Not yet replicated** (minor cosmetic): the non-uniform
+    /// text `Scale` squish, grid dash/width, `Shadow` text background, per-scale
+    /// width taper, `hexContentScale`.
     pub fn candy() -> Self {
         Self {
             name: "Candy",

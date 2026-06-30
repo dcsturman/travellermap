@@ -135,7 +135,7 @@ Reference features built alongside/after the Phase 10 parity pass.
   (top-bar restack, tap-outside-to-close panels, dynamic-viewport modals), **CI** (`2026-06-16`:
   native clippy `-D warnings` + tests; wasm `cargo check` for default + callisto).
 
-## Phase 11 — Style themes 🔨 IN PROGRESS
+## Phase 11 — Style themes ✅ DONE
 
 The Poster / Atlas / Print / Draft / FASA / Terminal / Mongoose presets (+ Candy, deferred).
 Per-preset values are cited from `Stylesheet.cs` (see `crates/render/src/render/theme.rs`).
@@ -153,17 +153,21 @@ A theme is a small palette+flags struct; all geometry/LOD is shared and already 
   `micro_border_text` overrides (draw-time, no cache rebuild), grid override, `uppercase_worlds`,
   the `worldDetails &= ~…` field drops (FASA/Draft/Mongoose), `show_galaxy`/`show_rift`. Settings →
   **STYLE** selector (red-highlighted, like the milieu picker); switching `render::clear_caches()`
-  then redraws (the world-dot cache bakes colors). **Not yet replicated (flagged in `theme.rs`):**
-  curved micro borders (FASA), all-hex numbering + subsector hex coords (Draft/FASA/Terminal), the
-  Mongoose glyph re-layout + zone-perimeters + filled-UWP, text scale-expansion, and macro-name
-  fonts. **Candy deferred** (needs per-world globe images + nebula background — out of scope) but
-  planned to fully support later (user).
+  then redraws (the world-dot cache bakes colors). **Subsequently completed (Phase 11 tail):**
+  curved micro borders (FASA/Candy, `borders.rs` `build_curved_geometry`), all-hex numbering +
+  subsector hex coords (Draft/FASA/Terminal, `theme.number_all_hexes`), and the Mongoose glyph
+  re-layout + zone-perimeters + filled-UWP (`theme.mongoose_layout`).
 - [x] **C tail — `&style=` URL round-trip (DONE 2026-06-18).** `build_share_url` appends
   `&style=<preset>` (omitted at the default Poster); `parse_share_params` reads it back
   (case-insensitive, validated against `Theme::PRESETS`) and seeds the `style` signal on load.
   The debounced address-bar reflection includes it, so a shared link / reload restores the style.
   Param name matches travellermap.com's (forward-compatible with the reference-URL work).
-- [ ] **Candy** preset, when its prerequisites (world-globe images + nebula background) land.
+- [x] **Candy** preset (DONE). Globe textures via `worlds.rs` `draw_world_images` — reusing the
+  ~12 `res/Candy/Hyd*`/`Belt` hydrographic generics keyed by hydrographics digit (the reference's
+  own `useWorldImages` scheme — **no bespoke per-world images**); tiled nebula background
+  (`stars.rs` `draw_nebula`); curved borders; uppercase + Goldenrod zones; starport/alleg/bases/hex
+  drops. *Minor cosmetic deltas remain (flagged in `theme.rs::candy`): non-uniform text-squish,
+  drop-shadow name background, per-scale width taper, `hexContentScale` — polish, not blocking.*
 
 ## Phase 12 — Public API compatibility
 
@@ -182,17 +186,21 @@ Full matrix + decisions in **`PORT_API_COMPAT.md`** (the live tracker — don't 
 - [x] Search envelope made API-compatible (`2026-06-16`); JSONP + XML content negotiation across
   universe/search/credits/jumpworlds/route (`29ce0405`); Aslan-interior inline borders from the
   milieu region list (`60dd139d`). Metadata XML, `/data` aliases, POST `/api/sec`+`/api/metadata`.
-- [ ] **Remaining endpoint/shape gaps** per `PORT_API_COMPAT.md` — `/api/coordinates`,
-  `/api/jumpworlds`, `(random world)`/canned search specials, and the `/data/{sector}/…` URL
-  family. **Open decision:** reshape to the documented contract vs. a thin compatibility layer.
+- [x] **Endpoint/shape gaps closed (DONE).** `/api/coordinates` (`main.rs:509`), `/api/jumpworlds`
+  (`:514`), `(random world)` + canned search specials (`special_search_name`/`canned_search_response`/
+  `random_world`, `:1117–1169`), and the full `/data/{sector}/…` URL family (`:521–541`) are all
+  implemented + live-parity-tested. **Decision resolved:** adopted the documented PascalCase public
+  contract as the single shape (not a parallel private one) — see `PORT_API_COMPAT.md` (0 ignored
+  parity tests). Remaining items there are render-only (N/A by design) or minor POST/cosmetic notes.
 
 ## Phase 13 — Polish & quality
 
-- [ ] **World-detail panel tails** — Generate World Map outbound link (`travellerworlds.com`),
-  placeholder (`XXXXXXX-X`) styling, surface RU. *(Core panel + print sheet + per-J range view all
-  shipped — see `crates/frontend/src/world_panel.rs`.)*
-- [ ] **Reference-parity harness** — diff parsed data / rendered frames against travellermap.com
-  (or a local reference build) to catch regressions.
+- [x] **World-detail panel tails (DONE).** Generate World Map outbound link (`travellerworlds.com`,
+  `world_panel.rs:266`), placeholder (`XXXXXXX-X`) styling (`is_placeholder_uwp`, `:107`), surface RU
+  (`resource_units`, `:182`). Core panel + print sheet + per-J range view all shipped.
+- **Rendered-frame (pixel) parity — won't do (decided 2026-06-30).** *Data* parity is covered by the
+  live `compat_suite.rs` (Phase 12). Visual parity stays a **human eyeball** check — a headless-browser
+  screenshot-diff rig isn't worth the infrastructure for a solo project.
 - [x] **Frontend clippy gated — DONE 2026-06-18.** Cleaned the frontend wasm clippy (real fixes +
   named structs over two complex tuple types; `#[allow(too_many_arguments)]` only on the wide-but-
   flat render entry points). The wasm CI job now runs `cargo clippy … -- -D warnings` for both the
@@ -207,9 +215,12 @@ Full matrix + decisions in **`PORT_API_COMPAT.md`** (the live tracker — don't 
   origin (relative `/api`). Multi-stage `Dockerfile` (Trunk `--release --features callisto` → cargo
   → `debian-slim` + `dist/` + `res/`); backend binds `0.0.0.0:$PORT`, SPA fallback, universe warm-up.
 - [x] **Cloud Run deploy scripts (2026-06-15).** `scripts/build.sh` (local verify) + `scripts/deploy.sh`
-  (`gcloud builds submit` → Artifact Registry → `gcloud run deploy`, scale-to-zero). Custom domain
+  (build locally with `docker buildx` (linux/amd64, BuildKit cache mounts) → push to Artifact Registry
+  (repo auto-created) → `gcloud run deploy`, scale-to-zero → purge the CDN). Custom domain
   `travellermap.callistoflight.com` (`DEPLOY.md`). Admin flush gated behind `TMAP_ENABLE_ADMIN`.
-- [x] **CDN** — `Cache-Control`/ETag → Cloud CDN via an HTTPS load balancer (optimization).
+- [x] **CDN — Cloudflare.** The origin's `Cache-Control`/ETag headers (`serve_cached`) are honoured at
+  the edge via a Cloudflare Cache Rule on `/api/*` + `/data/*`; `scripts/deploy.sh` runs
+  `scripts/purge-cdn.sh` after each deploy so new data goes live immediately. Setup in `DEPLOY.md`.
 
 *Test:* `scripts/build.sh run` → full app on `:8080`; `scripts/deploy.sh` → live on Cloud Run.
 
