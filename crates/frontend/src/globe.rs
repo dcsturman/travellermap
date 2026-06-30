@@ -420,9 +420,23 @@ pub fn frames_to_gif(frames: &[Vec<u8>], size: u16, delay_cs: u16) -> Option<Vec
             .collect::<Vec<u8>>()
     };
     let flat: Vec<Vec<u8>> = frames.iter().map(|f| flatten(f)).collect();
+    if flat.is_empty() {
+        return None;
+    }
 
-    // One shared palette from the middle frame.
-    let nq = NeuQuant::new(10, 256, flat.get(flat.len() / 2)?);
+    // One shared palette, trained on frames spread across the whole rotation (not
+    // a single mid-frame) and at the finest sample factor. Small, intermittent
+    // accents — the rotating red starport beacon and the sparse night-side city
+    // lights — occupy too few pixels to survive a coarse single-frame palette;
+    // they'd map to the nearest dark surface colour and vanish. Sampling several
+    // rotation phases ensures the beacon (facing the viewer in some frames) and
+    // the city specks get their own palette entries.
+    let mut training: Vec<u8> = Vec::new();
+    let step = (flat.len() / 8).max(1);
+    for f in flat.iter().step_by(step) {
+        training.extend_from_slice(f);
+    }
+    let nq = NeuQuant::new(1, 256, &training);
     let palette = nq.color_map_rgb();
 
     let mut out: Vec<u8> = Vec::new();
