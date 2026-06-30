@@ -53,6 +53,7 @@ const JUMPMAP_SURROUND: &str = "#e8e8e8";
 pub fn clear_caches() {
     grid::clear_grid_geom();
     borders::clear_border_caches();
+    routes::clear_route_cache();
     worlds::clear_sector_dots();
 }
 
@@ -182,9 +183,16 @@ pub fn draw_scene<C: Canvas>(
         }
         mark("borders", &mut marks);
         if opts.routes && view.scale >= ROUTE_MIN_SCALE {
-            for sector in sectors {
-                routes::draw_routes(c, &view, w, h, sector, theme.micro_route, theme.taper_lines);
-            }
+            routes::draw_routes(
+                c,
+                &view,
+                w,
+                h,
+                dpr,
+                sectors,
+                theme.micro_route,
+                theme.taper_lines,
+            );
         }
         // Per-parsec hex grid only once hexes are big enough to read (and to
         // avoid drawing tens of thousands of hexagons when zoomed out).
