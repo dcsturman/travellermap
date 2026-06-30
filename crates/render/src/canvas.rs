@@ -150,14 +150,49 @@ pub enum PathCmd {
 /// Retained path geometry: built once via [`PathBuilder`], drawn many times. The
 /// render passes treat it as opaque; a backend reads [`Geometry::cmds`] to
 /// rasterize it (Canvas2d → `Path2d`, SVG → `d` string).
+///
+/// Because cached geometry (borders, grid, dots) is drawn every frame but only
+/// rebuilt when the on-screen set changes, a backend that materializes the
+/// command list into a native object (the Canvas2d backend builds a
+/// `web_sys::Path2d`) would otherwise re-replay every command across the
+/// WASM↔JS boundary on every frame. [`backend_cache`](Geometry::backend_cache)
+/// lets a backend stash that materialized object once and reuse it across
+/// frames. The slot is an opaque `Rc<dyn Any>` so this crate stays web-free
+/// (no `web-sys` dependency); a backend that doesn't need it (SVG) ignores it.
 pub struct Geometry {
     cmds: Vec<PathCmd>,
+    /// Lazily-populated, backend-owned materialization of `cmds` (e.g. a
+    /// `Path2d`). `None` until a backend fills it on first draw. Reset to `None`
+    /// on clone (the materialized handle isn't shared between copies).
+    backend_cache: RefCell<Option<std::rc::Rc<dyn std::any::Any>>>,
 }
 
 impl Geometry {
     /// The path commands, in order — for a backend to replay.
     pub fn cmds(&self) -> &[PathCmd] {
         &self.cmds
+    }
+
+    /// The backend-materialized handle, if one was cached (see the type docs).
+    /// Cheap clone of the `Rc`; downcast to the concrete backend type.
+    pub fn backend_cache(&self) -> Option<std::rc::Rc<dyn std::any::Any>> {
+        self.backend_cache.borrow().clone()
+    }
+
+    /// Stash a backend-materialized handle for reuse on later frames.
+    pub fn set_backend_cache(&self, handle: std::rc::Rc<dyn std::any::Any>) {
+        *self.backend_cache.borrow_mut() = Some(handle);
+    }
+}
+
+impl Clone for Geometry {
+    /// Copies the command list; the materialized backend handle is **not**
+    /// shared — a clone starts with an empty cache and re-materializes on demand.
+    fn clone(&self) -> Self {
+        Self {
+            cmds: self.cmds.clone(),
+            backend_cache: RefCell::new(None),
+        }
     }
 }
 
@@ -217,6 +252,7 @@ impl PathBuilder {
     pub fn finish(self) -> Geometry {
         Geometry {
             cmds: self.cmds.into_inner(),
+            backend_cache: RefCell::new(None),
         }
     }
 }

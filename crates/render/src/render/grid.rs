@@ -104,11 +104,20 @@ pub(crate) fn draw_grid_lines(
 // milieu switch, like `SECTOR_GEOM`.)
 thread_local! {
     static GRID_GEOM: RefCell<HashMap<(i32, i32), Geometry>> = RefCell::new(HashMap::new());
+    /// The per-frame *combined* grid path (all visible sectors merged), cached by
+    /// the visible-sector set. Without this, `draw_hex_grid` rebuilt a fresh
+    /// `Geometry` every frame — and since a fresh `Geometry` carries no
+    /// materialized `Path2d`, the frontend re-replayed every hex edge into a new
+    /// `Path2d` each frame (the same per-frame cost the border cache avoids). With
+    /// it, the combined `Geometry` persists across frames so its `Path2d` is
+    /// memoized too (see `tmap_render::canvas::Geometry::backend_cache`).
+    static GRID_COMBINED: RefCell<Option<(u64, Geometry)>> = const { RefCell::new(None) };
 }
 
 /// Clear the cached hex-grid geometry (milieu switch).
 pub(crate) fn clear_grid_geom() {
     GRID_GEOM.with(|c| c.borrow_mut().clear());
+    GRID_COMBINED.with(|c| *c.borrow_mut() = None);
 }
 
 /// Build (once) the full hex-grid outline geometry for one sector, in world
@@ -149,23 +158,23 @@ pub(crate) fn draw_hex_grid(
     // Draw the grid for every *charted* sector overlapping the viewport (from
     // the index, not the loaded set) so it shows regardless of world-data load
     // state and never tiles the uncharted void.
-    let combined = PathBuilder::new();
-    let mut any = false;
-    GRID_GEOM.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        for cell in visible_sectors(view, w, h) {
-            if !sector_index.contains_key(&cell) || !sector_in_viewport(cell, view, w, h) {
-                continue;
-            }
-            let g = cache.entry(cell).or_insert_with(|| build_grid_geom(cell));
-            combined.add(g);
-            any = true;
-        }
-    });
-    if !any {
+    let mut cells: Vec<(i32, i32)> = visible_sectors(view, w, h)
+        .into_iter()
+        .filter(|cell| sector_index.contains_key(cell) && sector_in_viewport(*cell, view, w, h))
+        .collect();
+    if cells.is_empty() {
         return;
     }
-    let combined = combined.finish();
+    cells.sort_unstable();
+    // Cache the combined path by the visible-sector set so it's rebuilt only when
+    // that set changes (pan into a new sector / zoom), not on every frame — the
+    // persistent `Geometry` then keeps its memoized `Path2d` across frames.
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut hsh = std::collections::hash_map::DefaultHasher::new();
+        cells.hash(&mut hsh);
+        hsh.finish()
+    };
     // World(parsec) → device: device = dpr · (w/2 + (p − center)·s), uniform.
     let m = Affine::scale_translate(
         dpr * s,
@@ -175,5 +184,19 @@ pub(crate) fn draw_hex_grid(
     // Theme override (flat color) or the scale-faded gray `gridColor`. Width is
     // ~1 css px (the transform scales the world-space width by s).
     let color = grid_override.map_or_else(|| grid_color(s), str::to_string);
-    c.stroke_geometry(&combined, m, &color, &StrokeStyle::plain(1.0 / s), None);
+    GRID_COMBINED.with(|combined_cache| {
+        let mut combined_cache = combined_cache.borrow_mut();
+        if combined_cache.as_ref().map(|(k, _)| *k) != Some(key) {
+            let combined = PathBuilder::new();
+            GRID_GEOM.with(|cache| {
+                let mut cache = cache.borrow_mut();
+                for cell in &cells {
+                    combined.add(cache.entry(*cell).or_insert_with(|| build_grid_geom(*cell)));
+                }
+            });
+            *combined_cache = Some((key, combined.finish()));
+        }
+        let combined = &combined_cache.as_ref().unwrap().1;
+        c.stroke_geometry(combined, m, &color, &StrokeStyle::plain(1.0 / s), None);
+    });
 }

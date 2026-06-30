@@ -8,6 +8,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
@@ -27,9 +28,24 @@ thread_local! {
 }
 
 /// Replay a backend-neutral [`Geometry`] into a browser `Path2d` for filling,
-/// stroking, or clipping. Cheap (a handful of path ops); cached geometries are
-/// rebuilt per draw, matching the reference's per-frame path construction.
-fn to_path2d(g: &Geometry) -> Path2d {
+/// stroking, or clipping.
+///
+/// The materialized `Path2d` is **memoized on the `Geometry`** (via its
+/// `backend_cache` slot) and reused across frames. This matters for the cached
+/// passes (borders, grid, world dots): their geometry is rebuilt only when the
+/// on-screen set changes, but is drawn every frame, and the fill geometry runs
+/// to tens of thousands of vertices. Without memoization each frame replayed
+/// every `move_to`/`line_to` across the WASM↔JS boundary (and the hex-border
+/// pass does it twice — fill + clip), which was a large per-frame cost. The
+/// stored handle is an `Rc<Path2d>`; cloning it is a refcount bump, and the
+/// `Geometry` outlives the frame in its cache, so the conversion happens once
+/// per rebuild instead of once per draw.
+fn to_path2d(g: &Geometry) -> Rc<Path2d> {
+    if let Some(handle) = g.backend_cache() {
+        if let Ok(path) = handle.downcast::<Path2d>() {
+            return path;
+        }
+    }
     // Path2d::new only fails on OOM, which we treat as fatal elsewhere too.
     let path = Path2d::new().unwrap();
     for cmd in g.cmds() {
@@ -57,6 +73,8 @@ fn to_path2d(g: &Geometry) -> Path2d {
             PathCmd::Close => path.close_path(),
         }
     }
+    let path = Rc::new(path);
+    g.set_backend_cache(path.clone());
     path
 }
 
