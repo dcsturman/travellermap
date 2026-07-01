@@ -25,7 +25,7 @@ file as we go: tick boxes, fold in decisions, keep entries short.
 - **LOD is in the API contract from day one** (`?lod=`), but the parser is always full-fidelity —
   a low-LOD payload is a *projection*, never a different parse. Full `(lod,x,y)` tiling is deferred
   indefinitely — the current scheme (sector-by-name = the high-LOD tile, zoom-out drops to macro
-  overlays) performs well (backend ~21k req/s), so build it only if profiling ever justifies it.
+  overlays) performs well (backend peak ~22k req/s @ sub-ms p99), so build it only if profiling ever justifies it.
 - Datastore: **none** (`res/` is the system of record, loaded into RAM). See `CLAUDE.md`.
 
 ---
@@ -101,8 +101,12 @@ the Tantivy + query-language work in Phase 12.)*
   exact at scale 4.)*
 - **Profiling:** release build + in-app **per-layer frame-timing HUD** (Settings → DEBUG).
   Borders were the hot layer → **cached per-sector world-coord `Path2d` + canvas transform**
-  (rebuild ~8 ms → 1–2 ms; same for the hex grid and dot-tier worlds). Cold load test (vegeta):
-  **~21k req/s, p99 ≈ 1.6 ms — backend is not the bottleneck**; no backend optimization warranted.
+  (rebuild ~8 ms → 1–2 ms; same for the hex grid and dot-tier worlds). Load test (vegeta over a
+  realistic 79-sector viewport mix — `loadtest/gen_targets.py` + `targets.txt` — release build,
+  local/loopback): peak **21.9k req/s @ p99 0.89 ms, 100% 200s**; sustained 10k req/s @ p99 0.50 ms
+  (re-verified 2026-06-30 vs `main`). Warm search ~8 ms (Tantivy, index warmed at startup); warm
+  route ~5 ms (the route index builds lazily on the first call per milieu, ~515 ms one-time — could
+  be warmed at startup like search). **Backend is not the bottleneck**; no backend optimization warranted.
 - **Important Worlds** (`Worlds.xml` → Wheat dot + red name). **Mobile/touch:** one-finger pan,
   two-finger pinch-zoom; iOS viewport/buffer sizing fixed (`dvh`, `visualViewport` resize).
 - *Render module split (`9baad5ef`):* `render.rs` → `render/` (one file per pass over a shared
