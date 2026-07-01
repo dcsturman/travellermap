@@ -19,7 +19,10 @@ pub(crate) fn draw_perf_hud(
     let line_h = 15.0;
     let x = 12.0;
     let box_h = (marks.len() as f64 + 3.0) * line_h + 14.0;
-    let top = h - box_h - 30.0; // sit above the footer
+    // Clear the fixed credits footer (a ~7px red bar + up to 3 lines of ~14px
+    // credit text + padding ≈ 86px). Keep the box's bottom edge above it.
+    let footer_clearance = 96.0;
+    let top = h - box_h - footer_clearance;
     c.fill_polygons(
         &[vec![
             (x - 6.0, top - 6.0),
