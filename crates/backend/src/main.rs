@@ -596,6 +596,18 @@ async fn main() {
                 ),
                 Err((_, e)) => eprintln!("warm-up: {DEFAULT_MILIEU} search index failed: {e}"),
             }
+            // The route world-index is built the same way — a full re-walk of every
+            // sector's worlds into a coord-keyed graph — so its first-call cost
+            // (~0.5 s) otherwise lands inline on the user's first `/api/route`. Warm
+            // it here so jump-route planning is fast from the first request.
+            let t2 = std::time::Instant::now();
+            match warm.route_index(DEFAULT_MILIEU) {
+                Ok(_) => println!(
+                    "warm-up: {DEFAULT_MILIEU} route index ready in {:?}",
+                    t2.elapsed()
+                ),
+                Err((_, e)) => eprintln!("warm-up: {DEFAULT_MILIEU} route index failed: {e}"),
+            }
         });
     }
 
