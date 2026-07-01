@@ -46,13 +46,28 @@ struct SectorDots {
     outlines: Vec<(String, Geometry)>,
     zones: Vec<(String, Geometry)>,
 }
+/// The merged, per-color dot batches for the current visible set — one
+/// `Geometry` per color per layer, built by combining the cached per-sector
+/// buckets. Cached so the merge + `Path2d` materialization happens only when the
+/// visible set (or the dot tier) changes, not every frame (the same trap the
+/// border/grid/route caches avoid — a fresh combined `Geometry` per frame carries
+/// no memoized `Path2d`; see `tmap_render::canvas::Geometry::backend_cache`).
+struct DotBatch {
+    key: u64,
+    zones: Vec<(String, Geometry)>,
+    discs: Vec<(String, Geometry)>,
+    outlines: Vec<(String, Geometry)>,
+}
+
 thread_local! {
     static SECTOR_DOTS: RefCell<HashMap<(i32, i32), SectorDots>> = RefCell::new(HashMap::new());
+    static DOT_BATCH: RefCell<Option<DotBatch>> = const { RefCell::new(None) };
 }
 
 /// Clear the cached world-dot geometry (milieu switch).
 pub(crate) fn clear_sector_dots() {
     SECTOR_DOTS.with(|c| c.borrow_mut().clear());
+    DOT_BATCH.with(|c| *c.borrow_mut() = None);
 }
 
 /// A world with an unknown UWP renders a special glyph instead of a disc/UWP
@@ -249,34 +264,22 @@ pub(crate) fn draw_world_dots(
 ) {
     let s = view.scale;
     let dotmap = s < WORLD_BASIC_SCALE; // bigger discs when no per-world detail
-    let mut discs: HashMap<String, PathBuilder> = HashMap::new();
-    let mut outlines: HashMap<String, PathBuilder> = HashMap::new();
-    let mut zones: HashMap<String, PathBuilder> = HashMap::new();
-    let merge = |dst: &mut HashMap<String, PathBuilder>, src: &[(String, Geometry)]| {
-        for (color, p) in src {
-            dst.entry(color.clone()).or_default().add(p);
-        }
+                                        // The visible sectors that contribute dots, sorted — the cache key. Rebuild
+                                        // the merged batches only when this set (or the tier) changes.
+    let mut cells: Vec<(i32, i32)> = sectors
+        .iter()
+        .filter_map(|s| s.info.location.map(|l| (l.x, l.y)))
+        .filter(|cell| sector_in_viewport(*cell, view, w, h))
+        .collect();
+    cells.sort_unstable();
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut hsh = std::collections::hash_map::DefaultHasher::new();
+        cells.hash(&mut hsh);
+        more_colors.hash(&mut hsh);
+        dotmap.hash(&mut hsh);
+        hsh.finish()
     };
-    SECTOR_DOTS.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        for sector in sectors {
-            let Some(loc) = sector.info.location else {
-                continue;
-            };
-            if !sector_in_viewport((loc.x, loc.y), view, w, h) {
-                continue;
-            }
-            let dots = cache
-                .entry((loc.x, loc.y))
-                .or_insert_with(|| build_sector_dots(sector, more_colors, dotmap, theme));
-            if dots.more_colors != more_colors || dots.dotmap != dotmap {
-                *dots = build_sector_dots(sector, more_colors, dotmap, theme); // tier/colors changed
-            }
-            merge(&mut zones, &dots.zones);
-            merge(&mut discs, &dots.discs);
-            merge(&mut outlines, &dots.outlines);
-        }
-    });
     let m = Affine::scale_translate(
         dpr * s,
         dpr * (w / 2.0 - view.center.0 * s),
@@ -286,16 +289,59 @@ pub(crate) fn draw_world_dots(
     // Zones first (behind), then disc fills, then vacuum outlines. Line widths
     // are css px ÷ s (the transform scales by s).
     let zone_style = StrokeStyle::plain(((0.03 * cs).max(1.5)) / s);
-    for (color, p) in zones {
-        c.stroke_geometry(&p.finish(), m, &color, &zone_style, None);
-    }
-    for (color, p) in discs {
-        c.fill_geometry(&p.finish(), m, &color, 1.0);
-    }
     let outline_style = StrokeStyle::plain(((0.02 * cs).max(1.0)) / s);
-    for (color, p) in outlines {
-        c.stroke_geometry(&p.finish(), m, &color, &outline_style, None);
-    }
+    DOT_BATCH.with(|batch| {
+        let mut batch = batch.borrow_mut();
+        if batch.as_ref().map(|b| b.key) != Some(key) {
+            // Merge the cached per-sector buckets into one path per color per layer.
+            let mut discs: HashMap<String, PathBuilder> = HashMap::new();
+            let mut outlines: HashMap<String, PathBuilder> = HashMap::new();
+            let mut zones: HashMap<String, PathBuilder> = HashMap::new();
+            let merge = |dst: &mut HashMap<String, PathBuilder>, src: &[(String, Geometry)]| {
+                for (color, p) in src {
+                    dst.entry(color.clone()).or_default().add(p);
+                }
+            };
+            SECTOR_DOTS.with(|cache| {
+                let mut cache = cache.borrow_mut();
+                for cell in &cells {
+                    // `cells` came from `sectors`, so the sector is present.
+                    let sector = sectors
+                        .iter()
+                        .find(|s| s.info.location.map(|l| (l.x, l.y)) == Some(*cell))
+                        .unwrap();
+                    let dots = cache
+                        .entry(*cell)
+                        .or_insert_with(|| build_sector_dots(sector, more_colors, dotmap, theme));
+                    if dots.more_colors != more_colors || dots.dotmap != dotmap {
+                        *dots = build_sector_dots(sector, more_colors, dotmap, theme);
+                    }
+                    merge(&mut zones, &dots.zones);
+                    merge(&mut discs, &dots.discs);
+                    merge(&mut outlines, &dots.outlines);
+                }
+            });
+            let finish = |m: HashMap<String, PathBuilder>| -> Vec<(String, Geometry)> {
+                m.into_iter().map(|(c, p)| (c, p.finish())).collect()
+            };
+            *batch = Some(DotBatch {
+                key,
+                zones: finish(zones),
+                discs: finish(discs),
+                outlines: finish(outlines),
+            });
+        }
+        let Some(b) = batch.as_ref() else { return };
+        for (color, g) in &b.zones {
+            c.stroke_geometry(g, m, color, &zone_style, None);
+        }
+        for (color, g) in &b.discs {
+            c.fill_geometry(g, m, color, 1.0);
+        }
+        for (color, g) in &b.outlines {
+            c.stroke_geometry(g, m, color, &outline_style, None);
+        }
+    });
 }
 
 /// Faithful port of the reference `DrawWorld` text layout, drawn in
