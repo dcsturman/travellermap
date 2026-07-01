@@ -507,6 +507,70 @@ impl Canvas for SvgCanvas {
         );
     }
 
+    fn draw_border_group(
+        &self,
+        fills: &[&Geometry],
+        stroke: &Geometry,
+        transform: Affine,
+        fill: Option<&str>,
+        alpha: f64,
+        stroke_color: &str,
+        stroke_style: &StrokeStyle,
+        clip: bool,
+    ) {
+        // Union of the per-sector fills = one path with many subpaths.
+        let mut fd = String::new();
+        for g in fills {
+            append_d(&mut fd, g.cmds());
+        }
+        let fd = fd.trim().to_string();
+        let mut sd = String::new();
+        append_d(&mut sd, stroke.cmds());
+        let sd = sd.trim().to_string();
+        let cap = match stroke_style.cap {
+            LineCap::Butt => "butt",
+            LineCap::Round => "round",
+        };
+        let join = match stroke_style.join {
+            LineJoin::Miter => "miter",
+            LineJoin::Round => "round",
+        };
+        let mut out = self.out();
+        let _ = write!(out, "<g transform=\"{}\">", matrix(transform));
+        if let Some(color) = fill {
+            if !fd.is_empty() {
+                let _ = write!(out, "<path d=\"{fd}\" fill=\"{}\"", esc(color));
+                if alpha != 1.0 {
+                    let _ = write!(out, " fill-opacity=\"{}\"", num(alpha));
+                }
+                out.push_str("/>");
+            }
+        }
+        if !sd.is_empty() {
+            let clip_attr = if clip && !fd.is_empty() {
+                let id = self.fresh_id();
+                let _ = write!(
+                    out,
+                    "<clipPath id=\"tc{id}\" clipPathUnits=\"userSpaceOnUse\"><path d=\"{fd}\"/></clipPath>"
+                );
+                format!(" clip-path=\"url(#tc{id})\"")
+            } else {
+                String::new()
+            };
+            let _ = write!(
+                out,
+                "<path d=\"{sd}\" fill=\"none\" stroke=\"{}\" stroke-width=\"{}\" \
+                 stroke-linecap=\"{}\" stroke-linejoin=\"{}\"{}/>",
+                esc(stroke_color),
+                num(stroke_style.width),
+                cap,
+                join,
+                clip_attr
+            );
+        }
+        out.push_str("</g>");
+    }
+
     fn push_clip(&self, clip: &Geometry) {
         let mut cd = String::new();
         append_d(&mut cd, clip.cmds());

@@ -5,6 +5,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use tmap_core::dto::SectorData;
 use tmap_core::spline::cardinal_spline_beziers;
@@ -34,7 +35,19 @@ fn border_group_key(allegiance: &str) -> &str {
 /// the dominant zoomed-out cost the frame-timing HUD surfaced).
 struct BorderCache {
     key: u64,
-    groups: Vec<(String, Geometry, Geometry)>,
+    groups: Vec<BorderGroup>,
+}
+/// One polity's border geometry for the current sector set. The region fills are
+/// kept as the **individual per-sector** paths (shared `Rc`s of the cached
+/// `SECTOR_GEOM` fills, so their materialized `Path2d`s persist) rather than one
+/// concatenated geometry — the backend unions them with native `add_path` at draw
+/// instead of re-rasterizing a command list every frame. The stroke is the
+/// combined boundary (interior edges + resolved cross-sector seams); it's small,
+/// so rebuilding it per set-change is cheap.
+struct BorderGroup {
+    color: String,
+    fills: Vec<Rc<Geometry>>,
+    stroke: Geometry,
 }
 thread_local! {
     static BORDER_CACHE: RefCell<Option<BorderCache>> = const { RefCell::new(None) };
@@ -83,7 +96,7 @@ struct SectorGeom {
 struct SectorGroup {
     key: String,
     color: String,
-    fill: Geometry,
+    fill: Rc<Geometry>,
     /// Boundary edges to **same-sector** non-region neighbors — determined by
     /// this sector's region alone, so cached once (the bulk of the stroke).
     interior_stroke: Geometry,
@@ -191,7 +204,7 @@ fn build_sector_geom(sector: &SectorData) -> SectorGeom {
             SectorGroup {
                 key: key.to_owned(),
                 color,
-                fill: fill.finish(),
+                fill: Rc::new(fill.finish()),
                 interior_stroke: interior_stroke.finish(),
                 rset,
                 seams,
@@ -205,7 +218,7 @@ fn build_sector_geom(sector: &SectorData) -> SectorGeom {
 /// fill + stroke `Path2d` per polity group. Cheap: `add_path` for fills, and a
 /// per-group combine: cached fills + interior strokes, with cross-sector seam
 /// edges resolved against each neighbor sector's own region (no merged set).
-fn build_border_geometry(sectors: &[&SectorData]) -> Vec<(String, Geometry, Geometry)> {
+fn build_border_geometry(sectors: &[&SectorData]) -> Vec<BorderGroup> {
     SECTOR_GEOM.with(|cell| {
         // Phase 1: ensure each visible sector's geometry is built (cached once).
         {
@@ -241,7 +254,7 @@ fn build_border_geometry(sectors: &[&SectorData]) -> Vec<(String, Geometry, Geom
                     .any(|g| g.key == key && g.rset.contains(&hex)),
             }
         };
-        let mut acc: HashMap<&str, (String, PathBuilder, PathBuilder)> = HashMap::new();
+        let mut acc: HashMap<&str, (String, Vec<Rc<Geometry>>, PathBuilder)> = HashMap::new();
         for sector in sectors {
             let Some(loc) = sector.info.location else {
                 continue;
@@ -252,8 +265,8 @@ fn build_border_geometry(sectors: &[&SectorData]) -> Vec<(String, Geometry, Geom
             for g in &geom.groups {
                 let entry = acc
                     .entry(g.key.as_str())
-                    .or_insert_with(|| (g.color.clone(), PathBuilder::new(), PathBuilder::new()));
-                entry.1.add(&g.fill);
+                    .or_insert_with(|| (g.color.clone(), Vec::new(), PathBuilder::new()));
+                entry.1.push(Rc::clone(&g.fill)); // share the cached per-sector fill
                 entry.2.add(&g.interior_stroke); // cached same-sector edges
                                                  // Seam edges: stroke only where the neighbor sector is built AND
                                                  // the neighbor hex isn't in this group's region (border ends at
@@ -267,7 +280,11 @@ fn build_border_geometry(sectors: &[&SectorData]) -> Vec<(String, Geometry, Geom
             }
         }
         acc.into_values()
-            .map(|(color, fill, stroke)| (color, fill.finish(), stroke.finish()))
+            .map(|(color, fills, stroke)| BorderGroup {
+                color,
+                fills,
+                stroke: stroke.finish(),
+            })
             .collect()
     })
 }
@@ -354,7 +371,7 @@ fn spline_into(path: &PathBuilder, lp: &BorderLoop, tension: f64) {
 /// edge, so no per-sector seam resolution is needed (curve styles are rare, so the
 /// hex path's per-frame caching concern doesn't apply — this rebuilds on the same
 /// sector-set change as the hex path).
-fn build_curved_geometry(sectors: &[&SectorData]) -> Vec<(String, Geometry, Geometry)> {
+fn build_curved_geometry(sectors: &[&SectorData]) -> Vec<BorderGroup> {
     use std::collections::HashSet;
     let mut regions: HashMap<&str, HashSet<(i32, i32)>> = HashMap::new();
     let mut colors: HashMap<&str, String> = HashMap::new();
@@ -397,11 +414,11 @@ fn build_curved_geometry(sectors: &[&SectorData]) -> Vec<(String, Geometry, Geom
                 spline_into(&fill, lp, 0.5);
                 spline_into(&stroke, lp, 0.6);
             }
-            (
-                colors.get(key).cloned().unwrap_or_default(),
-                fill.finish(),
-                stroke.finish(),
-            )
+            BorderGroup {
+                color: colors.get(key).cloned().unwrap_or_default(),
+                fills: vec![Rc::new(fill.finish())],
+                stroke: stroke.finish(),
+            }
         })
         .collect()
 }
@@ -479,24 +496,26 @@ pub(crate) fn draw_micro_borders(
             (0.10 * s).max(2.4) / s
         };
         let style = StrokeStyle::round(stroke_w);
-        for (color, fill, stroke) in &bc.groups {
+        for group in &bc.groups {
             // A theme may force a single micro-border color (Atlas/FASA); otherwise
             // each group keeps its baked per-allegiance otu.css color. The geometry
             // is color-independent, so this needs no cache rebuild on a style switch.
-            let color = micro_override.unwrap_or(color);
-            if filled {
-                c.fill_geometry(fill, m, color, 0.25); // FILL_ALPHA = 64/255
-            }
-            if curved {
-                // The reference curve branch strokes the spline directly, with no
-                // region clip (RenderContext.cs:1856 else) — the smooth outline
-                // already sits on the region edge.
-                c.stroke_geometry(stroke, m, color, &style, None);
-            } else {
-                // Hex: clip the outline to its region so only the inner half shows
-                // — adjacent borders abut cleanly instead of double-stroking.
-                c.stroke_geometry(stroke, m, color, &style, Some(fill));
-            }
+            let color = micro_override.unwrap_or(&group.color);
+            let fills: Vec<&Geometry> = group.fills.iter().map(Rc::as_ref).collect();
+            // Fill the union at FILL_ALPHA (64/255) when filled. Hex: clip the
+            // outline to that union so only the inner half shows (clean abutment).
+            // Curved (FASA/Candy): stroke the spline directly, no clip
+            // (RenderContext.cs:1856 else) — the smooth outline sits on the edge.
+            c.draw_border_group(
+                &fills,
+                &group.stroke,
+                m,
+                if filled { Some(color) } else { None },
+                0.25,
+                color,
+                &style,
+                !curved,
+            );
         }
     });
 }

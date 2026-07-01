@@ -448,6 +448,55 @@ impl Canvas for Canvas2d {
         self.restore();
     }
 
+    fn draw_border_group(
+        &self,
+        fills: &[&Geometry],
+        stroke: &Geometry,
+        transform: Affine,
+        fill: Option<&str>,
+        alpha: f64,
+        stroke_color: &str,
+        stroke_style: &StrokeStyle,
+        clip: bool,
+    ) {
+        // Union the per-sector fills by appending each one's *cached* Path2d —
+        // native add_path, no per-vertex WASM↔JS replay. `to_path2d` memoizes each
+        // sector's path on its (persistent) Geometry, so a zoom that changes the
+        // visible set only rebuilds this cheap union, not every sector's path.
+        let union = Path2d::new().unwrap();
+        for g in fills {
+            union.add_path(&to_path2d(g));
+        }
+        self.save();
+        let _ = self.ctx.set_transform(
+            transform.a,
+            transform.b,
+            transform.c,
+            transform.d,
+            transform.e,
+            transform.f,
+        );
+        if let Some(color) = fill {
+            self.set_fill(color);
+            if alpha != 1.0 {
+                self.ctx.set_global_alpha(alpha);
+            }
+            self.ctx.fill_with_path_2d(&union);
+            if alpha != 1.0 {
+                self.ctx.set_global_alpha(1.0);
+            }
+        }
+        if clip {
+            self.ctx.clip_with_path_2d(&union);
+        }
+        self.set_stroke(stroke_color);
+        self.set_line_width(stroke_style.width);
+        self.set_cap(stroke_style.cap);
+        self.set_join(stroke_style.join);
+        self.ctx.stroke_with_path(&to_path2d(stroke));
+        self.restore();
+    }
+
     fn push_clip(&self, clip: &Geometry) {
         self.save();
         self.ctx.clip_with_path_2d(&to_path2d(clip));

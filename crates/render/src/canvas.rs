@@ -330,6 +330,31 @@ pub trait Canvas {
         stroke: &StrokeStyle,
         clip: Option<&Geometry>,
     );
+    /// Draw one polity border group: fill the **union** of `fills` (the per-sector
+    /// region fills) with `fill` at `alpha` when `fill` is `Some`, then stroke
+    /// `stroke`, clipped to that same union when `clip` is set (hex borders show
+    /// only the inner half so adjacent polities abut cleanly). All geometry is in
+    /// world coords under `transform`.
+    ///
+    /// Passing the per-sector fills as a *slice* (rather than one pre-combined
+    /// geometry) is deliberate: a backend that materializes paths (Canvas2d) unions
+    /// their **cached** `Path2d`s with native `add_path` — cheap even every frame —
+    /// instead of re-rasterizing a freshly concatenated command list (which, over
+    /// all visible sectors when zoomed out, was the dominant per-frame cost). Fills
+    /// overlap by design (inflated hexagons), so the union must be filled as one
+    /// path at a single `alpha`, never per-sector (that would double-tint seams).
+    #[allow(clippy::too_many_arguments)]
+    fn draw_border_group(
+        &self,
+        fills: &[&Geometry],
+        stroke: &Geometry,
+        transform: Affine,
+        fill: Option<&str>,
+        alpha: f64,
+        stroke_color: &str,
+        stroke_style: &StrokeStyle,
+        clip: bool,
+    );
     /// Push a screen-space clip region (rasterized under the current frame
     /// transform); later draws are restricted to it until [`Canvas::pop_clip`].
     fn push_clip(&self, clip: &Geometry);
