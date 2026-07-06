@@ -265,21 +265,37 @@ async fn parity_search(query: &str) {
     if !ours_status.is_success() {
         return;
     }
-    for (who, body) in [("ours", &ours_body), ("live", &live_body)] {
-        let n = jv(body)["Results"]["Items"]
-            .as_array()
-            .map_or(0, |a| a.len());
-        assert!(
-            n < crate::NUM_RESULTS,
-            "query {query:?} hit the {}-result cap on {who} ({n} items); ranking decides \
-             truncation, so the comparison is meaningless — pick a narrower query",
-            crate::NUM_RESULTS
-        );
-    }
+    // Live must not hit its own NUM_RESULTS cap, or its ranking-truncation is
+    // arbitrary and there's nothing meaningful to compare against — the query is
+    // too broad; pick a narrower one.
+    let live_items = jv(&live_body)["Results"]["Items"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        live_items.len() < crate::NUM_RESULTS,
+        "query {query:?} hit the {}-result cap on live ({} items); ranking decides \
+         truncation, so the comparison is meaningless — pick a narrower query",
+        crate::NUM_RESULTS,
+        live_items.len()
+    );
+    // Our API caps at SEARCH_CAP and returns the importance-ranked top slice, so it
+    // must equal live's ranked prefix of the same length (our ranking mirrors the
+    // reference's exactly — that's what full parity proved before the cap).
+    let ours_items = jv(&ours_body)["Results"]["Items"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let k = live_items.len().min(crate::SEARCH_CAP);
     assert_eq!(
-        jv(&ours_body),
-        jv(&live_body),
-        "search ordered parity for {query:?}"
+        ours_items.len(),
+        k,
+        "capped result count vs live prefix for {query:?}"
+    );
+    assert_eq!(
+        Value::Array(ours_items),
+        Value::Array(live_items[..k].to_vec()),
+        "search ordered parity (top-{k}) for {query:?}"
     );
 }
 
@@ -673,12 +689,19 @@ async fn search_uwp_shortcut_prefixes_uwp() {
 
 #[tokio::test]
 async fn search_default_word_boundary_rules() {
-    // "sol" matches "Sol" / "Solomani Rim" (start of name) but the start-of-word
-    // rule means a substring like "marsol" is NOT matched.
+    // A bare word matches at the START OF A WORD in the name — the name itself
+    // begins with "sol", or a later word does (a literal " sol"). Mid-word
+    // substrings like "marsol" are NOT matched. Asserted as a property over every
+    // hit so it's independent of the SEARCH_CAP truncation (which can drop the
+    // lower-importance "Solomani Rim" region below the world matches).
     let items = search_items("sol").await;
+    assert!(!items.is_empty(), "expected matches for sol");
     assert!(
-        items.iter().any(|(_, n)| n == "Solomani Rim"),
-        "sol should match Solomani Rim: {items:?}"
+        items.iter().all(|(_, n)| {
+            let l = n.to_ascii_lowercase();
+            l.starts_with("sol") || l.contains(" sol")
+        }),
+        "every sol hit begins a word with 'sol': {items:?}"
     );
     assert!(
         !items.iter().any(|(_, n)| n.eq_ignore_ascii_case("marsol")),

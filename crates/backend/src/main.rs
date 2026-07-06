@@ -1060,8 +1060,16 @@ struct SearchQuery {
     types: Option<String>,
 }
 
-/// Per-type cap and final cap (reference `SearchHandler.NUM_RESULTS`).
+/// Reference parity ceiling (`SearchHandler.NUM_RESULTS`): the count above which
+/// the live oracle itself truncates, so it's only used to bound the compat tests.
+#[cfg(test)]
 const NUM_RESULTS: usize = 160;
+
+/// What `/api/search` actually returns: the importance-ranked top slice. Beyond a
+/// dozen the extra hits are noise for a name lookup, and a tight cap keeps the
+/// response (and the client's result list) small. Results are already ordered
+/// most-likely-first, so this keeps the best matches.
+const SEARCH_CAP: usize = 12;
 
 /// The handler-level query preprocessing (port of `SearchHandler.Process`):
 /// translate `*`→`%` and `?`→`_` wildcards, then prepend `uwp:` when the whole
@@ -1144,7 +1152,7 @@ async fn get_search(
     } else {
         let query = preprocess_query(&q.q);
         let pq = tmap_core::searchlang::parse_query(&query, parse_types(q.types.as_deref()));
-        search::run_query(&idx, &pq, NUM_RESULTS)
+        search::run_query(&idx, &pq, SEARCH_CAP)
     };
     let result = SearchResults {
         results: SearchResultsBody {
