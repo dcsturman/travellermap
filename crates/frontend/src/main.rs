@@ -1111,6 +1111,12 @@ fn App() -> impl IntoView {
     let pulse = RwSignal::new(None::<((f64, f64), f64)>);
     let (pulse_tick, set_pulse_tick) = signal(0u32);
     let (results, set_results) = signal(Vec::<Hit>::new());
+    // Search request bookkeeping: a monotonically-rising generation stamps each
+    // fetch so a slow earlier response can't clobber a newer one (the out-of-order
+    // race that showed stale "weird" results); `search_debounce` holds the pending
+    // as-you-type timer so a fresh keystroke cancels it.
+    let search_gen = RwSignal::new(0u32);
+    let search_debounce = RwSignal::new(None::<i32>);
     let drag = RwSignal::new(None::<(f64, f64)>);
     // True while the cursor hovers directly over a world (callisto only): flips
     // the map cursor to an arrow to signal it's clickable / double-clickable.
@@ -2191,10 +2197,16 @@ fn App() -> impl IntoView {
     };
 
     // --- search ---
-    let on_search = move |ev: web_sys::Event| {
-        let q = event_target_value(&ev);
-        if q.trim().is_empty() {
-            set_results.set(Vec::new());
+    // Fire a search now for `q`, stamping it with a fresh generation so only the
+    // latest response is applied (drops stale out-of-order replies). `Copy` — it
+    // captures only signals — so both the debounce timer and the Enter handler
+    // can invoke it.
+    let run_search = move |q: String| {
+        let q = q.trim().to_string();
+        let gen = search_gen.get_untracked().wrapping_add(1);
+        search_gen.set(gen);
+        if q.is_empty() {
+            set_results.set(Vec::new()); // gen bump above also voids any in-flight
             return;
         }
         let encoded = String::from(js_sys::encode_uri_component(&q));
@@ -2203,9 +2215,52 @@ fn App() -> impl IntoView {
             if let Ok(r) =
                 fetch_json::<SearchResults>(&format!("/api/search?q={encoded}&milieu={m}")).await
             {
-                set_results.set(r.results.items.into_iter().map(Hit::from_item).collect());
+                // Apply only if no newer search started while this was in flight.
+                if search_gen.get_untracked() == gen {
+                    set_results.set(r.results.items.into_iter().map(Hit::from_item).collect());
+                }
             }
         });
+    };
+
+    // As-you-type: debounce, and only auto-search once the query is long enough —
+    // 1–2 char prefixes match a huge slice of the universe (slow, useless), and a
+    // fresh keystroke cancels the pending timer. Shorter queries (e.g. the world
+    // "Ur") are still reachable via Enter below.
+    const SEARCH_MIN_AUTO_CHARS: usize = 3;
+    const SEARCH_DEBOUNCE_MS: i32 = 200;
+    let on_search_input = move |ev: web_sys::Event| {
+        if let Some(id) = search_debounce.get_untracked() {
+            clear_timeout(id);
+            search_debounce.set(None);
+        }
+        let q = event_target_value(&ev);
+        let trimmed = q.trim().to_string();
+        if trimmed.is_empty() {
+            run_search(String::new()); // clear results + void in-flight
+            return;
+        }
+        if trimmed.chars().count() < SEARCH_MIN_AUTO_CHARS {
+            return; // wait for more input or an explicit Enter
+        }
+        let id = set_timeout(SEARCH_DEBOUNCE_MS, move || {
+            search_debounce.set(None);
+            run_search(trimmed.clone());
+        });
+        search_debounce.set(Some(id));
+    };
+
+    // Enter searches immediately at any length (cancelling a pending debounce), so
+    // short-named worlds stay findable and the query fires without waiting.
+    let on_search_keydown = move |ev: web_sys::KeyboardEvent| {
+        if ev.key() == "Enter" {
+            ev.prevent_default();
+            if let Some(id) = search_debounce.get_untracked() {
+                clear_timeout(id);
+                search_debounce.set(None);
+            }
+            run_search(event_target_value(&ev));
+        }
     };
     let on_wheel = move |ev: web_sys::WheelEvent| {
         ev.prevent_default();
@@ -3219,7 +3274,8 @@ fn App() -> impl IntoView {
                 <div style="display:flex; gap:6px; align-items:stretch;">
                     <div style="flex:1; min-width:0; position:relative;">
                         <input type="search" placeholder="Search…"
-                               on:input=on_search
+                               on:input=on_search_input
+                               on:keydown=on_search_keydown
                                style="width:100%; box-sizing:border-box; padding:8px 32px 8px 12px; \
                                       border-radius:6px; border:1px solid #c5ccd8; \
                                       background:#fff; color:#222; font-size:15px; outline:none;" />
