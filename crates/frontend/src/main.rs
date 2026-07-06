@@ -5,7 +5,9 @@
 //! styling. The canvas fills the window (device-pixel-ratio aware). All drawing
 //! goes through `render` → `trait Canvas` (see `canvas.rs`).
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -122,6 +124,47 @@ fn main() {
 
 fn win() -> web_sys::Window {
     web_sys::window().expect("no window")
+}
+
+/// Kick off the search "found it" pulse centered on `center` (absolute parsec
+/// coords): store it in `pulse` and run a self-rescheduling `requestAnimationFrame`
+/// loop that bumps `set_tick` each frame — forcing the map effect to repaint the
+/// rings — until [`render::PULSE_DURATION_MS`] elapses, then clears the pulse.
+fn start_pulse(
+    center: (f64, f64),
+    pulse: RwSignal<Option<((f64, f64), f64)>>,
+    set_tick: WriteSignal<u32>,
+) {
+    let window = win();
+    let Some(perf) = window.performance() else {
+        return;
+    };
+    let start = perf.now();
+    pulse.set(Some((center, start)));
+
+    // Own the self-rescheduling closure so it can re-borrow itself to schedule
+    // the next frame (mirrors the globe.rs rAF loop); dropped when the pulse ends.
+    type Tick = Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>>;
+    let tick: Tick = Rc::new(RefCell::new(None));
+    let tick_inner = tick.clone();
+    let win_inner = window.clone();
+    let draw = Closure::wrap(Box::new(move |ts: f64| {
+        // `ts` shares performance.now()'s clock, so `ts - start` is elapsed ms.
+        set_tick.update(|t| *t = t.wrapping_add(1));
+        if ts - start < render::PULSE_DURATION_MS {
+            if let Some(cb) = tick_inner.borrow().as_ref() {
+                let _ = win_inner.request_animation_frame(cb.as_ref().unchecked_ref());
+            }
+        } else {
+            // Done: clear the pulse and repaint once more so the last rings vanish,
+            // then drop the closure to end the loop.
+            pulse.set(None);
+            set_tick.update(|t| *t = t.wrapping_add(1));
+            tick_inner.borrow_mut().take();
+        }
+    }) as Box<dyn FnMut(f64)>);
+    let _ = window.request_animation_frame(draw.as_ref().unchecked_ref());
+    *tick.borrow_mut() = Some(draw);
 }
 
 /// Open a self-printing HTML document in a new tab via a Blob URL. Blob URLs are
@@ -1062,6 +1105,11 @@ fn App() -> impl IntoView {
     // Selected style-theme preset (seeded from the URL; reflected back into it).
     let style = RwSignal::new(url_style.unwrap_or("Poster").to_string());
     let (view, set_view) = signal(None::<ViewState>);
+    // Search "found it" pulse: `Some((world parsec coords, start ms))` while a
+    // pulse plays. A rAF loop bumps `pulse_tick` each frame so the map effect
+    // repaints the rings; cleared to `None` when the animation ends.
+    let pulse = RwSignal::new(None::<((f64, f64), f64)>);
+    let (pulse_tick, set_pulse_tick) = signal(0u32);
     let (results, set_results) = signal(Vec::<Hit>::new());
     let drag = RwSignal::new(None::<(f64, f64)>);
     // True while the cursor hovers directly over a world (callisto only): flips
@@ -1500,6 +1548,7 @@ fn App() -> impl IntoView {
     //    re-renders.
     Effect::new(move |_| {
         let _ = version.get();
+        let _ = pulse_tick.get(); // rAF loop bumps this to repaint the search pulse
         let opts = render::RenderOptions {
             galactic_direction: opt_galactic.get(),
             sector_grid: opt_grid.get(),
@@ -1559,6 +1608,12 @@ fn App() -> impl IntoView {
                 });
             });
         });
+        // The search pulse rides on top of the freshly drawn scene (v is Copy).
+        if let Some((center, start)) = pulse.get_untracked() {
+            if let Some(perf) = web_sys::window().and_then(|w| w.performance()) {
+                render::draw_pulse(&canvas_el, v, center, perf.now() - start);
+            }
+        }
     });
 
     // --- input (mutates the view signal). Mouse coords are CSS px; scale by
@@ -3201,11 +3256,12 @@ fn App() -> impl IntoView {
                          key=|r| format!("{}/{}", r.sector, r.hex.clone().unwrap_or_default())
                          let:r>
                         <div on:click=move |_| {
-                                 set_view.set(Some(ViewState {
-                                     scale: 64.0,
-                                     center: render::world_to_parsec(r.coord.0, r.coord.1),
-                                 }));
+                                 let center = render::world_to_parsec(r.coord.0, r.coord.1);
+                                 set_view.set(Some(ViewState { scale: 64.0, center }));
                                  set_results.set(Vec::new());
+                                 // Flash a blue pulse on the target so it's easy to
+                                 // pick out amid a dense field of worlds.
+                                 start_pulse(center, pulse, set_pulse_tick);
                              }
                              style="padding:6px 10px; cursor:pointer; \
                                     border-bottom:1px solid #1c2130;">
