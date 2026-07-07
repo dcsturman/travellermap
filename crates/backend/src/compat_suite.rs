@@ -493,28 +493,41 @@ async fn universe_all_returned_sectors_match() {
     let theirs_map = sectors_by_xy(&theirs);
 
     // Every sector we return must match the reference's at the same grid
-    // position on all fields EXCEPT `Abbreviation`, which is drift-prone: the
-    // live data carries hand-disambiguated abbreviations (e.g. "Inc2", "Inc3")
-    // for several sectors that this older checkout lacks, so we synthesize a
-    // different one. Position/Milieu/Names/Tags must match exactly — those catch
-    // real regressions. (Declared abbreviations are still pinned by
-    // `universe_envelope_and_known_sectors_match`.) A handful of sectors exist
-    // locally but not in the captured golden (also drift); allow a small budget.
-    let strip_abbr = |v: &Value| {
+    // position on all fields EXCEPT two drift-prone ones:
+    //   - `Abbreviation`: the live data carries hand-disambiguated abbreviations
+    //     (e.g. "Inc2", "Inc3") for several sectors that this older checkout lacks,
+    //     so we synthesize a different one.
+    //   - the `InReview` *token* within `Tags`: a transient authoring/review-status
+    //     flag the live deployment toggles independently of the public data we
+    //     track. Zhdant (-7,-2) has diverged in BOTH directions here (live ahead,
+    //     then the public repo ahead after an upstream sync), so it's noise, not a
+    //     regression. The rest of `Tags`, plus Position/Milieu/Names, must match
+    //     exactly — those catch real regressions. (Declared abbreviations are still
+    //     pinned by `universe_envelope_and_known_sectors_match`.) A handful of
+    //     sectors exist locally but not in live (also drift); allow a small budget.
+    let normalize = |v: &Value| {
         let mut c = v.clone();
-        c.as_object_mut().unwrap().remove("Abbreviation");
+        let obj = c.as_object_mut().unwrap();
+        obj.remove("Abbreviation");
+        if let Some(Value::String(tags)) = obj.get_mut("Tags") {
+            *tags = tags
+                .split_whitespace()
+                .filter(|t| *t != "InReview")
+                .collect::<Vec<_>>()
+                .join(" ");
+        }
         c
     };
     let mut missing = 0;
     let mut hard_diffs = Vec::new();
-    let mut abbr_drift = 0;
+    let mut soft_drift = 0;
     for (xy, o) in &ours_map {
         match theirs_map.get(xy) {
             None => missing += 1,
             Some(t) if o == t => {}
             Some(t) => {
-                if strip_abbr(o) == strip_abbr(t) {
-                    abbr_drift += 1;
+                if normalize(o) == normalize(t) {
+                    soft_drift += 1;
                 } else if hard_diffs.len() < 10 {
                     hard_diffs.push(format!("{xy:?}: ours={o} theirs={t}"));
                 }
@@ -532,8 +545,8 @@ async fn universe_all_returned_sectors_match() {
         "{missing} sectors are absent from the reference (drift budget 5)"
     );
     assert!(
-        abbr_drift <= 60,
-        "{abbr_drift} abbreviation-only drifts (budget 60)"
+        soft_drift <= 60,
+        "{soft_drift} abbreviation/InReview-only drifts (budget 60)"
     );
 }
 
