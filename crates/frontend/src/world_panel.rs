@@ -207,7 +207,7 @@ fn expanded_body(sel: &SelectedWorld) -> AnyView {
                 {section("Economics (Ex)")}
                 {field_row("Resources", &ex.resources.code, &ex.resources.blurb)}
                 {field_row("Labor", &ex.labor.code, &ex.labor.blurb)}
-                {field_row("Infrastructure", &ex.infrastructure.code, &ex.infrastructure.blurb)}
+                {field_row("Infra", &ex.infrastructure.code, &ex.infrastructure.blurb)}
                 {field_row("Efficiency", &ex.efficiency.code, &ex.efficiency.blurb)}
                 {ru.map(|n| field_row("Resource Units", &n.to_string(), "R×L×I×E"))}
             })}
@@ -215,7 +215,7 @@ fn expanded_body(sel: &SelectedWorld) -> AnyView {
                 {section("Culture [Cx]")}
                 {field_row("Heterogen.", &cx.heterogeneity.code, &cx.heterogeneity.blurb)}
                 {field_row("Acceptance", &cx.acceptance.code, &cx.acceptance.blurb)}
-                {field_row("Strangeness", &cx.strangeness.code, &cx.strangeness.blurb)}
+                {field_row("Strange.", &cx.strangeness.code, &cx.strangeness.blurb)}
                 {field_row("Symbols", &cx.symbols.code, &cx.symbols.blurb)}
             })}
 
