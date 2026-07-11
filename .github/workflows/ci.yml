@@ -50,8 +50,10 @@ jobs:
         run: cargo fmt --all -- --check
       # default-members is core + backend, so the bare invocations target the
       # native crates; the frontend (wasm-only) is checked in the wasm job.
+      # --all-targets so test/bench code is linted too — without it, lints in
+      # #[cfg(test)] modules slip through unnoticed.
       - name: Clippy (deny warnings)
-        run: cargo clippy -p tmap-core -p tmap-render -p tmap-backend -- -D warnings
+        run: cargo clippy -p tmap-core -p tmap-render -p tmap-backend --all-targets -- -D warnings
       # TMAP_SKIP_PARITY excludes the compat suite's live travellermap.com
       # comparisons — they run on a local `cargo test` but are network-dependent
       # (slow/rate-limited/offline-hostile), so CI runs only the offline goldens.
@@ -74,6 +76,6 @@ jobs:
       # `callisto` (what ships — the worldgen popups). Neither must rot. clippy
       # compiles too, so this also serves as the wasm build check.
       - name: Clippy (default, deny warnings)
-        run: cargo clippy -p tmap-frontend --target wasm32-unknown-unknown -- -D warnings
+        run: cargo clippy -p tmap-frontend --target wasm32-unknown-unknown --all-targets -- -D warnings
       - name: Clippy (callisto, deny warnings)
-        run: cargo clippy -p tmap-frontend --target wasm32-unknown-unknown --features callisto -- -D warnings
+        run: cargo clippy -p tmap-frontend --target wasm32-unknown-unknown --features callisto --all-targets -- -D warnings

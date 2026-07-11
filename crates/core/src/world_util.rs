@@ -1293,7 +1293,7 @@ mod tests {
         // Regina's Ex `(D7E+5)` → 13×7×14×5 = 6370 (matches its RU column).
         assert_eq!(compute_resource_units("(D7E+5)"), Some(6370));
         // Negative efficiency makes RU negative; bare (no parens) tolerated.
-        assert_eq!(compute_resource_units("C53-1"), Some(12 * 5 * 3 * -1));
+        assert_eq!(compute_resource_units("C53-1"), Some(-(12 * 5 * 3)));
         // Any 0 is treated as 1: (0000) → 1×1×1×1 = 1.
         assert_eq!(compute_resource_units("(0000)"), Some(1));
         // Malformed / absent.
