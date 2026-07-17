@@ -499,8 +499,45 @@ fn launch_svg(
     });
 }
 
+/// Resolve a selected world to one carrying its **full-LOD** fields, fetching (and
+/// caching) the sector at `?lod=full` if the overview LOD is all we have.
+///
+/// Load-bearing for anything that feeds a world to the worldgen service: the overview
+/// LOD omits `stellar`/`pbg`/`worlds`, and the service *rolls* whatever it isn't given
+/// rather than failing. An empty `stellar` becomes a seeded random star — Terra
+/// (canonically `G2 V`) rendered as `G9 Ib`. `select_world` only *starts* the full
+/// fetch, so a click-driven caller can outrun it; resolve through here instead of
+/// racing. Returns `None` if the fetch fails or the milieu changed under us.
+#[cfg(feature = "callisto")]
+async fn resolve_full_world(
+    sw: &SelectedWorld,
+    milieu: RwSignal<&'static str>,
+    full_sectors: StoredValue<HashMap<(i32, i32), SectorData>>,
+) -> Option<World> {
+    if sw.full {
+        return Some(sw.world.clone());
+    }
+    let hex = sw.world.hex.clone();
+    let encoded = String::from(js_sys::encode_uri_component(&sw.sector_name));
+    let m = milieu.get_untracked();
+    // May duplicate the fetch `select_world` just kicked off — an idempotent GET the
+    // browser coalesces/caches, so the extra request is harmless.
+    let full = fetch_json::<SectorData>(&format!("/api/sector/{m}/{encoded}?lod=full"))
+        .await
+        .ok()?;
+    if milieu.get_untracked() != m {
+        return None; // milieu switched mid-fetch — drop stale data
+    }
+    let fw = full.worlds.iter().find(|w| w.hex == hex).cloned()?;
+    full_sectors.update_value(|fs| {
+        fs.insert(sw.sector_coord, full);
+    });
+    Some(fw)
+}
+
 /// Build the `/api/system_svg` request for a world's system from its T5 fields.
 /// Shared by the double-click popup and the "World Map" button's orbit probe.
+/// The world must be full-LOD (see [`resolve_full_world`]).
 #[cfg(feature = "callisto")]
 fn system_svg_url(sector: &str, w: &World) -> String {
     let enc = |s: &str| String::from(js_sys::encode_uri_component(s));
@@ -1894,6 +1931,18 @@ fn App() -> impl IntoView {
             w.hex.clone(),
         );
     };
+    // Render a selected world's system, waiting for its full-LOD fields first — a
+    // double-click routinely outruns the fetch `select_world` started, and the
+    // service silently rolls a star for a world that arrives without one. See
+    // `resolve_full_world`.
+    #[cfg(feature = "callisto")]
+    let launch_system_full = move |sw: SelectedWorld| {
+        spawn_local(async move {
+            if let Some(w) = resolve_full_world(&sw, milieu, full_sectors).await {
+                launch_system(&sw.sector_name, &w);
+            }
+        });
+    };
     // Show a world's surface from its base `/api/world?...` URL (no projection), in
     // the requested projection. Flat is the existing equirectangular `<img>` map.
     // Globe renders client-side in WebGL from a one-shot equirectangular texture
@@ -2079,9 +2128,10 @@ fn App() -> impl IntoView {
             // Double-click / long-press a planet → default to the spinning globe.
             launch_world(base, true, title);
         };
-    // Double-click a world → solar-system popup (Callisto, dev-only). The
-    // preceding single-clicks already selected + upgraded the world to full LOD,
-    // so reuse `selected` rather than re-hit-testing.
+    // Double-click a world → solar-system popup (Callisto, dev-only). The preceding
+    // single-click already selected the world, so reuse `selected` rather than
+    // re-hit-testing — but it only *started* the full-LOD fetch, which a double-click
+    // routinely outruns, so go through `launch_system_full` to wait for it.
     #[cfg(feature = "callisto")]
     let on_dblclick = move |_ev: web_sys::MouseEvent| {
         if route_open.get_untracked() {
@@ -2090,7 +2140,7 @@ fn App() -> impl IntoView {
         let Some(sw) = selected.get_untracked() else {
             return;
         };
-        launch_system(&sw.sector_name, &sw.world);
+        launch_system_full(sw);
     };
     #[cfg(not(feature = "callisto"))]
     let on_dblclick = move |_ev: web_sys::MouseEvent| {};
@@ -2127,6 +2177,12 @@ fn App() -> impl IntoView {
         }));
         sys_timer.set(Some(start_elapsed_timer(sys_elapsed)));
         spawn_local(async move {
+            // The probe re-generates the system, so it needs the same full-LOD fields
+            // the system view does — otherwise it reads an orbit out of a *different*
+            // (re-rolled) system than the one the data describes.
+            let w = resolve_full_world(&sw, milieu, full_sectors)
+                .await
+                .unwrap_or(w);
             let orbit = discover_main_orbit(&sector, &w).await;
             if sys_gen.get_untracked() != gen {
                 return; // popup closed / superseded during the probe
@@ -2154,9 +2210,7 @@ fn App() -> impl IntoView {
     // Long-press a world (mobile) → solar-system popup. Unlike the double-click,
     // nothing has selected the world yet, so first hit-test it (reusing
     // `select_world`, which also opens the detail panel + kicks the full-LOD
-    // fetch), then render. If the world is already full we render now; otherwise
-    // fetch the full sector first (the solar-system render needs stellar/pbg/worlds,
-    // which overview LOD omits) and render when it lands.
+    // fetch); `launch_system_full` then waits for those fields before rendering.
     #[cfg(feature = "callisto")]
     let open_system_at = move |px: (f64, f64)| {
         if route_open.get_untracked() {
@@ -2166,34 +2220,7 @@ fn App() -> impl IntoView {
         let Some(sw) = selected.get_untracked() else {
             return;
         };
-        if sw.full {
-            launch_system(&sw.sector_name, &sw.world);
-            return;
-        }
-        // Not cached at full LOD yet — fetch it ourselves, then render. (This may
-        // duplicate the fetch select_world just kicked; an idempotent GET, so the
-        // extra request is harmless for this dev-only feature.)
-        let sector_name = sw.sector_name.clone();
-        let sector_coord = sw.sector_coord;
-        let hex = sw.world.hex.clone();
-        let encoded = String::from(js_sys::encode_uri_component(&sector_name));
-        let m = milieu.get_untracked();
-        spawn_local(async move {
-            let url = format!("/api/sector/{m}/{encoded}?lod=full");
-            let Ok(full) = fetch_json::<SectorData>(&url).await else {
-                return;
-            };
-            if milieu.get_untracked() != m {
-                return; // milieu switched mid-fetch
-            }
-            let Some(fw) = full.worlds.iter().find(|w| w.hex == hex).cloned() else {
-                return;
-            };
-            full_sectors.update_value(|fs| {
-                fs.insert(sector_coord, full);
-            });
-            launch_system(&sector_name, &fw);
-        });
+        launch_system_full(sw);
     };
 
     // --- search ---
