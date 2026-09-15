@@ -59,12 +59,18 @@ docker buildx use tmap-builder
 # The registry cache (--cache-to/from) carries LAYERS across machines/fresh
 # checkouts; the big incremental win (the target/ mount) lives in the local
 # daemon and persists automatically between local builds.
+#
+# ignore-error=true: the cache EXPORT is an optimization that runs after the
+# image itself is pushed, and Artifact Registry intermittently drops the upload
+# of the largest cache blob ("tls: bad record MAC" / broken pipe). Without this,
+# set -e turned that flake into a failed deploy even though the image had
+# already shipped. A missed cache write only costs time on the next build.
 BUILDCACHE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/${SERVICE}:buildcache"
 echo ">> building + pushing $IMAGE locally via buildx (linux/amd64, cached)…"
 docker buildx build \
   --platform linux/amd64 \
   --cache-from=type=registry,ref="$BUILDCACHE" \
-  --cache-to=type=registry,ref="$BUILDCACHE",mode=max \
+  --cache-to=type=registry,ref="$BUILDCACHE",mode=max,ignore-error=true \
   -t "$IMAGE" \
   --push \
   .
