@@ -410,7 +410,9 @@ pub fn frames_to_gif(frames: &[Vec<u8>], size: u16, delay_cs: u16) -> Option<Vec
 
     // RGBA-over-BG → opaque RGBA (alpha forced to 255 so NeuQuant + index_of agree).
     let flatten = |rgba: &[u8]| -> Vec<u8> {
-        rgba.chunks_exact(4)
+        rgba.as_chunks::<4>()
+            .0
+            .iter()
             .flat_map(|px| {
                 let a = u32::from(px[3]);
                 let mix =
@@ -444,7 +446,12 @@ pub fn frames_to_gif(frames: &[Vec<u8>], size: u16, delay_cs: u16) -> Option<Vec
         let mut enc = Encoder::new(&mut out, size, size, &palette).ok()?;
         enc.set_repeat(Repeat::Infinite).ok()?;
         for f in &flat {
-            let indices: Vec<u8> = f.chunks_exact(4).map(|px| nq.index_of(px) as u8).collect();
+            let indices: Vec<u8> = f
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|px| nq.index_of(px) as u8)
+                .collect();
             let frame = Frame {
                 width: size,
                 height: size,

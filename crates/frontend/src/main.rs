@@ -452,7 +452,13 @@ fn launch_svg(
     sys_timer.set(Some(start_elapsed_timer(sys_elapsed)));
 
     spawn_local(async move {
-        let result = gloo_net::http::Request::get(&url).send().await;
+        let result = gloo_net::http::Request::get(&url)
+            // Always revalidate with the service, as `fetch_json` does for the
+            // backend: a stale browser-cached SVG would otherwise mask a
+            // regenerated system.
+            .cache(web_sys::RequestCache::NoCache)
+            .send()
+            .await;
         if sys_gen.get_untracked() != gen {
             return;
         }
@@ -566,6 +572,7 @@ fn system_svg_url(sector: &str, w: &World) -> String {
 #[cfg(feature = "callisto")]
 async fn discover_main_orbit(sector: &str, w: &World) -> Option<String> {
     let resp = gloo_net::http::Request::get(&system_svg_url(sector, w))
+        .cache(web_sys::RequestCache::NoCache)
         .send()
         .await
         .ok()?;
