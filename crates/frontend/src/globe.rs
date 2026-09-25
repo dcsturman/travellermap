@@ -38,13 +38,15 @@ uniform sampler2D uTex;
 uniform float uSpin;
 uniform vec2  uBeacon;       // starport (lon, lat) radians
 uniform float uHasBeacon;    // 1.0 if a beacon exists, else 0.0
+uniform vec2  uSun;          // substellar point (lon, lat) radians, tide-locked only
+uniform float uHasSun;       // 1.0 if tide-locked (sun fixed on the planet), else 0.0
 
 const float PI       = 3.14159265359;
 const float TILT     = 0.41;                 // axial tilt
 const float DISC     = 0.92;                 // disc radius within [-1,1]
 const float GLOW     = 0.06;                 // atmosphere ring thickness
 const vec3  ATMO     = vec3(130.,175.,255.)/255.;
-const vec3  SUN      = normalize(vec3(-0.5,-0.3,0.6)); // fixed in view space
+const vec3  SUN      = normalize(vec3(-0.5,-0.3,0.6)); // fixed in view space (rotating worlds)
 const float NIGHT    = 0.18;                 // night-side brightness
 const float TERM     = 0.18;                 // terminator softness
 const float LIMB     = 0.74;                 // limb-darkening floor
@@ -75,8 +77,17 @@ void main() {
   vec2 uv = vec2(fract(lon/(2.0*PI)), (PI*0.5 - lat)/PI);
   vec4 t = texture2D(uTex, uv);
   vec3 col = t.rgb;
+  // Sun direction. A rotating world keeps SUN fixed in view, so the day side
+  // sweeps across the surface as it spins. A tide-locked world keeps one face to
+  // its star, so the sun is the substellar surface point carried round by the
+  // spin: the inverse of the lon/lat mapping above (texture lon = view lon + uSpin).
+  vec3 sun = SUN;
+  if (uHasSun > 0.5) {
+    float sl = uSun.x - uSpin;
+    sun = normalize(east*(cos(uSun.y)*sin(sl)) + north*sin(uSun.y) + front*(cos(uSun.y)*cos(sl)));
+  }
   // day/night terminator + limb darkening
-  float day = smoothstep(-TERM, TERM, dot(n, SUN));
+  float day = smoothstep(-TERM, TERM, dot(n, sun));
   float shade = (NIGHT + (1.0-NIGHT)*day) * (LIMB + (1.0-LIMB)*nz);
   col *= shade;
   // night-side city lights (emissive in alpha)
@@ -135,14 +146,15 @@ fn link(gl: &Gl, vert: &WebGlShader, frag: &WebGlShader) -> Option<WebGlProgram>
 }
 
 /// Compile + link the globe program on `gl`, upload `tex_img` as the equirect
-/// texture, and wire the static uniforms (texture unit + beacon). Returns the
-/// `uSpin` location for the caller to drive per frame. Shared by the live
-/// [`start`] rAF loop and the offscreen [`capture_frames`] GIF path. `None` on
-/// any GL failure. Leaves blending enabled; the caller sets the viewport.
+/// texture, and wire the static uniforms (texture unit + beacon + substellar
+/// sun). Returns the `uSpin` location for the caller to drive per frame. Shared
+/// by the live [`start`] rAF loop and the offscreen [`capture_frames`] GIF path.
+/// `None` on any GL failure. Leaves blending enabled; the caller sets the viewport.
 fn setup(
     gl: &Gl,
     tex_img: &HtmlImageElement,
     starport: Option<(f32, f32)>,
+    substellar: Option<(f32, f32)>,
 ) -> Option<WebGlUniformLocation> {
     let vert = compile(gl, Gl::VERTEX_SHADER, VERT)?;
     let frag = compile(gl, Gl::FRAGMENT_SHADER, FRAG)?;
@@ -186,11 +198,19 @@ fn setup(
     let u_spin = gl.get_uniform_location(&prog, "uSpin")?;
     let u_beacon = gl.get_uniform_location(&prog, "uBeacon");
     let u_has = gl.get_uniform_location(&prog, "uHasBeacon");
+    let u_sun = gl.get_uniform_location(&prog, "uSun");
+    let u_has_sun = gl.get_uniform_location(&prog, "uHasSun");
     gl.active_texture(Gl::TEXTURE0);
     gl.uniform1i(u_tex.as_ref(), 0);
     let (blon, blat) = starport.unwrap_or((0.0, 0.0));
     gl.uniform2f(u_beacon.as_ref(), blon, blat);
     gl.uniform1f(u_has.as_ref(), if starport.is_some() { 1.0 } else { 0.0 });
+    let (slon, slat) = substellar.unwrap_or((0.0, 0.0));
+    gl.uniform2f(u_sun.as_ref(), slon, slat);
+    gl.uniform1f(
+        u_has_sun.as_ref(),
+        if substellar.is_some() { 1.0 } else { 0.0 },
+    );
     gl.enable(Gl::BLEND);
     gl.blend_func(Gl::SRC_ALPHA, Gl::ONE_MINUS_SRC_ALPHA);
     Some(u_spin)
@@ -250,12 +270,15 @@ impl Drop for GlobeAnim {
 /// Upload `tex_img` (a decoded equirectangular PNG: RGB = day surface, A = city
 /// lights) to a WebGL texture on `canvas` and start a `requestAnimationFrame` loop
 /// that spins the globe by driving `uSpin` from wall-clock time (frame-rate
-/// independent). `starport` is the beacon's `(lon, lat)` in radians, or `None`.
-/// Returns `None` if any GL setup step fails (caller falls back to the APNG).
+/// independent). `starport` is the beacon's `(lon, lat)` in radians, or `None`;
+/// `substellar` is a tide-locked world's sub-star point, or `None` for a rotating
+/// world (sun fixed in view). Returns `None` if any GL setup step fails (caller
+/// falls back to the APNG).
 pub fn start(
     canvas: &HtmlCanvasElement,
     tex_img: &HtmlImageElement,
     starport: Option<(f32, f32)>,
+    substellar: Option<(f32, f32)>,
 ) -> Option<GlobeAnim> {
     let win = web_sys::window()?;
     let dpr = win.device_pixel_ratio().max(1.0);
@@ -266,7 +289,7 @@ pub fn start(
     canvas.set_height(px);
 
     let gl: Gl = canvas.get_context("webgl").ok()??.dyn_into().ok()?;
-    let u_spin = setup(&gl, tex_img, starport)?;
+    let u_spin = setup(&gl, tex_img, starport, substellar)?;
     gl.viewport(0, 0, px as i32, px as i32);
 
     // Self-rescheduling rAF loop, halted by `alive`/`stop()`.
@@ -322,8 +345,9 @@ fn draw_closure(
     }) as Box<dyn FnMut(f64)>)
 }
 
-/// Parse an `X-Starport: <lon>,<lat>` header value (radians) → `(lon, lat)`.
-pub fn parse_starport(header: &str) -> Option<(f32, f32)> {
+/// Parse a `<lon>,<lat>` header value (radians) → `(lon, lat)`. Shared by
+/// `X-Starport` and `X-Substellar`, which use the same convention.
+pub fn parse_lon_lat(header: &str) -> Option<(f32, f32)> {
     let (lon, lat) = header.split_once(',')?;
     Some((
         lon.trim().parse::<f32>().ok()?,
@@ -345,6 +369,7 @@ pub fn texture_url(base: &str) -> String {
 pub fn capture_frames(
     tex_img: &HtmlImageElement,
     starport: Option<(f32, f32)>,
+    substellar: Option<(f32, f32)>,
     size: u32,
     frames: u32,
 ) -> Option<Vec<Vec<u8>>> {
@@ -366,7 +391,7 @@ pub fn capture_frames(
         .dyn_into()
         .ok()?;
 
-    let u_spin = setup(&gl, tex_img, starport)?;
+    let u_spin = setup(&gl, tex_img, starport, substellar)?;
     let s = size as i32;
     gl.viewport(0, 0, s, s);
 
@@ -463,4 +488,26 @@ pub fn frames_to_gif(frames: &[Vec<u8>], size: u16, delay_cs: u16) -> Option<Vec
         }
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_lon_lat;
+
+    #[test]
+    fn parses_lon_lat_header() {
+        assert_eq!(
+            parse_lon_lat("0.47385689191646047,0"),
+            Some((0.473_856_9, 0.0))
+        );
+        assert_eq!(parse_lon_lat(" 2.66 , -1.19 "), Some((2.66, -1.19)));
+    }
+
+    #[test]
+    fn rejects_malformed_lon_lat_header() {
+        assert_eq!(parse_lon_lat(""), None);
+        assert_eq!(parse_lon_lat("1.0"), None);
+        assert_eq!(parse_lon_lat("1.0,north"), None);
+        assert_eq!(parse_lon_lat("east,1.0"), None);
+    }
 }

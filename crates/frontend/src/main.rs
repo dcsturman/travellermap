@@ -231,10 +231,12 @@ enum ImgView {
     },
     /// Client-side WebGL spinning globe — a decoded equirectangular texture
     /// (RGB surface, A city-lights) warped on the GPU. `starport` is the beacon
-    /// `(lon, lat)` in radians, or `None`. A `globe.rs` rAF loop animates it.
+    /// `(lon, lat)` in radians, or `None`; `substellar` is a tide-locked world's
+    /// sub-star point (`None` = rotating). A `globe.rs` rAF loop animates it.
     Globe {
         tex: web_sys::HtmlImageElement,
         starport: Option<(f32, f32)>,
+        substellar: Option<(f32, f32)>,
         title: String,
     },
     /// Render failed (unreachable service, or a 422 from a partial/placeholder UWP).
@@ -1300,7 +1302,7 @@ fn App() -> impl IntoView {
     let world_globe = RwSignal::new(false);
     // WebGL globe (callisto): the canvas the renderer draws into, the live rAF
     // animation (dropped to stop), and a per-world cache of the decoded texture +
-    // starport so revisiting a world skips the fetch/decode.
+    // starport + substellar point so revisiting a world skips the fetch/decode.
     #[cfg(feature = "callisto")]
     let globe_canvas_ref = NodeRef::<leptos::html::Canvas>::new();
     // Non-`Send` (web_sys / Rc) → LocalStorage stored values (CSR is single-threaded).
@@ -1309,7 +1311,11 @@ fn App() -> impl IntoView {
     #[cfg(feature = "callisto")]
     let globe_cache = StoredValue::new_local(std::collections::HashMap::<
         String,
-        (web_sys::HtmlImageElement, Option<(f32, f32)>),
+        (
+            web_sys::HtmlImageElement,
+            Option<(f32, f32)>,
+            Option<(f32, f32)>,
+        ),
     >::new());
     let (route_status, set_route_status) = signal(String::new());
     // Distinguish a click (set endpoint) from a drag (pan): remember press origin.
@@ -1998,25 +2004,28 @@ fn App() -> impl IntoView {
             return;
         }
         // Set the live Globe view: tear down any prior popup state first.
-        let show_globe =
-            move |tex: web_sys::HtmlImageElement, sp: Option<(f32, f32)>, title: String| {
-                if let Some(ImgView::Ready { obj, .. }) = system_view.get_untracked() {
-                    let _ = web_sys::Url::revoke_object_url(&obj);
-                }
-                if let Some(id) = sys_timer.get_untracked() {
-                    win().clear_interval_with_handle(id);
-                    sys_timer.set(None);
-                }
-                sys_gen.update(|g| *g = g.wrapping_add(1));
-                system_view.set(Some(ImgView::Globe {
-                    tex,
-                    starport: sp,
-                    title,
-                }));
-            };
+        let show_globe = move |tex: web_sys::HtmlImageElement,
+                               sp: Option<(f32, f32)>,
+                               sub: Option<(f32, f32)>,
+                               title: String| {
+            if let Some(ImgView::Ready { obj, .. }) = system_view.get_untracked() {
+                let _ = web_sys::Url::revoke_object_url(&obj);
+            }
+            if let Some(id) = sys_timer.get_untracked() {
+                win().clear_interval_with_handle(id);
+                sys_timer.set(None);
+            }
+            sys_gen.update(|g| *g = g.wrapping_add(1));
+            system_view.set(Some(ImgView::Globe {
+                tex,
+                starport: sp,
+                substellar: sub,
+                title,
+            }));
+        };
         // Cached decoded texture → show immediately.
-        if let Some((tex, sp)) = globe_cache.with_value(|c| c.get(&base).cloned()) {
-            show_globe(tex, sp, title);
+        if let Some((tex, sp, sub)) = globe_cache.with_value(|c| c.get(&base).cloned()) {
+            show_globe(tex, sp, sub, title);
             return;
         }
         // Spinner while we fetch + decode the texture, under a fresh generation a
@@ -2039,12 +2048,11 @@ fn App() -> impl IntoView {
             }
             let img = match resp {
                 Ok(r) if r.ok() => {
-                    let sp = r
-                        .headers()
-                        .get("X-Starport")
-                        .and_then(|h| globe::parse_starport(&h));
+                    let lon_lat =
+                        |name: &str| r.headers().get(name).and_then(|h| globe::parse_lon_lat(&h));
+                    let (sp, sub) = (lon_lat("X-Starport"), lon_lat("X-Substellar"));
                     match r.binary().await {
-                        Ok(bytes) => decode_image(&bytes).await.map(|img| (img, sp)),
+                        Ok(bytes) => decode_image(&bytes).await.map(|img| (img, sp, sub)),
                         Err(_) => None,
                     }
                 }
@@ -2054,11 +2062,11 @@ fn App() -> impl IntoView {
                 return;
             }
             match img {
-                Some((img, sp)) => {
+                Some((img, sp, sub)) => {
                     globe_cache.update_value(|c| {
-                        c.insert(base.clone(), (img.clone(), sp));
+                        c.insert(base.clone(), (img.clone(), sp, sub));
                     });
-                    show_globe(img, sp, title);
+                    show_globe(img, sp, sub, title);
                 }
                 // Texture unavailable (endpoint not live / decode failed) → APNG.
                 None => launch_apng(title),
@@ -2078,11 +2086,12 @@ fn App() -> impl IntoView {
         if let Some(ImgView::Globe {
             tex,
             starport,
+            substellar,
             title,
         }) = view
         {
             if let Some(canvas) = globe_canvas_ref.get() {
-                match globe::start(&canvas, &tex, starport) {
+                match globe::start(&canvas, &tex, starport, substellar) {
                     Some(anim) => globe_anim.set_value(Some(anim)),
                     // GL setup failed after the up-front check (e.g. a fragment
                     // shader with no `highp` support) → fall back to the APNG globe
@@ -3012,9 +3021,10 @@ fn App() -> impl IntoView {
                     // WebGL spinning globe — a square canvas the `globe.rs` rAF loop
                     // draws into (the Effect above starts/stops it). The shader
                     // discards outside the disc, so the dark popup shows through.
-                    Some(ImgView::Globe { title, tex, starport }) => {
+                    Some(ImgView::Globe { title, tex, starport, substellar }) => {
                         let (title_f, title_g) = (title.clone(), title.clone());
-                        let (tex_d, title_d, starport_d) = (tex.clone(), title.clone(), starport);
+                        let (tex_d, title_d, starport_d, substellar_d) =
+                            (tex.clone(), title.clone(), starport, substellar);
                         let seg = "padding:6px 12px; border:none; cursor:pointer; \
                                    font:600 12px system-ui;";
                         view! {
@@ -3056,7 +3066,7 @@ fn App() -> impl IntoView {
                                                 set_timeout(5000, move || share_status.set(None));
                                                 return;
                                             }
-                                            let (tex, cap, sp) = (tex_d.clone(), title_d.clone(), starport_d);
+                                            let (tex, cap, sp, sub) = (tex_d.clone(), title_d.clone(), starport_d, substellar_d);
                                             share_status.set(Some("Rendering globe…".into()));
                                             spawn_local(async move {
                                                 // Let the toast paint before the synchronous
@@ -3065,7 +3075,7 @@ fn App() -> impl IntoView {
                                                 // 120 frames × 8 cs/frame → ~9.6s per rotation
                                                 // at 12.5fps — 3× the frames of the old 40 so the
                                                 // spin reads smooth, not stepped, at the same speed.
-                                                let gif = globe::capture_frames(&tex, sp, 256, 120)
+                                                let gif = globe::capture_frames(&tex, sp, sub, 256, 120)
                                                     .and_then(|frames| globe::frames_to_gif(&frames, 256, 8));
                                                 let result = match gif.as_deref().and_then(|b| typed_blob(b, "image/gif")) {
                                                     Some(blob) => post_file_to_discord(&hook, &blob, "globe.gif", &cap).await,
