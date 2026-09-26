@@ -187,19 +187,42 @@ fn open_print_html(html: &str) {
     let _ = win().open_with_url_and_target(&url, "_blank");
 }
 
-/// Base URL of the external worldgen *interactive* solar-system service (Callisto):
-/// same query params as `/api/system` but returns an `image/svg+xml` whose bodies
-/// are wrapped in `<g class="sysmap-body" data-…>` groups, so we can inline it and
-/// make each world hoverable (UWP tooltip) and double-clickable (its surface map).
+/// Production worldgen (Callisto) service, used unless the build overrides it.
 #[cfg(feature = "callisto")]
-const SYSTEM_SVG_SERVICE: &str = "https://tools.callistoflight.com/api/system_svg";
+const DEFAULT_WORLDGEN_URL: &str = "https://tools.callistoflight.com";
 
-/// Base URL of the external worldgen planet-surface image service (Callisto). The
-/// "World Map" button in the detail panel calls this directly. Same deterministic
-/// seed chain + GCS cache as `/api/system`, so the first render of a given world
-/// can take 20–30 s but is instant thereafter.
+/// Base URL of the external worldgen (Callisto) service, without a trailing slash.
+///
+/// Resolved at **compile time** from `WORLDGEN_URL` (e.g.
+/// `WORLDGEN_URL=http://localhost:8081 trunk serve --features callisto`), falling
+/// back to production. It is baked into the wasm, with no runtime override, so a
+/// build made against the wrong host silently talks to the wrong server. Mirrors
+/// worldgen's own `TRAVELLERMAP_URL`. Worldgen sends
+/// `Access-Control-Allow-Origin: *`, so any base works cross-origin.
 #[cfg(feature = "callisto")]
-const WORLD_SERVICE: &str = "https://tools.callistoflight.com/api/world";
+fn worldgen_base_url() -> &'static str {
+    option_env!("WORLDGEN_URL")
+        .unwrap_or(DEFAULT_WORLDGEN_URL)
+        .trim_end_matches('/')
+}
+
+/// Worldgen's *interactive* solar-system endpoint: same query params as
+/// `/api/system` but returns an `image/svg+xml` whose bodies are wrapped in
+/// `<g class="sysmap-body" data-…>` groups, so we can inline it and make each world
+/// hoverable (UWP tooltip) and double-clickable (its surface map).
+#[cfg(feature = "callisto")]
+fn system_svg_service() -> String {
+    format!("{}/api/system_svg", worldgen_base_url())
+}
+
+/// Worldgen's planet-surface image endpoint. The "World Map" button in the detail
+/// panel calls this directly. Same deterministic seed chain + GCS cache as
+/// `/api/system`, so the first render of a given world can take 20–30 s but is
+/// instant thereafter.
+#[cfg(feature = "callisto")]
+fn world_service() -> String {
+    format!("{}/api/world", worldgen_base_url())
+}
 
 /// State of the full-screen Callisto image popup (dev-only). One popup serves
 /// both the double-click solar-system render and the detail-panel world-surface
@@ -550,7 +573,8 @@ async fn resolve_full_world(
 fn system_svg_url(sector: &str, w: &World) -> String {
     let enc = |s: &str| String::from(js_sys::encode_uri_component(s));
     let mut url = format!(
-        "{SYSTEM_SVG_SERVICE}?sector={}&hex={}&name={}&uwp={}&pbg={}&stellar={}",
+        "{}?sector={}&hex={}&name={}&uwp={}&pbg={}&stellar={}",
+        system_svg_service(),
         enc(sector),
         enc(&w.hex),
         enc(&w.name),
@@ -2126,7 +2150,8 @@ fn App() -> impl IntoView {
         move |sector: &str, hex: &str, name: &str, uwp: &str, orbit: Option<String>| {
             let enc = |s: &str| String::from(js_sys::encode_uri_component(s));
             let mut base = format!(
-                "{WORLD_SERVICE}?sector={}&hex={}&name={}&uwp={}&scale=2.0",
+                "{}?sector={}&hex={}&name={}&uwp={}&scale=2.0",
+                world_service(),
                 enc(sector),
                 enc(hex),
                 enc(name),
@@ -2205,7 +2230,8 @@ fn App() -> impl IntoView {
             }
             let enc = |s: &str| String::from(js_sys::encode_uri_component(s));
             let mut base = format!(
-                "{WORLD_SERVICE}?sector={}&hex={}&name={}&uwp={}&scale=2.0",
+                "{}?sector={}&hex={}&name={}&uwp={}&scale=2.0",
+                world_service(),
                 enc(&sector),
                 enc(&w.hex),
                 enc(&name),
