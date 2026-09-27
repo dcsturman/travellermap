@@ -224,6 +224,68 @@ fn world_service() -> String {
     format!("{}/api/world", worldgen_base_url())
 }
 
+/// Which system generator worldgen uses: its own physics-based Callisto generator
+/// (the default), or the classic Traveller Book 6 procedure. Chosen in Settings,
+/// saved to localStorage, and sent as `generator=` on every worldgen request.
+#[cfg(feature = "callisto")]
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum Generator {
+    #[default]
+    Callisto,
+    Book6,
+}
+
+#[cfg(feature = "callisto")]
+impl Generator {
+    const ALL: [Generator; 2] = [Generator::Callisto, Generator::Book6];
+
+    /// Worldgen's `generator=` value. Always sent, never left to worldgen's own
+    /// default, which is a per-deployment setting (`WORLDGEN_GENERATOR`).
+    fn param(self) -> &'static str {
+        match self {
+            Generator::Callisto => "callisto",
+            Generator::Book6 => "book6",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Generator::Callisto => "Callisto",
+            Generator::Book6 => "Book 6",
+        }
+    }
+
+    fn from_param(v: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|g| g.param() == v)
+    }
+}
+
+/// localStorage key holding the chosen system generator.
+#[cfg(feature = "callisto")]
+const GENERATOR_KEY: &str = "tmap.generator";
+
+/// Where "Callisto" in the Settings panel links to, once there's a page that
+/// explains it. `None` shows the name as plain text.
+#[cfg(feature = "callisto")]
+const CALLISTO_ABOUT_URL: Option<&str> = None;
+
+#[cfg(feature = "callisto")]
+fn generator_load() -> Generator {
+    win()
+        .local_storage()
+        .ok()
+        .flatten()
+        .and_then(|s| s.get_item(GENERATOR_KEY).ok().flatten())
+        .and_then(|v| Generator::from_param(&v))
+        .unwrap_or_default()
+}
+#[cfg(feature = "callisto")]
+fn generator_save(g: Generator) {
+    if let Ok(Some(s)) = win().local_storage() {
+        let _ = s.set_item(GENERATOR_KEY, g.param());
+    }
+}
+
 /// The system a body belongs to, as worldgen needs it to rebuild that system and
 /// derive a body's surface map from its physics (temperature, tilt, tidal lock…).
 /// Captured from the main world when the system view opens, so a double-click on
@@ -239,11 +301,13 @@ struct SystemCtx {
     stellar: String,
     pbg: String,
     worlds: Option<u8>,
+    /// The generator the system view was drawn with, so its bodies' maps match it.
+    generator: Generator,
 }
 
 #[cfg(feature = "callisto")]
 impl SystemCtx {
-    fn new(sector: &str, w: &World) -> Self {
+    fn new(sector: &str, w: &World, generator: Generator) -> Self {
         Self {
             sector: sector.to_string(),
             hex: w.hex.clone(),
@@ -252,6 +316,7 @@ impl SystemCtx {
             stellar: w.stellar.clone(),
             pbg: w.pbg.clone(),
             worlds: w.worlds,
+            generator,
         }
     }
 
@@ -287,6 +352,7 @@ impl SystemCtx {
         if let Some(n) = self.worlds {
             url.push_str(&format!("&worlds={n}"));
         }
+        url.push_str(&format!("&generator={}", self.generator.param()));
         if !self.is_main_world(name, uwp) {
             url.push_str(&format!(
                 "&mw={}&mwuwp={}",
@@ -637,7 +703,7 @@ async fn resolve_full_world(
 /// Shared by the double-click popup and the "World Map" button's orbit probe.
 /// The world must be full-LOD (see [`resolve_full_world`]).
 #[cfg(feature = "callisto")]
-fn system_svg_url(sector: &str, w: &World) -> String {
+fn system_svg_url(sector: &str, w: &World, generator: Generator) -> String {
     let enc = |s: &str| String::from(js_sys::encode_uri_component(s));
     let mut url = format!(
         "{}?sector={}&hex={}&name={}&uwp={}&pbg={}&stellar={}",
@@ -652,6 +718,7 @@ fn system_svg_url(sector: &str, w: &World) -> String {
     if let Some(n) = w.worlds {
         url.push_str(&format!("&worlds={n}"));
     }
+    url.push_str(&format!("&generator={}", generator.param()));
     url
 }
 
@@ -663,8 +730,8 @@ fn system_svg_url(sector: &str, w: &World) -> String {
 /// its `data-orbit`. Returns `None` on any failure (→ caller uses the service
 /// default), so a slow/old/unavailable service degrades gracefully.
 #[cfg(feature = "callisto")]
-async fn discover_main_orbit(sector: &str, w: &World) -> Option<String> {
-    let resp = gloo_net::http::Request::get(&system_svg_url(sector, w))
+async fn discover_main_orbit(sector: &str, w: &World, generator: Generator) -> Option<String> {
+    let resp = gloo_net::http::Request::get(&system_svg_url(sector, w, generator))
         .cache(web_sys::RequestCache::NoCache)
         .send()
         .await
@@ -1382,6 +1449,9 @@ fn App() -> impl IntoView {
     // localStorage), and a transient toast message for share success/failure.
     #[cfg(feature = "callisto")]
     let discord_webhook = RwSignal::new(discord_webhook_load());
+    // System generator for worldgen requests (callisto), persisted to localStorage.
+    #[cfg(feature = "callisto")]
+    let generator = RwSignal::new(generator_load());
     #[cfg(feature = "callisto")]
     let share_status = RwSignal::new(None::<String>);
     // World-surface projection (callisto): the base `/api/world?...` URL of the
@@ -2015,7 +2085,8 @@ fn App() -> impl IntoView {
     // seeding/parsing/render; it needs the full-LOD fields (stellar/pbg/worlds).
     #[cfg(feature = "callisto")]
     let launch_system = move |sector_name: &str, w: &World| {
-        let url = system_svg_url(sector_name, w);
+        let gen_choice = generator.get_untracked();
+        let url = system_svg_url(sector_name, w, gen_choice);
         let name = if w.name.is_empty() {
             w.hex.clone()
         } else {
@@ -2031,7 +2102,7 @@ fn App() -> impl IntoView {
             sys_gen,
             url,
             title,
-            SystemCtx::new(sector_name, w),
+            SystemCtx::new(sector_name, w, gen_choice),
         );
     };
     // Render a selected world's system, waiting for its full-LOD fields first — a
@@ -2278,13 +2349,15 @@ fn App() -> impl IntoView {
             let w = resolve_full_world(&sw, milieu, full_sectors)
                 .await
                 .unwrap_or(w);
-            let orbit = discover_main_orbit(&sector, &w).await;
+            let gen_choice = generator.get_untracked();
+            let orbit = discover_main_orbit(&sector, &w, gen_choice).await;
             if sys_gen.get_untracked() != gen {
                 return; // popup closed / superseded during the probe
             }
             // The main world itself, so no `mw`/`mwuwp`; the system params still let
             // worldgen derive its map from the system's physics.
-            let base = SystemCtx::new(&sector, &w).world_url(&name, &w.uwp, orbit.as_deref());
+            let base =
+                SystemCtx::new(&sector, &w, gen_choice).world_url(&name, &w.uwp, orbit.as_deref());
             // The World Map button keeps the existing default: the flat map.
             // launch_world restarts the spinner/timer under a new generation and
             // swaps to the image (or error) when the render lands.
@@ -3217,13 +3290,45 @@ fn App() -> impl IntoView {
     #[cfg(not(feature = "callisto"))]
     let share_toast = ().into_any();
 
-    // Settings "DISCORD" section (callisto): paste a channel webhook URL once;
-    // persisted to localStorage. The "Send to Discord" buttons post here.
+    // Settings sections that only exist with worldgen (callisto):
+    // - "SYSTEM GENERATION": Callisto (default) or Book 6, persisted to
+    //   localStorage and sent as `generator=` on every worldgen request.
+    // - "DISCORD": paste a channel webhook URL once; persisted to localStorage.
+    //   The "Send to Discord" buttons post here.
     // Builder closures (not moved values) so they can be embedded inside the
     // re-rendering `<Show>` panels, which require `Fn` children.
     #[cfg(feature = "callisto")]
-    let discord_settings = move || {
+    let callisto_settings = move || {
+        let callisto_name = match CALLISTO_ABOUT_URL {
+            Some(href) => view! {
+                <a href=href target="_blank" rel="noopener" style="color:#cfd6e6;">"Callisto"</a>
+            }
+            .into_any(),
+            None => "Callisto".into_any(),
+        };
         view! {
+            <div style="font-weight:700; color:#aab3c8; margin:12px 0 2px;">"SYSTEM GENERATION"</div>
+            <div style="display:flex; flex-wrap:wrap; gap:6px; margin:4px 0 2px;">
+                {Generator::ALL.into_iter().map(|g| view! {
+                    <button
+                        on:click=move |_| {
+                            generator_save(g);
+                            generator.set(g);
+                        }
+                        style="padding:5px 11px; border-radius:14px; cursor:pointer; \
+                               border:1px solid #2a3145; font:600 12px system-ui;"
+                        style:background=move || if generator.get() == g { "#e32736" } else { "rgba(40,44,58,0.7)" }
+                        style:color=move || if generator.get() == g { "#fff" } else { "#cdd5e6" }>
+                        {g.label()}
+                    </button>
+                }).collect_view()}
+            </div>
+            <div style="font-size:11px; color:#7e879c; line-height:1.45; margin-top:3px;">
+                {callisto_name}
+                " builds each system from its physics: temperatures, orbits, tidal locks. \
+                 Book 6 uses the classic Traveller procedure. Applies to system and world \
+                 maps opened from now on."
+            </div>
             <div style="font-weight:700; color:#aab3c8; margin:12px 0 2px;">"DISCORD"</div>
             <input type="text" placeholder="Channel webhook URL"
                    prop:value=move || discord_webhook.get()
@@ -3243,7 +3348,7 @@ fn App() -> impl IntoView {
         .into_any()
     };
     #[cfg(not(feature = "callisto"))]
-    let discord_settings = move || ().into_any();
+    let callisto_settings = move || ().into_any();
 
     // "Send current map view to Discord" button (callisto), embedded in the route
     // planner so a computed jump route can be posted. Captures the live canvas.
@@ -3872,7 +3977,7 @@ fn App() -> impl IntoView {
                     {toggle_row("More World Colors", opt_world_colors)}
                     {toggle_row("Filled Borders", opt_filled)}
                     {toggle_row("Dim Unofficial", opt_dim)}
-                    {discord_settings()}
+                    {callisto_settings()}
                     <div style="font-weight:700; color:#aab3c8; margin:12px 0 2px;">"DEBUG"</div>
                     {toggle_row("Frame Timing (HUD)", opt_perf)}
                 </div>
@@ -3942,5 +4047,26 @@ fn App() -> impl IntoView {
                 </div>
             </Show>
         </main>
+    }
+}
+
+#[cfg(all(test, feature = "callisto"))]
+mod tests {
+    use super::Generator;
+
+    #[test]
+    fn generator_param_round_trips() {
+        for g in Generator::ALL {
+            assert!(Generator::from_param(g.param()) == Some(g));
+        }
+        assert_eq!(Generator::Callisto.param(), "callisto");
+        assert_eq!(Generator::Book6.param(), "book6");
+    }
+
+    #[test]
+    fn generator_defaults_to_callisto_and_rejects_unknown() {
+        assert!(Generator::default() == Generator::Callisto);
+        assert!(Generator::from_param("Book6").is_none());
+        assert!(Generator::from_param("").is_none());
     }
 }
