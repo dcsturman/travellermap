@@ -224,6 +224,80 @@ fn world_service() -> String {
     format!("{}/api/world", worldgen_base_url())
 }
 
+/// The system a body belongs to, as worldgen needs it to rebuild that system and
+/// derive a body's surface map from its physics (temperature, tilt, tidal lock…).
+/// Captured from the main world when the system view opens, so a double-click on
+/// any body in it can say which system the body is in.
+#[cfg(feature = "callisto")]
+#[derive(Clone)]
+struct SystemCtx {
+    sector: String,
+    hex: String,
+    /// The main world's name and UWP (`mw`/`mwuwp`), sent for any other body.
+    mw_name: String,
+    mw_uwp: String,
+    stellar: String,
+    pbg: String,
+    worlds: Option<u8>,
+}
+
+#[cfg(feature = "callisto")]
+impl SystemCtx {
+    fn new(sector: &str, w: &World) -> Self {
+        Self {
+            sector: sector.to_string(),
+            hex: w.hex.clone(),
+            mw_name: w.name.clone(),
+            mw_uwp: w.uwp.clone(),
+            stellar: w.stellar.clone(),
+            pbg: w.pbg.clone(),
+            worlds: w.worlds,
+        }
+    }
+
+    /// Whether a body is the main world. Worldgen names the main world after the
+    /// system and gives it the input UWP, so both must match. A nameless main world
+    /// is matched on UWP alone.
+    fn is_main_world(&self, name: &str, uwp: &str) -> bool {
+        uwp == self.mw_uwp && (self.mw_name.is_empty() || name == self.mw_name)
+    }
+
+    /// The `/api/world` base for one body (`name`/`uwp` are the body's own). Without
+    /// the system params worldgen draws the map as it always has; with them it
+    /// regenerates the system, finds the body by name (orbit breaks ties), and
+    /// derives the map from its physics. `mw`/`mwuwp` only for non-main bodies.
+    fn world_url(&self, name: &str, uwp: &str, orbit: Option<&str>) -> String {
+        let enc = |s: &str| String::from(js_sys::encode_uri_component(s));
+        let mut url = format!(
+            "{}?sector={}&hex={}&name={}&uwp={}&scale=2.0",
+            world_service(),
+            enc(&self.sector),
+            enc(&self.hex),
+            enc(name),
+            enc(uwp),
+        );
+        if let Some(o) = orbit.filter(|o| !o.is_empty()) {
+            url.push_str(&format!("&orbit={}", enc(o)));
+        }
+        url.push_str(&format!(
+            "&stellar={}&pbg={}",
+            enc(&self.stellar),
+            enc(&self.pbg)
+        ));
+        if let Some(n) = self.worlds {
+            url.push_str(&format!("&worlds={n}"));
+        }
+        if !self.is_main_world(name, uwp) {
+            url.push_str(&format!(
+                "&mw={}&mwuwp={}",
+                enc(&self.mw_name),
+                enc(&self.mw_uwp)
+            ));
+        }
+        url
+    }
+}
+
 /// State of the full-screen Callisto image popup (dev-only). One popup serves
 /// both the double-click solar-system render and the detail-panel world-surface
 /// render; the variant drives whether we show a spinner, the zoom/pan viewer, or
@@ -237,14 +311,13 @@ enum ImgView {
     /// Interactive solar-system map (SVG inlined into the DOM). Each body is a
     /// `<g class="sysmap-body" data-name/data-uwp/data-orbit/data-kind>`; hovering
     /// (or tapping) one shows its UWP, double-clicking (or long-pressing) a
-    /// world/moon renders that body's surface map. `sector`/`hex` are the system's
-    /// seed identity, threaded through so a per-body `/api/world` request can be
-    /// built from the body's data-attributes.
+    /// world/moon renders that body's surface map. `sys` is the system's identity,
+    /// threaded through so a per-body `/api/world` request can say which system the
+    /// body is in (see [`SystemCtx`]).
     System {
         svg: String,
         title: String,
-        sector: String,
-        hex: String,
+        sys: SystemCtx,
     },
     /// Render arrived — zoom/pan viewer over the PNG (world-surface map / flat map).
     Ready {
@@ -458,8 +531,7 @@ fn launch_svg(
     sys_gen: RwSignal<u64>,
     url: String,
     title: String,
-    sector: String,
-    hex: String,
+    sys: SystemCtx,
 ) {
     if let Some(ImgView::Ready { obj, .. }) = system_view.get_untracked() {
         let _ = web_sys::Url::revoke_object_url(&obj);
@@ -493,12 +565,7 @@ fn launch_svg(
         }
         let state = match result {
             Ok(resp) if resp.ok() => match resp.text().await {
-                Ok(svg) if svg.contains("<svg") => ImgView::System {
-                    svg,
-                    title,
-                    sector,
-                    hex,
-                },
+                Ok(svg) if svg.contains("<svg") => ImgView::System { svg, title, sys },
                 Ok(_) => ImgView::Error {
                     title,
                     msg: "The service returned data that wasn't an SVG.".into(),
@@ -1964,8 +2031,7 @@ fn App() -> impl IntoView {
             sys_gen,
             url,
             title,
-            sector_name.to_string(),
-            w.hex.clone(),
+            SystemCtx::new(sector_name, w),
         );
     };
     // Render a selected world's system, waiting for its full-LOD fields first — a
@@ -2141,34 +2207,22 @@ fn App() -> impl IntoView {
         }
     });
     // Render one body's surface map (`/api/world`) from the data-attributes the
-    // system SVG carries on each `<g class="sysmap-body">`. `sector`/`hex` are the
-    // system's seed identity; `orbit` (absent for moons) defaults to the service's
+    // system SVG carries on each `<g class="sysmap-body">`. `sys` says which system
+    // the body is in; `orbit` (absent for moons) defaults to the service's
     // main-world orbit. This is the "double-click/long-press any world in the
     // system" path — its default projection is the spinning globe.
     #[cfg(feature = "callisto")]
-    let open_body_world =
-        move |sector: &str, hex: &str, name: &str, uwp: &str, orbit: Option<String>| {
-            let enc = |s: &str| String::from(js_sys::encode_uri_component(s));
-            let mut base = format!(
-                "{}?sector={}&hex={}&name={}&uwp={}&scale=2.0",
-                world_service(),
-                enc(sector),
-                enc(hex),
-                enc(name),
-                enc(uwp),
-            );
-            if let Some(o) = orbit.filter(|o| !o.is_empty()) {
-                base.push_str(&format!("&orbit={}", enc(&o)));
-            }
-            let title = format!("{name} — {sector} {hex} · World Map");
-            sys_tip.set(None);
-            if let Some(id) = sys_lp.get_untracked() {
-                clear_timeout(id);
-                sys_lp.set(None);
-            }
-            // Double-click / long-press a planet → default to the spinning globe.
-            launch_world(base, true, title);
-        };
+    let open_body_world = move |sys: &SystemCtx, name: &str, uwp: &str, orbit: Option<String>| {
+        let base = sys.world_url(name, uwp, orbit.as_deref());
+        let title = format!("{name} — {} {} · World Map", sys.sector, sys.hex);
+        sys_tip.set(None);
+        if let Some(id) = sys_lp.get_untracked() {
+            clear_timeout(id);
+            sys_lp.set(None);
+        }
+        // Double-click / long-press a planet → default to the spinning globe.
+        launch_world(base, true, title);
+    };
     // Double-click a world → solar-system popup (Callisto, dev-only). The preceding
     // single-click already selected the world, so reuse `selected` rather than
     // re-hit-testing — but it only *started* the full-LOD fetch, which a double-click
@@ -2228,18 +2282,9 @@ fn App() -> impl IntoView {
             if sys_gen.get_untracked() != gen {
                 return; // popup closed / superseded during the probe
             }
-            let enc = |s: &str| String::from(js_sys::encode_uri_component(s));
-            let mut base = format!(
-                "{}?sector={}&hex={}&name={}&uwp={}&scale=2.0",
-                world_service(),
-                enc(&sector),
-                enc(&w.hex),
-                enc(&name),
-                enc(&w.uwp),
-            );
-            if let Some(o) = orbit.filter(|o| !o.is_empty()) {
-                base.push_str(&format!("&orbit={}", enc(&o)));
-            }
+            // The main world itself, so no `mw`/`mwuwp`; the system params still let
+            // worldgen derive its map from the system's physics.
+            let base = SystemCtx::new(&sector, &w).world_url(&name, &w.uwp, orbit.as_deref());
             // The World Map button keeps the existing default: the flat map.
             // launch_world restarts the spinner/timer under a new generation and
             // swaps to the image (or error) when the render lands.
@@ -2824,9 +2869,8 @@ fn App() -> impl IntoView {
                     }.into_any(),
                     // Interactive system map — inline SVG with hover→UWP and
                     // double-click/long-press→world-surface on each body.
-                    Some(ImgView::System { svg, title, sector, hex }) => {
-                        let (sec_d, hex_d) = (sector.clone(), hex.clone());
-                        let (sec_t, hex_t) = (sector.clone(), hex.clone());
+                    Some(ImgView::System { svg, title, sys }) => {
+                        let (sys_d, sys_t) = (sys.clone(), sys);
                         // Copies for the "Send to Discord" button (svg itself is moved
                         // into inner_html below).
                         let (svg_share, title_share) = (svg.clone(), title.clone());
@@ -2854,7 +2898,7 @@ fn App() -> impl IntoView {
                             let Some(uwp) = g.get_attribute("data-uwp") else { return };
                             let name = g.get_attribute("data-name").unwrap_or_else(|| "World".into());
                             let orbit = g.get_attribute("data-orbit");
-                            open_body_world(&sec_d, &hex_d, &name, &uwp, orbit);
+                            open_body_world(&sys_d, &name, &uwp, orbit);
                         };
                         // Touch start: seed the gesture (one-finger pan / two-finger pinch).
                         // A single finger also shows the tooltip and arms a long-press
@@ -2882,10 +2926,10 @@ fn App() -> impl IntoView {
                             if let Some(uwp) = g.get_attribute("data-uwp").filter(|_| launchable) {
                                 let name = g.get_attribute("data-name").unwrap_or_else(|| "World".into());
                                 let orbit = g.get_attribute("data-orbit");
-                                let (sec, hex) = (sec_t.clone(), hex_t.clone());
+                                let sys = sys_t.clone();
                                 let id = set_timeout(LONG_PRESS_MS, move || {
                                     sys_lp.set(None);
-                                    open_body_world(&sec, &hex, &name, &uwp, orbit.clone());
+                                    open_body_world(&sys, &name, &uwp, orbit.clone());
                                 });
                                 sys_lp.set(Some(id));
                             }
