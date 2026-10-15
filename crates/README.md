@@ -45,6 +45,9 @@ trunk serve                          # plain map
 trunk serve --features callisto      # + worldgen popups (double-click a system,
                                      #   "World Map" button) via the external
                                      #   Callisto service — no local worldgen needed
+
+# …or against your own worldgen (e.g. its local backend on :8081):
+WORLDGEN_URL=http://localhost:8081 trunk serve --features callisto
 ```
 
 Open **http://127.0.0.1:8080**. Trunk live-reloads the frontend on save; restart
@@ -68,6 +71,7 @@ cd crates/frontend && trunk build --release --features callisto
 | --- | --- | --- | --- |
 | `PORT` | backend | `3000` | Listen port (Cloud Run injects this; binds `0.0.0.0`). |
 | `TMAP_RES_DIR` | backend | `res` | Path to the shared `res/` data tree. |
+| `WORLDGEN_URL` | frontend (**build time**, `callisto` only) | `https://tools.callistoflight.com` | Base URL of the worldgen service the popups call. Baked into the wasm via `option_env!`; no runtime override. |
 | `TMAP_DIST_DIR` | backend | `dist` | Built frontend bundle to serve; if the dir is absent, static serving is skipped (the dev case — Trunk serves the frontend). |
 | `TMAP_ENABLE_ADMIN` | backend | _(unset)_ | Truthy (`1`/`true`/`yes`/`on`) mounts `POST /api/admin/flush` (a dev/profiling cache-flush). Unset → the route 404s, so production never exposes it. |
 

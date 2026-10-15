@@ -251,3 +251,15 @@ travellermap has no worldgen dependency. Spec: `worldgen/docs/library-integratio
   zoom/pan in the popup. Reads `data-spectral` + nested companion-subsystem groups forward-compatibly.
   *(Companion-subsystem hover + star `data-spectral` need a worldgen redeploy to appear live — spec
   handed off to the worldgen repo; not edited from here.)*
+- [x] **Client-side WebGL spinning globe (2026-09).** `globe.rs` warps worldgen's equirectangular
+  texture (`format=texture`) on the GPU instead of the heavy APNG; starport beacon from `X-Starport`.
+  Shareable to Discord as a looping GIF (`capture_frames` → `frames_to_gif`).
+- [x] **Tide-locked lighting (2026-09-25).** A locked world's sun stays on its substellar point
+  (`X-Substellar` → `uSun`/`uHasSun`), so the day side is fixed on the terrain as it spins; rotating
+  worlds render byte-identically to before.
+- [x] **Worldgen system context + generator choice (2026-10, branch `worldgen-system-context`).**
+  `WORLDGEN_URL` (build-time `option_env!`, defaulting to production) points a local build at a local
+  worldgen. Every `/api/world` request carries its system (`stellar`, `pbg`, `worlds`, plus `mw`/`mwuwp`
+  for non-main bodies) via `SystemCtx`, so worldgen draws the map from the body's physics. Settings
+  gains **SYSTEM GENERATION** (Callisto default / Book 6), sent explicitly as `generator=` on every
+  worldgen request. Needs worldgen ≥ PR #68 (Callisto stages 5–6) deployed.
